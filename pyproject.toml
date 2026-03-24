@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opto-schema-gui"
+version = "0.1.0"
+description = "GUI for authoring optogenetic stimulation pattern and sequence YAML files"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.5",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+opto-schema-gui = "opto_schema_gui.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

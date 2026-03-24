@@ -1,0 +1,40 @@
+version: 1
+patterns:
+  Ori90:
+    name: Ori90
+    duration_s: 1.0
+    frequency_hz: 10.0
+    power_percent: 20.0
+    notes: ''
+    cells:
+    - label: cell1
+      x: 60.0
+      y: 5445.0
+      z: 54.0
+      frequency_scale: 1.0
+      power_scale: 1.0
+    - label: cell2
+      x: 79.0
+      y: 544.0
+      z: 54.0
+      frequency_scale: 1.0
+      power_scale: 1.0
+    - label: cell3
+      x: 96.0
+      y: 454.0
+      z: 54.0
+      frequency_scale: 1.0
+      power_scale: 1.0
+  pattern_1:
+    name: pattern_1
+    duration_s: 1.0
+    frequency_hz: 10.0
+    power_percent: 20.0
+    notes: ''
+    cells:
+    - label: cell1
+      x: 0
+      y: 0
+      z: 0
+      frequency_scale: 1.0
+      power_scale: 1.0

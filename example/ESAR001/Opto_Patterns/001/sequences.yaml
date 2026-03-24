@@ -1,0 +1,29 @@
+version: 1
+pattern_file: patterns.yaml
+sequences:
+  2ori:
+    name: 2ori
+    notes: ''
+    steps:
+    - pattern: ori90
+      start_s: 0.0
+      end_s: 1.0
+    - pattern: ori180
+      start_s: 1.0
+      end_s: 2.0
+    - pattern: ori90
+      start_s: 3.0
+      end_s: 4.0
+  2ori_copy:
+    name: 2ori_copy
+    notes: ''
+    steps:
+    - pattern: ori90
+      start_s: 0.0
+      end_s: 1.0
+    - pattern: ori180
+      start_s: 1.0
+      end_s: 2.0
+    - pattern: ori90
+      start_s: 3.0
+      end_s: 4.0
