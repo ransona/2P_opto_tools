@@ -7,9 +7,12 @@ import yaml
 from .models import CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 
 
-def load_patterns(path: str | Path) -> dict[str, Pattern]:
+def load_schema(path: str | Path) -> ExperimentProject:
     data = yaml.safe_load(Path(path).read_text()) or {}
+
     patterns_block = data.get("patterns", {})
+    sequences_block = data.get("sequences", {})
+
     patterns: dict[str, Pattern] = {}
     for name, pattern_data in patterns_block.items():
         cells = [
@@ -30,12 +33,7 @@ def load_patterns(path: str | Path) -> dict[str, Pattern]:
             notes=pattern_data.get("notes", ""),
             cells=cells,
         )
-    return patterns
 
-
-def load_sequences(path: str | Path) -> dict[str, Sequence]:
-    data = yaml.safe_load(Path(path).read_text()) or {}
-    sequences_block = data.get("sequences", {})
     sequences: dict[str, Sequence] = {}
     for name, sequence_data in sequences_block.items():
         steps = [
@@ -47,21 +45,14 @@ def load_sequences(path: str | Path) -> dict[str, Sequence]:
             steps=steps,
             notes=sequence_data.get("notes", ""),
         )
-    return sequences
+
+    return ExperimentProject(patterns=patterns, sequences=sequences)
 
 
-def save_patterns(path: str | Path, project: ExperimentProject) -> None:
+def save_schema(path: str | Path, project: ExperimentProject) -> None:
     payload = {
         "version": 1,
         "patterns": {name: pattern.as_dict() for name, pattern in project.patterns.items()},
-    }
-    Path(path).write_text(yaml.safe_dump(payload, sort_keys=False))
-
-
-def save_sequences(path: str | Path, project: ExperimentProject, pattern_file: str = "patterns.yaml") -> None:
-    payload = {
-        "version": 1,
-        "pattern_file": pattern_file,
         "sequences": {
             name: sequence.as_dict(project.patterns)
             for name, sequence in project.sequences.items()

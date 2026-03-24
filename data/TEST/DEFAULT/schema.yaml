@@ -1,0 +1,70 @@
+version: 1
+patterns:
+  ori90:
+    name: ori90
+    duration_s: 1.0
+    frequency_hz: 10.0
+    power_percent: 20.0
+    notes: ''
+    cells:
+    - label: cell1
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      power_scale: 1.0
+    - label: cell2
+      x: 1.0
+      y: 0.0
+      z: 0.0
+      power_scale: 1.0
+    - label: cell3
+      x: 2.0
+      y: 0.0
+      z: 0.0
+      power_scale: 1.0
+    - label: cell4
+      x: 3.0
+      y: 0.0
+      z: 0.0
+      power_scale: 1.0
+  ori180:
+    name: ori180
+    duration_s: 1.0
+    frequency_hz: 10.0
+    power_percent: 20.0
+    notes: ''
+    cells:
+    - label: cell1
+      x: 0.0
+      y: 1.0
+      z: 0.0
+      power_scale: 1.0
+    - label: cell2
+      x: 0.0
+      y: 2.0
+      z: 0.0
+      power_scale: 1.0
+    - label: cell3
+      x: 0.0
+      y: 3.0
+      z: 0.0
+      power_scale: 1.0
+    - label: cell4
+      x: 0.0
+      y: 4.0
+      z: 0.0
+      power_scale: 1.0
+sequences:
+  sequence:
+    name: sequence
+    notes: ''
+    steps:
+    - pattern: ori90
+      start_s: 0.0
+      end_s: 1.0
+    - pattern: ori180
+      start_s: 1.0
+      end_s: 2.0
+    - pattern: ori90
+      start_s: 2.0
+      end_s: 3.0

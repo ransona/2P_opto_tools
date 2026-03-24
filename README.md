@@ -20,7 +20,7 @@ Code related to optogenetics and holography experiments.
 
 ## Pattern Builder GUI
 
-PyQt editor for a YAML schema containing both stimulation patterns and sequences.
+PyQt editor for one YAML schema file containing both stimulation patterns and sequences.
 
 ### Install
 
@@ -44,10 +44,11 @@ opto-schema-gui
 
 ### File format
 
-The app writes a single YAML schema file containing:
+The app writes one YAML file:
 
-- named stimulation patterns
-- named sequences that reference patterns and place them relative to trial onset
+- `schema.yaml`
+
+It contains both `patterns` and `sequences`.
 
 Each sequence step stores the pattern name, `start_s`, and computed `end_s` so downstream code can recover transition times without recomputing them.
 

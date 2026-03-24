@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .io import load_patterns, load_sequences, save_patterns, save_sequences
+from .io import load_schema, save_schema
 from .models import CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 
 
@@ -205,7 +205,7 @@ class PatternEditor(QWidget):
         self.cells_table.setHorizontalHeaderLabels(["Label", "X", "Y", "Z", "Power scale"])
         self.cells_table.horizontalHeader().setStretchLastSection(True)
         self.cells_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.cells_table.itemChanged.connect(self._on_cell_item_changed)
+        self.cells_table.itemChanged.connect(self._on_form_changed)
         layout.addWidget(QLabel("Cells in this pattern"))
         layout.addWidget(self.cells_table)
 
@@ -223,6 +223,11 @@ class PatternEditor(QWidget):
         self.remove_row_btn.clicked.connect(self.remove_selected_cell_rows)
         self.copy_btn.clicked.connect(self.copy_current_pattern)
         self.clear_btn.clicked.connect(self.clear_form)
+        self.name_edit.editingFinished.connect(self._on_form_changed)
+        self.duration_spin.valueChanged.connect(self._on_form_changed)
+        self.freq_spin.valueChanged.connect(self._on_form_changed)
+        self.power_spin.valueChanged.connect(self._on_form_changed)
+        self.notes_edit.editingFinished.connect(self._on_form_changed)
 
     def add_cell_row(self, cell: CellSpec | None = None) -> None:
         row = self.cells_table.rowCount()
@@ -240,19 +245,20 @@ class PatternEditor(QWidget):
             self.cells_table.setItem(row, col, widget)
         self.cells_table.selectRow(row)
         if not self._loading:
-            self._on_cell_item_changed()
+            self._on_form_changed()
 
     def remove_selected_cell_rows(self) -> None:
         row = _selected_or_last_row(self.cells_table)
         if row is not None:
             self.cells_table.removeRow(row)
             if not self._loading:
-                self._on_cell_item_changed()
+                self._on_form_changed()
 
-    def _on_cell_item_changed(self, *_args) -> None:
+    def _on_form_changed(self, *_args) -> None:
         if self._loading:
             return
         self._highlight_duplicate_coordinates()
+        self.commit_current_pattern(silent=True)
         self.on_dirty()
 
     def _highlight_duplicate_coordinates(self) -> None:
@@ -354,17 +360,20 @@ class PatternEditor(QWidget):
             cells=cells,
         )
 
-    def save_current_pattern(self) -> bool:
+    def commit_current_pattern(self, silent: bool = False) -> bool:
         try:
             pattern = self.gather_pattern()
         except ValueError as exc:
-            QMessageBox.warning(self, "Invalid pattern", str(exc))
+            if not silent:
+                QMessageBox.warning(self, "Invalid pattern", str(exc))
             return False
         if not pattern.name:
-            QMessageBox.warning(self, "Invalid pattern", "Pattern name cannot be empty.")
+            if not silent:
+                QMessageBox.warning(self, "Invalid pattern", "Pattern name cannot be empty.")
             return False
         if self._has_duplicate_coordinates():
-            QMessageBox.warning(self, "Invalid pattern", "Duplicate cell coordinates are not allowed.")
+            if not silent:
+                QMessageBox.warning(self, "Invalid pattern", "Duplicate cell coordinates are not allowed.")
             return False
         if self.current_name and self.current_name != pattern.name and self.current_name in self.project.patterns:
             self.project.patterns.pop(self.current_name)
@@ -374,12 +383,10 @@ class PatternEditor(QWidget):
                         step.pattern = pattern.name
         self.project.patterns[pattern.name] = pattern
         self.current_name = pattern.name
-        self._loading = True
-        self.load_pattern(pattern.name)
-        self._loading = False
-        if self.on_commit is not None:
-            self.on_commit()
         return True
+
+    def save_current_pattern(self) -> bool:
+        return self.commit_current_pattern(silent=False)
 
     def _has_duplicate_coordinates(self) -> bool:
         coords = set()
@@ -405,6 +412,7 @@ class SequenceEditor(QWidget):
         self.on_dirty = on_dirty
         self.on_commit = on_commit
         self.current_name = ""
+        self._loading = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -456,6 +464,10 @@ class SequenceEditor(QWidget):
         self.remove_step_btn.clicked.connect(self.remove_selected_step_rows)
         self.copy_btn.clicked.connect(self.copy_current_sequence)
         self.clear_btn.clicked.connect(self.clear_form)
+        self.name_edit.editingFinished.connect(self._on_form_changed)
+        self.notes_edit.editingFinished.connect(self._on_form_changed)
+        self.start_spin.valueChanged.connect(self._on_form_changed)
+        self.steps_table.itemChanged.connect(self._on_form_changed)
         self.save_btn.clicked.connect(self.save_current_sequence)
 
         splitter.addWidget(editor_panel)
@@ -476,12 +488,15 @@ class SequenceEditor(QWidget):
     def load_sequence(self, name: str) -> None:
         sequence = self.project.sequences[name]
         self.current_name = name
+        self._loading = True
         self.name_edit.setText(sequence.name)
         self.notes_edit.setText(sequence.notes)
         self.steps_table.setRowCount(0)
         for step in sorted(sequence.steps, key=lambda step: step.start_s):
             self._insert_step_row(step)
+        self._loading = False
         self._refresh_preview()
+        self._sync_start_spin_to_end()
 
     def _insert_step_row(self, step: SequenceStep) -> None:
         pattern = self.project.patterns.get(step.pattern)
@@ -506,22 +521,30 @@ class SequenceEditor(QWidget):
         if not pattern_name:
             return
         start_s = self._current_end_time()
-        self.start_spin.setValue(start_s)
         step = SequenceStep(pattern=pattern_name, start_s=start_s)
         existing = self.gather_sequence(allow_partial=True)
         existing.steps.append(step)
         existing.steps.sort(key=lambda s: s.start_s)
+        self._loading = True
         self._set_sequence_steps(existing.steps)
+        self._loading = False
+        self.commit_current_sequence(silent=True)
+        self._sync_start_spin_to_end()
         self.on_dirty()
 
     def remove_selected_step_rows(self) -> None:
         rows = sorted({index.row() for index in self.steps_table.selectedIndexes()}, reverse=True)
         if rows:
+            self._loading = True
             for row in rows:
                 self.steps_table.removeRow(row)
         elif self.steps_table.rowCount():
+            self._loading = True
             self.steps_table.removeRow(self.steps_table.rowCount() - 1)
+        self._loading = False
         self._refresh_preview()
+        self.commit_current_sequence(silent=True)
+        self._sync_start_spin_to_end()
         self.on_dirty()
 
     def _set_sequence_steps(self, steps: list[SequenceStep]) -> None:
@@ -529,6 +552,13 @@ class SequenceEditor(QWidget):
         for step in steps:
             self._insert_step_row(step)
         self._refresh_preview()
+        self._sync_start_spin_to_end()
+
+    def _on_form_changed(self, *_args) -> None:
+        if self._loading:
+            return
+        self.commit_current_sequence(silent=True)
+        self.on_dirty()
 
     def _current_end_time(self) -> float:
         end_time = 0.0
@@ -572,14 +602,16 @@ class SequenceEditor(QWidget):
             notes=self.notes_edit.text().strip(),
         )
 
-    def save_current_sequence(self) -> bool:
+    def commit_current_sequence(self, silent: bool = False) -> bool:
         try:
             sequence = self.gather_sequence()
         except ValueError as exc:
-            QMessageBox.warning(self, "Invalid sequence", str(exc))
+            if not silent:
+                QMessageBox.warning(self, "Invalid sequence", str(exc))
             return False
         if not sequence.name:
-            QMessageBox.warning(self, "Invalid sequence", "Sequence name cannot be empty.")
+            if not silent:
+                QMessageBox.warning(self, "Invalid sequence", "Sequence name cannot be empty.")
             return False
         sequence.steps.sort(key=lambda step: step.start_s)
         if self.current_name and self.current_name != sequence.name and self.current_name in self.project.sequences:
@@ -587,20 +619,27 @@ class SequenceEditor(QWidget):
         self.project.sequences[sequence.name] = sequence
         self.current_name = sequence.name
         self._refresh_preview()
+        self._sync_start_spin_to_end()
         if self.on_commit is not None:
             self.on_commit()
         return True
+
+    def save_current_sequence(self) -> bool:
+        return self.commit_current_sequence(silent=False)
 
     def _refresh_preview(self) -> None:
         self.preview.set_sequence(self.name_edit.text().strip())
 
     def clear_form(self) -> None:
         self.current_name = ""
+        self._loading = True
         self.name_edit.clear()
         self.notes_edit.clear()
         self.steps_table.setRowCount(0)
         self.preview.set_sequence("")
         self.steps_table.clearSelection()
+        self._loading = False
+        self._sync_start_spin_to_end()
 
     def copy_current_sequence(self) -> None:
         try:
@@ -620,6 +659,12 @@ class SequenceEditor(QWidget):
         if self.on_commit is not None:
             self.on_commit()
 
+    def _sync_start_spin_to_end(self) -> None:
+        end_s = self._current_end_time()
+        self.start_spin.blockSignals(True)
+        self.start_spin.setValue(end_s)
+        self.start_spin.blockSignals(False)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -627,6 +672,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Opto Schema GUI")
         self.project = ExperimentProject()
         self.save_root = _load_save_root()
+        self.schema_file_path = ""
         self.pattern_dirty = False
         self.sequence_dirty = False
 
@@ -647,25 +693,16 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         new_btn = QPushButton("New")
-        open_patterns_btn = QPushButton("Load Patterns")
-        open_sequences_btn = QPushButton("Load Sequences")
-        save_patterns_btn = QPushButton("Save Patterns")
-        save_sequences_btn = QPushButton("Save Sequences")
-        export_sequence_btn = QPushButton("Export Selected Sequence")
+        load_schema_btn = QPushButton("Load Schema")
+        save_schema_btn = QPushButton("Save Schema")
 
         toolbar.addWidget(new_btn)
-        toolbar.addWidget(open_patterns_btn)
-        toolbar.addWidget(open_sequences_btn)
-        toolbar.addWidget(save_patterns_btn)
-        toolbar.addWidget(save_sequences_btn)
-        toolbar.addWidget(export_sequence_btn)
+        toolbar.addWidget(load_schema_btn)
+        toolbar.addWidget(save_schema_btn)
 
         new_btn.clicked.connect(self.new_project)
-        open_patterns_btn.clicked.connect(self.load_patterns_dialog)
-        open_sequences_btn.clicked.connect(self.load_sequences_dialog)
-        save_patterns_btn.clicked.connect(self.save_patterns_dialog)
-        save_sequences_btn.clicked.connect(self.save_sequences_dialog)
-        export_sequence_btn.clicked.connect(self.export_selected_sequence)
+        load_schema_btn.clicked.connect(self.load_schema_dialog)
+        save_schema_btn.clicked.connect(self.save_schema_dialog)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -681,7 +718,7 @@ class MainWindow(QMainWindow):
         project_form.addRow("Animal ID", self.animal_edit)
         project_form.addRow("Project", self.project_edit)
         project_form.addRow("Save root", QLabel(str(self.save_root)))
-        project_form.addRow("Default save path", self.save_path_label)
+        project_form.addRow("Default schema path", self.save_path_label)
         left_layout.addWidget(project_box)
 
         pattern_box = QGroupBox("Patterns")
@@ -710,13 +747,13 @@ class MainWindow(QMainWindow):
         sequence_layout.addLayout(sequence_buttons)
         left_layout.addWidget(sequence_box)
 
-        right = QTabWidget()
-        right.addTab(self.pattern_editor, "Pattern Editor")
-        right.addTab(self.sequence_editor, "Sequence Editor")
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.addTab(self.pattern_editor, "Pattern Editor")
+        self.editor_tabs.addTab(self.sequence_editor, "Sequence Editor")
 
         splitter = QSplitter()
         splitter.addWidget(left)
-        splitter.addWidget(right)
+        splitter.addWidget(self.editor_tabs)
         splitter.setStretchFactor(1, 1)
         self.setCentralWidget(splitter)
 
@@ -747,21 +784,19 @@ class MainWindow(QMainWindow):
 
         self.sequence_editor.refresh_pattern_choices()
 
-        if not self.pattern_dirty:
-            if current_pattern:
-                matches = self.pattern_list.findItems(current_pattern, Qt.MatchFlag.MatchExactly)
-                if matches:
-                    self.pattern_list.setCurrentItem(matches[0])
-            elif self.pattern_list.count():
-                self.pattern_list.setCurrentRow(0)
+        if current_pattern:
+            matches = self.pattern_list.findItems(current_pattern, Qt.MatchFlag.MatchExactly)
+            if matches:
+                self.pattern_list.setCurrentItem(matches[0])
+        elif self.pattern_list.count():
+            self.pattern_list.setCurrentRow(0)
 
-        if not self.sequence_dirty:
-            if current_sequence:
-                matches = self.sequence_list.findItems(current_sequence, Qt.MatchFlag.MatchExactly)
-                if matches:
-                    self.sequence_list.setCurrentItem(matches[0])
-            elif self.sequence_list.count():
-                self.sequence_list.setCurrentRow(0)
+        if current_sequence:
+            matches = self.sequence_list.findItems(current_sequence, Qt.MatchFlag.MatchExactly)
+            if matches:
+                self.sequence_list.setCurrentItem(matches[0])
+        elif self.sequence_list.count():
+            self.sequence_list.setCurrentRow(0)
 
         self.update_status()
         self.preview.update()
@@ -778,7 +813,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def update_save_path_label(self) -> None:
-        self.save_path_label.setText(str(self.project_dir()))
+        self.save_path_label.setText(str(self.schema_save_path()))
 
     def animal_id(self) -> str:
         value = self.animal_edit.text().strip()
@@ -791,11 +826,8 @@ class MainWindow(QMainWindow):
     def project_dir(self) -> Path:
         return self.save_root / self.animal_id() / self.project_name()
 
-    def pattern_save_path(self) -> Path:
-        return self.project_dir() / "pattern.yaml"
-
-    def sequence_save_path(self) -> Path:
-        return self.project_dir() / "sequence.yaml"
+    def schema_save_path(self) -> Path:
+        return self.project_dir() / "schema.yaml"
 
     def mark_pattern_dirty(self) -> None:
         self.pattern_dirty = True
@@ -813,30 +845,12 @@ class MainWindow(QMainWindow):
     def _pattern_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
         if not current:
             return
-        if not self._resolve_dirty_switch(
-            self.pattern_dirty,
-            self._save_patterns_to_default,
-            current,
-            previous,
-            self.pattern_list,
-            "pattern",
-        ):
-            return
         name = current.text()
         if name in self.project.patterns:
             self.pattern_editor.load_pattern(name)
 
     def _sequence_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
         if not current:
-            return
-        if not self._resolve_dirty_switch(
-            self.sequence_dirty,
-            self._save_sequences_to_default,
-            current,
-            previous,
-            self.sequence_list,
-            "sequence",
-        ):
             return
         name = current.text()
         if name in self.project.sequences:
@@ -854,6 +868,10 @@ class MainWindow(QMainWindow):
         )
         self.pattern_dirty = True
         self.refresh_lists()
+        matches = self.pattern_list.findItems(name, Qt.MatchFlag.MatchExactly)
+        if matches:
+            self.pattern_list.setCurrentItem(matches[0])
+        self.editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def copy_pattern(self) -> None:
         current = self.pattern_list.currentItem()
@@ -872,6 +890,10 @@ class MainWindow(QMainWindow):
         self.project.patterns[copied.name] = copied
         self.pattern_dirty = True
         self.refresh_lists()
+        matches = self.pattern_list.findItems(copied.name, Qt.MatchFlag.MatchExactly)
+        if matches:
+            self.pattern_list.setCurrentItem(matches[0])
+        self.editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def delete_pattern(self) -> None:
         current = self.pattern_list.currentItem()
@@ -892,6 +914,10 @@ class MainWindow(QMainWindow):
         self.project.sequences[name] = Sequence(name=name)
         self.sequence_dirty = True
         self.refresh_lists()
+        matches = self.sequence_list.findItems(name, Qt.MatchFlag.MatchExactly)
+        if matches:
+            self.sequence_list.setCurrentItem(matches[0])
+        self.editor_tabs.setCurrentWidget(self.sequence_editor)
 
     def copy_sequence(self) -> None:
         current = self.sequence_list.currentItem()
@@ -907,6 +933,10 @@ class MainWindow(QMainWindow):
         self.project.sequences[copied.name] = copied
         self.sequence_dirty = True
         self.refresh_lists()
+        matches = self.sequence_list.findItems(copied.name, Qt.MatchFlag.MatchExactly)
+        if matches:
+            self.sequence_list.setCurrentItem(matches[0])
+        self.editor_tabs.setCurrentWidget(self.sequence_editor)
 
     def delete_sequence(self) -> None:
         current = self.sequence_list.currentItem()
@@ -933,9 +963,10 @@ class MainWindow(QMainWindow):
             if choice == QMessageBox.StandardButton.Cancel:
                 return
             if choice == QMessageBox.StandardButton.Save:
-                if not self._save_patterns_to_default(force=False) or not self._save_sequences_to_default(force=False):
+                if not self._save_schema_to_default(force=False):
                     return
         self.project = ExperimentProject()
+        self.schema_file_path = ""
         self.pattern_editor.project = self.project
         self.sequence_editor.project = self.project
         self.preview.project = self.project
@@ -947,12 +978,12 @@ class MainWindow(QMainWindow):
         self.sequence_editor.clear_form()
         self.refresh_lists()
 
-    def load_patterns_dialog(self) -> None:
+    def load_schema_dialog(self) -> None:
         if self.pattern_dirty or self.sequence_dirty:
             choice = QMessageBox.question(
                 self,
-                "Load patterns",
-                "You have unsaved changes. Save them before loading a pattern file?",
+                "Load schema",
+                "You have unsaved changes. Save them before loading a schema file?",
                 QMessageBox.StandardButton.Save
                 | QMessageBox.StandardButton.Discard
                 | QMessageBox.StandardButton.Cancel,
@@ -961,73 +992,72 @@ class MainWindow(QMainWindow):
             if choice == QMessageBox.StandardButton.Cancel:
                 return
             if choice == QMessageBox.StandardButton.Save:
-                if not self._save_patterns_to_default(force=False) or not self._save_sequences_to_default(force=False):
+                if not self._save_schema_to_default(force=False):
                     return
-        path, _ = QFileDialog.getOpenFileName(self, "Load patterns YAML", str(Path.cwd()), "YAML (*.yaml *.yml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load schema YAML", str(Path.cwd()), "YAML (*.yaml *.yml)")
         if not path:
             return
-        self.project.patterns = load_patterns(path)
+        self.project = load_schema(path)
+        self.pattern_editor.project = self.project
+        self.sequence_editor.project = self.project
+        self.preview.project = self.project
+        self.schema_file_path = path
         self.pattern_editor.current_name = ""
-        self.pattern_dirty = False
-        if self.project.sequences:
-            self.sequence_dirty = True
-        if not self.project.patterns:
-            self.pattern_editor.clear_form()
-        self.refresh_lists()
-
-    def load_sequences_dialog(self) -> None:
-        if self.pattern_dirty or self.sequence_dirty:
-            choice = QMessageBox.question(
-                self,
-                "Load sequences",
-                "You have unsaved changes. Save them before loading a sequence file?",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if choice == QMessageBox.StandardButton.Cancel:
-                return
-            if choice == QMessageBox.StandardButton.Save:
-                if not self._save_patterns_to_default(force=False) or not self._save_sequences_to_default(force=False):
-                    return
-        path, _ = QFileDialog.getOpenFileName(self, "Load sequences YAML", str(Path.cwd()), "YAML (*.yaml *.yml)")
-        if not path:
-            return
-        self.project.sequences = load_sequences(path)
         self.sequence_editor.current_name = ""
+        self.pattern_editor.clear_form()
+        self.sequence_editor.clear_form()
+        self.pattern_dirty = False
         self.sequence_dirty = False
-        if not self.project.sequences:
-            self.sequence_editor.clear_form()
         self.refresh_lists()
 
-    def save_patterns_dialog(self) -> None:
-        self._save_patterns_to_default(force=True)
-
-    def save_sequences_dialog(self) -> None:
-        self._save_sequences_to_default(force=True)
-
-    def export_selected_sequence(self) -> None:
-        current = self.sequence_list.currentItem()
-        if not current:
-            return
-        name = current.text()
+    def save_schema_dialog(self) -> None:
+        default_path = self.schema_save_path()
         path, _ = QFileDialog.getSaveFileName(
             self,
-            f"Export sequence '{name}'",
-            f"{name}.yaml",
+            "Save schema",
+            str(default_path),
             "YAML (*.yaml *.yml)",
         )
         if not path:
             return
-        sequence = self.project.sequences[name]
-        payload = {
-            "version": 1,
-            "sequence_name": name,
-            "pattern_file": str(self.pattern_save_path()),
-            "sequence": sequence.as_dict(self.project.patterns),
-        }
-        Path(path).write_text(yaml.safe_dump(payload, sort_keys=False))
+        target = Path(path)
+        if target.exists():
+            choice = QMessageBox.question(
+                self,
+                "Overwrite schema",
+                f"'{target}' already exists. Overwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+        if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
+            return
+        if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        save_schema(target, self.project)
+        self.schema_file_path = str(target)
+        self.pattern_dirty = False
+        self.sequence_dirty = False
+        self.update_save_path_label()
+        self.refresh_lists()
+
+    def _save_schema_to_default(self, force: bool = False) -> bool:
+        if not force and not (self.pattern_dirty or self.sequence_dirty):
+            return True
+        if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
+            return False
+        if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
+            return False
+        path = self.schema_save_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_schema(path, self.project)
+        self.schema_file_path = str(path)
+        self.pattern_dirty = False
+        self.sequence_dirty = False
+        self.refresh_lists()
+        return True
 
     def _resolve_dirty_switch(
         self,
@@ -1067,34 +1097,6 @@ class MainWindow(QMainWindow):
             widget.setCurrentItem(previous)
         widget.blockSignals(False)
 
-    def _save_patterns_to_default(self, force: bool = False) -> bool:
-        if not force and not self.pattern_dirty:
-            return True
-        saved = self.pattern_editor.save_current_pattern()
-        if not saved:
-            return False
-        path = self.pattern_save_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        save_patterns(path, self.project)
-        self.pattern_dirty = False
-        if self.project.sequences:
-            self.sequence_dirty = True
-        self.refresh_lists()
-        return True
-
-    def _save_sequences_to_default(self, force: bool = False) -> bool:
-        if not force and not self.sequence_dirty:
-            return True
-        saved = self.sequence_editor.save_current_sequence()
-        if not saved:
-            return False
-        path = self.sequence_save_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        save_sequences(path, self.project, str(self.pattern_save_path()))
-        self.sequence_dirty = False
-        self.refresh_lists()
-        return True
-
     def closeEvent(self, event) -> None:  # noqa: N802
         if not (self.pattern_dirty or self.sequence_dirty):
             event.accept()
@@ -1112,7 +1114,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if choice == QMessageBox.StandardButton.Save:
-            if not self._save_patterns_to_default(force=False) or not self._save_sequences_to_default(force=False):
+            if not self._save_schema_to_default(force=False):
                 event.ignore()
                 return
         event.accept()
@@ -1122,5 +1124,5 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
     window.resize(1400, 900)
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())
