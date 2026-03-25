@@ -44,36 +44,56 @@ opto-schema-gui
 
 ## ScanImage bridge
 
-There is now a Python CLI for launching MATLAB sessions and asking them to import schema `patterns` into ScanImage photostimulation stimulus groups.
+There is now a Python CLI for launching configured ScanImage paths and importing schema `patterns` into ScanImage photostimulation stimulus groups.
 
-Config:
+Configs live under:
 
-- [scanimage_bridge.ini](/home/adamranson/code/2P_opto_tools/scanimage_bridge.ini)
+- [configs](/home/adamranson/code/2P_opto_tools/configs)
+
+Current machine setup:
+
+- [configs/ar-lab-si2](/home/adamranson/code/2P_opto_tools/configs/ar-lab-si2)
 
 Run:
 
 ```bash
-python run_scanimage_bridge.py /path/to/schema.yaml
+python run_scanimage_bridge.py /path/to/schema.yaml --machine ar-lab-si2 --config PS
 ```
 
 Or, if installed as a console script:
 
 ```bash
-opto-scanimage-bridge /path/to/schema.yaml
+opto-scanimage-bridge /path/to/schema.yaml --machine ar-lab-si2 --config PS
 ```
 
 The bridge:
 
-- launches one MATLAB session per `[session:<name>]` block
+- loads one machine/config from `configs/<machine>/<config>/config.ini`
+- launches one MATLAB session per configured path
 - adds this repo's MATLAB helper path
-- runs any configured startup commands for that session
-- calls `opto.scanimage.importSchemaPatterns(...)`
+- runs each path's `launch.m`
+- imports patterns with `opto.scanimage.importSchemaPatterns(...)`
+
+Each path folder contains:
+
+- `launch.m`
+- `start_script.m`
+- `stop_script.m`
+
+`launch.m` owns ScanImage startup, including the machine data file path. Python does not reconstruct that startup command from the INI.
+
+Current configs for `ar-lab-si2`:
+
+- `P1_imaging`
+- `P1_P2_imaging`
+- `PS`
 
 Important:
 
-- You must set `matlab_executable` to a valid MATLAB binary on your machine if it is not already on `PATH`.
+- `simulation_mode = auto` in each path config will automatically fall back to simulated MATLAB sessions when MATLAB is not available.
 - The current implementation imports `patterns` only. Sequence support comes later.
 - `frequency_hz` is not yet mapped to ScanImage pulse timing; the initial import path uses continuous dwell stimuli and warns accordingly.
+- The `PS` launch folder expects sibling files referenced by its `launch.m`, including `GGtoP1_working.mat` and `SLMtoGG_working.mat`.
 
 ## ScanImage control tab
 
@@ -81,36 +101,70 @@ The main PyQt GUI now includes a `ScanImage Control` tab.
 
 It can:
 
-- launch one MATLAB session per configured scan path
-- send configured MATLAB commands to start and stop ScanImage
-- import the currently saved schema `patterns` into ScanImage stimulus groups
+- discover machines and configs from `configs/`
+- launch one MATLAB session per configured path
+- run `launch.m` for a path
+- run `start_script.m` before acquisition
+- run `stop_script.m` after stop
+- import the currently saved schema `patterns` into the configured photostim path
 - start `Focus`
 - start `Acquire`
 - stop the current ScanImage acquisition
 - listen for UDP messages and map them to ScanImage actions
 - show a live debug log of GUI actions, UDP packets, and MATLAB responses
+- run one UDP listener per configured path
+- launch all paths in a config in the configured launch order with an inter-path delay
 
 UDP trigger messages currently supported:
 
 - `acquire`
 - `start_acquisition`
 - `grab`
+- `gogo`
 - `focus`
 - `stop`
 - `abort`
 - `import`
-- `start_scanimage`
-- `stop_scanimage`
 
-All ScanImage command strings are configured in [scanimage_bridge.ini](/home/adamranson/code/2P_opto_tools/scanimage_bridge.ini), including:
+Plain-text start commands can optionally include an experiment ID:
 
-- `launch_scanimage_command`
-- `shutdown_scanimage_command`
-- `focus_command`
-- `acquire_command`
-- `stop_command`
+- `acquire 2026-01-01_01_TEST`
+- `gogo:2026-01-01_01_TEST`
 
-This keeps the GUI logic stable while allowing rig-specific MATLAB commands to vary per microscope setup.
+Each path listener also supports the legacy MATLAB-serialized command subset used by the old listeners in `legacy/`:
+
+- `COM/GOGO` with `meta{1} = expID`
+- `COM/STOP`
+- outbound `COM/READY` replies
+
+Legacy `COM/GOGO` handling now mirrors the old listeners on a per-path basis:
+
+- reads `expID` from `meta{1}`
+- derives `animalID` from the `expID`
+- creates local and remote acquisition folders
+- sets `hScan2D.logFilePath`
+- sets `hScan2D.logFileStem`
+- optionally saves selected scanfield metadata if `saveSelectedScanfieldToFolder` exists
+- saves `_imageMeta.mat` if motor ROI metadata is available
+- runs the path's `start_script.m`
+- sends back legacy `COM/READY`
+
+Legacy `COM/STOP` runs the path's `stop_script.m` and Python then sends `COM/READY`.
+
+All UDP parsing, routing, and replies are handled in Python. The MATLAB scripts do not perform UDP I/O.
+
+Each config INI defines:
+
+- `launch_order`
+- `launch_delay_s`
+- optional `photostim_path`
+- per-path listener and reply endpoints
+- per-path MATLAB executable
+- per-path `hSI` / `hSICtl` variable names
+- per-path local/remote data roots
+- per-path photostim import options
+
+When MATLAB is not available, the bridge runs in simulated mode. In that mode the GUI still launches paths, runs simulated `launch.m` / `start_script.m` / `stop_script.m`, imports schema patterns, accepts UDP commands, and logs simulated ScanImage responses.
 
 ### File format
 
