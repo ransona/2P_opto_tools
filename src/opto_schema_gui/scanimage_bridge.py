@@ -13,6 +13,7 @@ from .matlab_bridge import (
     list_config_names,
     list_machine_names,
     load_machine_config,
+    matlab_string,
 )
 
 
@@ -78,14 +79,15 @@ def main(argv: list[str] | None = None) -> int:
             session = MatlabSession(path_config)
             sessions.append(session)
             print(f"[{path_name}] starting MATLAB")
-            session.start()
-            print(f"[{path_name}] running launch.m")
-            for line in session.eval(
-                build_run_script_command(path_config, "launch.m"),
-                timeout_s=path_config.startup_timeout_s,
-            ):
-                if line.strip():
-                    print(f"[{path_name}] {line}")
+            session.start(startup_command=_build_launch_startup_command(path_config))
+            if session.simulated:
+                print(f"[{path_name}] running launch.m")
+                for line in session.eval(
+                    build_run_script_command(path_config, "launch.m"),
+                    timeout_s=path_config.startup_timeout_s,
+                ):
+                    if line.strip():
+                        print(f"[{path_name}] {line}")
             print(f"[{path_name}] importing schema patterns from {schema_path}")
             for line in session.eval(
                 build_import_command(schema_path, path_config),
@@ -114,6 +116,16 @@ def _resolve_machine_name(parser: argparse.ArgumentParser, repo_root: Path, requ
         return machines[0]
     parser.error(f"Specify --machine. Available machines: {', '.join(machines) if machines else 'none'}")
     raise AssertionError
+
+
+def _build_launch_startup_command(path_config) -> str:
+    return "; ".join(
+        [
+            f"addpath(genpath({matlab_string(str(path_config.repo_matlab_path))}))",
+            f"cd({matlab_string(str(path_config.directory))})",
+            "run('launch.m')",
+        ]
+    )
 
 
 def _resolve_config_name(

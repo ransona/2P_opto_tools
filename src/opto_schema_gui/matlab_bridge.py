@@ -99,16 +99,21 @@ class MatlabSession:
         self._reader_thread: threading.Thread | None = None
         self.simulated = False
         self.current_directory = str(config.directory)
+        self.started_with_launch = False
 
-    def start(self) -> None:
+    def start(self, startup_command: str | None = None) -> None:
         if self.process is not None or self.simulated:
             return
 
         if self.config.simulation_mode == "always":
             self._start_simulated()
+            self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
             return
 
         command = [self.config.matlab_executable, *self.config.matlab_flags]
+        if startup_command:
+            startup_compact = " ".join(line.strip() for line in startup_command.splitlines() if line.strip())
+            command.extend(["-r", startup_compact])
         try:
             self.process = subprocess.Popen(
                 command,
@@ -121,6 +126,7 @@ class MatlabSession:
         except FileNotFoundError as exc:
             if self.config.simulation_mode == "auto":
                 self._start_simulated()
+                self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
                 return
             raise MatlabSessionError(
                 f"Could not launch MATLAB for path '{self.config.name}'. "
@@ -130,6 +136,9 @@ class MatlabSession:
         assert self.process.stdout is not None
         self._reader_thread = threading.Thread(target=self._pump_output, daemon=True)
         self._reader_thread.start()
+        self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
+        if startup_command:
+            return
         self.eval(
             f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}));",
             timeout_s=self.config.startup_timeout_s,

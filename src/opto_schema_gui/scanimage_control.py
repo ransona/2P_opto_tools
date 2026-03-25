@@ -40,6 +40,7 @@ from .matlab_bridge import (
     list_config_names,
     list_machine_names,
     load_machine_config,
+    matlab_string,
 )
 
 
@@ -415,9 +416,11 @@ class ScanImageControlWidget(QWidget):
         with runtime.lock:
             if runtime.session is None:
                 runtime.session = MatlabSession(runtime.path_config)
-                runtime.session.start()
+                startup_command = self._build_launch_startup_command(runtime.path_config)
+                runtime.session.start(startup_command=startup_command)
                 runtime.status = "simulated" if runtime.session.simulated else "matlab"
                 self.signals.path_status.emit(path_name, runtime.status)
+                runtime.launched = runtime.session.started_with_launch
                 if runtime.session.simulated:
                     self.signals.log_message.emit(f"[{path_name}] simulated MATLAB session started")
                 else:
@@ -425,6 +428,15 @@ class ScanImageControlWidget(QWidget):
         if runtime.path_config.listener_auto_start:
             self._start_listener(path_name)
         return runtime
+
+    def _build_launch_startup_command(self, path_config: PathConfig) -> str:
+        return "; ".join(
+            [
+                f"addpath(genpath({matlab_string(str(path_config.repo_matlab_path))}))",
+                f"cd({matlab_string(str(path_config.directory))})",
+                "run('launch.m')",
+            ]
+        )
 
     def _ensure_path_launched(self, path_name: str) -> PathRuntime:
         runtime = self._ensure_session(path_name)
