@@ -354,13 +354,22 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
     )
 
 
-def build_import_command(schema_path: str | Path, path_config: PathConfig) -> str:
+def build_import_command(
+    schema_path: str | Path,
+    path_config: PathConfig,
+    pattern_names: list[str] | None = None,
+) -> str:
     schema_expr = matlab_string(str(Path(schema_path).resolve()))
     point_size_expr = f"[{path_config.point_size_xy[0]} {path_config.point_size_xy[1]}]"
+    pattern_names_expr = "strings(0, 1)"
+    if pattern_names:
+        quoted = "; ".join(matlab_string(name) for name in pattern_names)
+        pattern_names_expr = f"string([{quoted}])"
     return "\n".join(
         [
             build_global_preamble(path_config),
             f"importedPatternNames = opto.scanimage.importSchemaPatterns({path_config.hsi_variable}, {schema_expr}, ...",
+            f"    PatternNames={pattern_names_expr}, ...",
             f"    ClearExisting={'true' if path_config.clear_existing else 'false'}, ...",
             f"    StimulusFunction={matlab_string(path_config.stimulus_function)}, ...",
             f"    PointSizeXY={point_size_expr}, ...",

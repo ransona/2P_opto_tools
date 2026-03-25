@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import configparser
+import json
 import socket
 import threading
 import time
@@ -26,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .legacy_matlab_codec import build_ready_message, extract_legacy_command
+from .io import load_schema
 from .matlab_bridge import (
     ExperimentContext,
     MachineConfig,
@@ -150,6 +153,7 @@ class ScanImageControlWidget(QWidget):
         self._current_machine_name = ""
         self._current_config_name = ""
         self._last_exp_id = ""
+        self.save_root, self.schema_root = self._load_path_roots()
         self._build_ui()
         self.reload_discovery()
 
@@ -218,6 +222,19 @@ class ScanImageControlWidget(QWidget):
         self._ignore_combo_changes = False
         self._populate_configs_for_machine(self.machine_combo.currentText())
         self.signals.log_message.emit(f"Discovered machines: {', '.join(machine_names) if machine_names else 'none'}")
+
+    def _load_path_roots(self) -> tuple[Path, Path]:
+        config = configparser.ConfigParser()
+        config.read(self.repo_root / "config.ini")
+        raw_save_root = config.get("paths", "save_root", fallback="./data")
+        raw_schema_root = config.get("paths", "schema_root", fallback="./data")
+        save_root = Path(raw_save_root).expanduser()
+        if not save_root.is_absolute():
+            save_root = (self.repo_root / save_root).resolve()
+        schema_root = Path(raw_schema_root).expanduser()
+        if not schema_root.is_absolute():
+            schema_root = (self.repo_root / schema_root).resolve()
+        return save_root, schema_root
 
     def shutdown(self) -> None:
         for path_name in list(self._runtimes):
@@ -530,11 +547,14 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
 
     def _import_patterns(self, path_name: str, schema_path: Path) -> None:
+        self._import_pattern_subset(path_name, schema_path, None)
+
+    def _import_pattern_subset(self, path_name: str, schema_path: Path, pattern_names: list[str] | None) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                build_import_command(schema_path, runtime.path_config),
+                build_import_command(schema_path, runtime.path_config, pattern_names=pattern_names),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "patterns imported"
@@ -590,6 +610,11 @@ class ScanImageControlWidget(QWidget):
         widgets.listener_label.setText(self._listener_summary(path_name))
 
     def _handle_udp_message(self, path_name: str, payload: bytes, address: tuple) -> None:
+        json_message = self._extract_json_command(payload)
+        if json_message is not None:
+            self._handle_json_udp_message(path_name, json_message, address)
+            return
+
         legacy = extract_legacy_command(payload)
         if legacy is not None:
             self._handle_legacy_udp_message(path_name, legacy, address)
@@ -630,6 +655,151 @@ class ScanImageControlWidget(QWidget):
             command, exp_id = stripped.split(None, 1)
             return command.strip().lower(), exp_id.strip() or None
         return stripped.lower(), None
+
+    def _extract_json_command(self, payload: bytes) -> dict[str, object] | None:
+        try:
+            decoded = payload.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return None
+        if not decoded.startswith("{"):
+            return None
+        try:
+            parsed = json.loads(decoded)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return parsed
+
+    def _handle_json_udp_message(self, path_name: str, message: dict[str, object], address: tuple[str, int]) -> None:
+        action = str(message.get("action", "")).strip()
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] json action={action} payload={message}"
+        self.signals.path_udp_log.emit(path_name, udp_line)
+        self.signals.log_message.emit(udp_line)
+
+        if action != "prep_patterns":
+            self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
+            return
+
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if not photostim_path:
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "prep_patterns",
+                    "status": "error",
+                    "error": "No photostim path configured",
+                },
+            )
+            return
+
+        schema_name = str(message.get("schema_name", "")).strip()
+        exp_id = str(message.get("expID", "")).strip()
+        seq_num_raw = message.get("seq_num")
+        if not schema_name or not exp_id or seq_num_raw is None:
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "prep_patterns",
+                    "status": "error",
+                    "schema_name": schema_name,
+                    "expID": exp_id,
+                    "seq_num": seq_num_raw,
+                    "error": "prep_patterns requires schema_name, expID, and seq_num",
+                },
+            )
+            return
+
+        try:
+            seq_num = int(seq_num_raw)
+            schema_path = self._resolve_schema_path(schema_name, exp_id)
+            project = load_schema(schema_path)
+            sequence_name, pattern_names = self._patterns_for_sequence(project, seq_num)
+        except Exception as exc:
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "prep_patterns",
+                    "status": "error",
+                    "schema_name": schema_name,
+                    "expID": exp_id,
+                    "seq_num": seq_num_raw,
+                    "error": str(exc),
+                },
+            )
+            return
+
+        def worker() -> None:
+            ok = self._run_action(
+                photostim_path,
+                "json prep_patterns",
+                lambda name: self._import_pattern_subset(name, schema_path, pattern_names),
+            )
+            status = "ready" if ok else "error"
+            payload = {
+                "action": "prep_patterns",
+                "status": status,
+                "schema_name": schema_name,
+                "expID": exp_id,
+                "seq_num": seq_num,
+                "sequence_name": sequence_name,
+                "pattern_names": pattern_names,
+            }
+            if not ok:
+                payload["error"] = "prep_patterns failed"
+            self._send_json_reply(path_name, address, payload)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _send_json_reply(self, path_name: str, address: tuple[str, int], payload: dict[str, object]) -> None:
+        runtime = self._runtimes.get(path_name)
+        if runtime is None or runtime.udp_listener is None:
+            self.signals.log_message.emit(f"[{path_name}] could not send JSON reply; listener is not running")
+            return
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        runtime.udp_listener.send(encoded, address)
+        line = f"[{path_name} udp {address[0]}:{address[1]}] send json {payload}"
+        self.signals.path_udp_log.emit(path_name, line)
+        self.signals.log_message.emit(line)
+
+    def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:
+        animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
+        if not animal_id:
+            raise FileNotFoundError(f"Could not derive animalID from expID '{exp_id}'")
+
+        schema_dir = self.schema_root / animal_id / schema_name
+        candidates = [
+            schema_dir / "schema.yaml",
+            schema_dir / "schema.yml",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.resolve()
+
+        raise FileNotFoundError(
+            f"Schema not found for schema_name '{schema_name}' under '{self.schema_root / animal_id}'"
+        )
+
+    def _patterns_for_sequence(self, project, seq_num: int) -> tuple[str, list[str]]:
+        sequence_names = list(project.sequences.keys())
+        if not sequence_names:
+            raise ValueError("Schema does not contain any sequences")
+        if seq_num < 1 or seq_num > len(sequence_names):
+            raise IndexError(f"seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)")
+        sequence_name = sequence_names[seq_num - 1]
+        sequence = project.sequences[sequence_name]
+        pattern_names: list[str] = []
+        seen: set[str] = set()
+        for step in sequence.steps:
+            if step.pattern not in seen:
+                seen.add(step.pattern)
+                pattern_names.append(step.pattern)
+        if not pattern_names:
+            raise ValueError(f"Sequence '{sequence_name}' does not reference any patterns")
+        return sequence_name, pattern_names
 
     def _handle_legacy_udp_message(self, path_name: str, message: dict[str, object], address: tuple[str, int]) -> None:
         message_type = str(message.get("messageType", ""))
