@@ -181,6 +181,10 @@ def _deserialize_cell(reader: _Reader, tag: int) -> list[Any]:
         chars = _deserialize_value(reader)
         lengths = _deserialize_value(reader)
         empties = _deserialize_value(reader)
+        if isinstance(lengths, (int, float)):
+            lengths = [lengths]
+        if isinstance(empties, bool):
+            empties = [empties]
         if not isinstance(chars, str) or not isinstance(lengths, list) or not isinstance(empties, list):
             raise MatlabCodecError("Unsupported cell-string payload")
         items: list[str] = []

@@ -75,7 +75,7 @@ class PathTabWidgets:
 
 
 class UdpListener(threading.Thread):
-    def __init__(self, path_name: str, host: str, port: int, signals: ScanImageSignals):
+    def __init__(self, path_name: str, host: str, port: int, signals: _ControlSignals):
         super().__init__(daemon=True)
         self.path_name = path_name
         self.host = host
@@ -99,9 +99,8 @@ class UdpListener(threading.Thread):
                 except OSError:
                     break
                 udp_line = f"[{self.path_name} udp {address[0]}:{address[1]}] recv {payload[:200]!r}"
-                self.signals.path_udp_log.emit(self.path_name, udp_line)
                 self.signals.log_message.emit(udp_line)
-                self.signals.parent().udp_message.emit(self.path_name, payload, address)  # type: ignore[attr-defined]
+                self.signals.udp_message.emit(self.path_name, payload, address)
         finally:
             try:
                 sock.close()
@@ -590,7 +589,7 @@ class ScanImageControlWidget(QWidget):
             return
 
         message = payload.decode("utf-8", errors="replace").strip()
-        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] text {message}"
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] text command={message}"
         self.signals.path_udp_log.emit(path_name, udp_line)
         self.signals.log_message.emit(udp_line)
         if not message:
@@ -626,7 +625,16 @@ class ScanImageControlWidget(QWidget):
         return stripped.lower(), None
 
     def _handle_legacy_udp_message(self, path_name: str, message: dict[str, object], address: tuple[str, int]) -> None:
-        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] legacy {message}"
+        message_type = str(message.get("messageType", ""))
+        command = str(message.get("messageData", ""))
+        meta = message.get("meta")
+        confirm_id = message.get("confirmID")
+        details = [f"type={message_type}", f"command={command}"]
+        if meta not in (None, [], ""):
+            details.append(f"meta={meta}")
+        if confirm_id not in (None, ""):
+            details.append(f"confirmID={confirm_id}")
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] legacy " + " ".join(details)
         self.signals.path_udp_log.emit(path_name, udp_line)
         self.signals.log_message.emit(udp_line)
         if str(message.get("messageType", "")) != "COM":
