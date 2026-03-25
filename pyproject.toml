@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 opto-schema-gui = "opto_schema_gui.app:main"
+opto-scanimage-bridge = "opto_schema_gui.scanimage_bridge:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

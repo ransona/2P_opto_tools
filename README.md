@@ -42,6 +42,76 @@ If you prefer a console entry point:
 opto-schema-gui
 ```
 
+## ScanImage bridge
+
+There is now a Python CLI for launching MATLAB sessions and asking them to import schema `patterns` into ScanImage photostimulation stimulus groups.
+
+Config:
+
+- [scanimage_bridge.ini](/home/adamranson/code/2P_opto_tools/scanimage_bridge.ini)
+
+Run:
+
+```bash
+python run_scanimage_bridge.py /path/to/schema.yaml
+```
+
+Or, if installed as a console script:
+
+```bash
+opto-scanimage-bridge /path/to/schema.yaml
+```
+
+The bridge:
+
+- launches one MATLAB session per `[session:<name>]` block
+- adds this repo's MATLAB helper path
+- runs any configured startup commands for that session
+- calls `opto.scanimage.importSchemaPatterns(...)`
+
+Important:
+
+- You must set `matlab_executable` to a valid MATLAB binary on your machine if it is not already on `PATH`.
+- The current implementation imports `patterns` only. Sequence support comes later.
+- `frequency_hz` is not yet mapped to ScanImage pulse timing; the initial import path uses continuous dwell stimuli and warns accordingly.
+
+## ScanImage control tab
+
+The main PyQt GUI now includes a `ScanImage Control` tab.
+
+It can:
+
+- launch one MATLAB session per configured scan path
+- send configured MATLAB commands to start and stop ScanImage
+- import the currently saved schema `patterns` into ScanImage stimulus groups
+- start `Focus`
+- start `Acquire`
+- stop the current ScanImage acquisition
+- listen for UDP messages and map them to ScanImage actions
+- show a live debug log of GUI actions, UDP packets, and MATLAB responses
+
+UDP trigger messages currently supported:
+
+- `acquire`
+- `start_acquisition`
+- `grab`
+- `focus`
+- `stop`
+- `abort`
+- `import`
+- `start_scanimage`
+- `stop_scanimage`
+
+All ScanImage command strings are configured in [scanimage_bridge.ini](/home/adamranson/code/2P_opto_tools/scanimage_bridge.ini), including:
+
+- `launch_scanimage_command`
+- `shutdown_scanimage_command`
+- `focus_command`
+- `acquire_command`
+- `stop_command`
+
+This keeps the GUI logic stable while allowing rig-specific MATLAB commands to vary per microscope setup.
+
 ### File format
 
 The app writes one YAML file:

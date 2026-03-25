@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 
 from .io import load_schema, save_schema
 from .models import CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
+from .scanimage_control import ScanImageControlWidget
 
 
 def _stable_color(key: str) -> QColor:
@@ -679,6 +680,7 @@ class MainWindow(QMainWindow):
         self.preview = TimelinePreview(self.project)
         self.pattern_editor = PatternEditor(self.project, self.mark_pattern_dirty, self.refresh_lists)
         self.sequence_editor = SequenceEditor(self.project, self.preview, self.mark_sequence_dirty, self.refresh_lists)
+        self.scanimage_control = ScanImageControlWidget(self.ensure_schema_path_for_external_use)
 
         self.pattern_list = QListWidget()
         self.sequence_list = QListWidget()
@@ -750,6 +752,7 @@ class MainWindow(QMainWindow):
         self.editor_tabs = QTabWidget()
         self.editor_tabs.addTab(self.pattern_editor, "Pattern Editor")
         self.editor_tabs.addTab(self.sequence_editor, "Sequence Editor")
+        self.editor_tabs.addTab(self.scanimage_control, "ScanImage Control")
 
         splitter = QSplitter()
         splitter.addWidget(left)
@@ -1010,7 +1013,7 @@ class MainWindow(QMainWindow):
         self.sequence_dirty = False
         self.refresh_lists()
 
-    def save_schema_dialog(self) -> None:
+    def save_schema_dialog(self) -> bool:
         default_path = self.schema_save_path()
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -1019,7 +1022,7 @@ class MainWindow(QMainWindow):
             "YAML (*.yaml *.yml)",
         )
         if not path:
-            return
+            return False
         target = Path(path)
         if target.exists():
             choice = QMessageBox.question(
@@ -1030,11 +1033,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if choice != QMessageBox.StandardButton.Yes:
-                return
+                return False
         if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
-            return
+            return False
         if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
-            return
+            return False
         target.parent.mkdir(parents=True, exist_ok=True)
         save_schema(target, self.project)
         self.schema_file_path = str(target)
@@ -1042,6 +1045,7 @@ class MainWindow(QMainWindow):
         self.sequence_dirty = False
         self.update_save_path_label()
         self.refresh_lists()
+        return True
 
     def _save_schema_to_default(self, force: bool = False) -> bool:
         if not force and not (self.pattern_dirty or self.sequence_dirty):
@@ -1058,6 +1062,23 @@ class MainWindow(QMainWindow):
         self.sequence_dirty = False
         self.refresh_lists()
         return True
+
+    def ensure_schema_path_for_external_use(self) -> Path | None:
+        if self.pattern_dirty or self.sequence_dirty or not self.schema_file_path:
+            choice = QMessageBox.question(
+                self,
+                "Save schema",
+                "External ScanImage commands need a saved schema file. Save the schema now?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if choice != QMessageBox.StandardButton.Save:
+                return None
+            if not self.save_schema_dialog():
+                return None
+        if not self.schema_file_path:
+            return None
+        return Path(self.schema_file_path)
 
     def _resolve_dirty_switch(
         self,
@@ -1099,6 +1120,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not (self.pattern_dirty or self.sequence_dirty):
+            self.scanimage_control.shutdown()
             event.accept()
             return
         choice = QMessageBox.question(
@@ -1117,6 +1139,7 @@ class MainWindow(QMainWindow):
             if not self._save_schema_to_default(force=False):
                 event.ignore()
                 return
+        self.scanimage_control.shutdown()
         event.accept()
 
 
