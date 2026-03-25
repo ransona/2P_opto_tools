@@ -54,6 +54,28 @@ class ScanImageSignals(QObject):
 
 
 @dataclass
+class PreparedPhotostimState:
+    schema_path: Path | None = None
+    schema_name: str = ""
+    exp_id: str = ""
+    prepared_seq_nums: list[int] = field(default_factory=list)
+    prepared_sequence_names: list[str] = field(default_factory=list)
+    imported_pattern_names: list[str] = field(default_factory=list)
+    pattern_to_schema_index: dict[str, int] = field(default_factory=dict)
+    pattern_to_stimulus_group: dict[str, int] = field(default_factory=dict)
+
+    def reset(self) -> None:
+        self.schema_path = None
+        self.schema_name = ""
+        self.exp_id = ""
+        self.prepared_seq_nums = []
+        self.prepared_sequence_names = []
+        self.imported_pattern_names = []
+        self.pattern_to_schema_index = {}
+        self.pattern_to_stimulus_group = {}
+
+
+@dataclass
 class PathRuntime:
     path_config: PathConfig
     session: MatlabSession | None = None
@@ -61,6 +83,7 @@ class PathRuntime:
     status: str = "stopped"
     launched: bool = False
     last_context: ExperimentContext | None = None
+    prepared_photostim: PreparedPhotostimState = field(default_factory=PreparedPhotostimState)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -486,6 +509,7 @@ class ScanImageControlWidget(QWidget):
             runtime.status = "stopped"
             runtime.launched = False
             runtime.last_context = None
+            runtime.prepared_photostim.reset()
             self.signals.path_status.emit(path_name, runtime.status)
             self.signals.log_message.emit(f"[{path_name}] MATLAB path stopped")
 
@@ -716,7 +740,26 @@ class ScanImageControlWidget(QWidget):
             seq_num = int(seq_num_raw)
             schema_path = self._resolve_schema_path(schema_name, exp_id)
             project = load_schema(schema_path)
-            sequence_name, pattern_names = self._patterns_for_sequence(project, seq_num)
+            runtime = self._runtimes[photostim_path]
+            prep_state = runtime.prepared_photostim
+            if (
+                prep_state.schema_path is None
+                or prep_state.schema_path != schema_path
+                or prep_state.exp_id != exp_id
+                or prep_state.schema_name != schema_name
+            ):
+                prep_state.reset()
+                prep_state.schema_path = schema_path
+                prep_state.schema_name = schema_name
+                prep_state.exp_id = exp_id
+
+            if seq_num not in prep_state.prepared_seq_nums:
+                prep_state.prepared_seq_nums.append(seq_num)
+
+            prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
+                project,
+                prep_state.prepared_seq_nums,
+            )
         except Exception as exc:
             self._send_json_reply(
                 path_name,
@@ -738,6 +781,8 @@ class ScanImageControlWidget(QWidget):
                 "json prep_patterns",
                 lambda name: self._import_pattern_subset(name, schema_path, pattern_names),
             )
+            runtime = self._runtimes[photostim_path]
+            prep_state = runtime.prepared_photostim
             status = "ready" if ok else "error"
             payload = {
                 "action": "prep_patterns",
@@ -745,9 +790,30 @@ class ScanImageControlWidget(QWidget):
                 "schema_name": schema_name,
                 "expID": exp_id,
                 "seq_num": seq_num,
-                "sequence_name": sequence_name,
+                "prepared_seq_nums": list(prep_state.prepared_seq_nums),
+                "prepared_sequence_names": list(prepared_sequence_names),
                 "pattern_names": pattern_names,
+                "stimulus_groups": [],
             }
+            if ok:
+                prep_state.prepared_sequence_names = list(prepared_sequence_names)
+                prep_state.imported_pattern_names = list(pattern_names)
+                prep_state.pattern_to_schema_index = dict(pattern_to_schema_index)
+                prep_state.pattern_to_stimulus_group = {
+                    pattern_name: index + 1 for index, pattern_name in enumerate(pattern_names)
+                }
+                payload["stimulus_groups"] = [
+                    {
+                        "stimulus_group_num": prep_state.pattern_to_stimulus_group[pattern_name],
+                        "pattern_name": pattern_name,
+                        "pattern_num": prep_state.pattern_to_schema_index[pattern_name],
+                    }
+                    for pattern_name in pattern_names
+                ]
+                self.signals.log_message.emit(
+                    f"[{photostim_path}] prepared {len(pattern_names)} stimulus group(s) for "
+                    f"seq_num(s) {prep_state.prepared_seq_nums}"
+                )
             if not ok:
                 payload["error"] = "prep_patterns failed"
             self._send_json_reply(path_name, address, payload)
@@ -783,23 +849,40 @@ class ScanImageControlWidget(QWidget):
             f"Schema not found for schema_name '{schema_name}' under '{self.schema_root / animal_id}'"
         )
 
-    def _patterns_for_sequence(self, project, seq_num: int) -> tuple[str, list[str]]:
+    def _patterns_for_sequences(
+        self,
+        project,
+        seq_nums: list[int],
+    ) -> tuple[list[str], list[str], dict[str, int]]:
         sequence_names = list(project.sequences.keys())
         if not sequence_names:
             raise ValueError("Schema does not contain any sequences")
-        if seq_num < 1 or seq_num > len(sequence_names):
-            raise IndexError(f"seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)")
-        sequence_name = sequence_names[seq_num - 1]
-        sequence = project.sequences[sequence_name]
-        pattern_names: list[str] = []
-        seen: set[str] = set()
-        for step in sequence.steps:
-            if step.pattern not in seen:
-                seen.add(step.pattern)
-                pattern_names.append(step.pattern)
+        if not seq_nums:
+            raise ValueError("No seq_num values have been prepared")
+
+        prepared_sequence_names: list[str] = []
+        used_pattern_names: set[str] = set()
+        for seq_num in seq_nums:
+            if seq_num < 1 or seq_num > len(sequence_names):
+                raise IndexError(f"seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)")
+            sequence_name = sequence_names[seq_num - 1]
+            prepared_sequence_names.append(sequence_name)
+            sequence = project.sequences[sequence_name]
+            for step in sequence.steps:
+                used_pattern_names.add(step.pattern)
+
+        if not used_pattern_names:
+            raise ValueError("Prepared sequence set does not reference any patterns")
+
+        schema_pattern_names = list(project.patterns.keys())
+        pattern_names = [name for name in schema_pattern_names if name in used_pattern_names]
         if not pattern_names:
-            raise ValueError(f"Sequence '{sequence_name}' does not reference any patterns")
-        return sequence_name, pattern_names
+            raise ValueError("Prepared sequence set does not reference any schema patterns")
+
+        pattern_to_schema_index = {
+            name: index + 1 for index, name in enumerate(schema_pattern_names) if name in used_pattern_names
+        }
+        return prepared_sequence_names, pattern_names, pattern_to_schema_index
 
     def _handle_legacy_udp_message(self, path_name: str, message: dict[str, object], address: tuple[str, int]) -> None:
         message_type = str(message.get("messageType", ""))
