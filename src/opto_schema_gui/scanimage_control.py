@@ -34,6 +34,7 @@ from .matlab_bridge import (
     ExperimentContext,
     autodetect_machine_name,
     build_experiment_context,
+    build_global_preamble,
     build_import_command,
     build_run_script_command,
     context_to_matlab_variables,
@@ -476,7 +477,12 @@ class ScanImageControlWidget(QWidget):
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                runtime.path_config.focus_command,
+                "\n".join(
+                    [
+                        build_global_preamble(runtime.path_config),
+                        runtime.path_config.focus_command,
+                    ]
+                ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "focus"

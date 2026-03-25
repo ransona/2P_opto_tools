@@ -514,6 +514,7 @@ def build_import_command(schema_path: str | Path, path_config: PathConfig) -> st
     point_size_expr = f"[{path_config.point_size_xy[0]} {path_config.point_size_xy[1]}]"
     return "\n".join(
         [
+            build_global_preamble(path_config),
             f"importedPatternNames = opto.scanimage.importSchemaPatterns({path_config.hsi_variable}, {schema_expr}, ...",
             f"    ClearExisting={'true' if path_config.clear_existing else 'false'}, ...",
             f"    StimulusFunction={matlab_string(path_config.stimulus_function)}, ...",
@@ -529,6 +530,13 @@ def build_import_command(schema_path: str | Path, path_config: PathConfig) -> st
             "disp(importedPatternNames);",
         ]
     )
+
+
+def build_global_preamble(path_config: PathConfig) -> str:
+    names = [path_config.hsi_variable, path_config.hsictl_variable]
+    if path_config.motor_data_variable:
+        names.append(path_config.motor_data_variable)
+    return "global " + " ".join(dict.fromkeys(name for name in names if name)) + ";"
 
 
 def build_run_script_command(
