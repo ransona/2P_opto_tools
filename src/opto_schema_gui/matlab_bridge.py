@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import io
 import ntpath
 import os
 import queue
@@ -14,6 +15,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+try:
+    import matlab.engine as matlab_engine
+except ModuleNotFoundError:
+    matlab_engine = None
 
 
 DEFAULT_CONFIGS_ROOT = Path("configs")
@@ -95,6 +101,7 @@ class MatlabSessionError(RuntimeError):
 class MatlabSession:
     def __init__(self, config: PathConfig):
         self.config = config
+        self.engine = None
         self.process: subprocess.Popen[str] | None = None
         self._output_queue: queue.Queue[str] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
@@ -104,13 +111,36 @@ class MatlabSession:
         self.command_dir = self.config.directory / ".opto_matlab_bridge"
 
     def start(self, startup_command: str | None = None) -> None:
-        if self.process is not None or self.simulated:
+        if self.engine is not None or self.process is not None or self.simulated:
             return
 
         if self.config.simulation_mode == "always":
             self._start_simulated()
             self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
             return
+
+        if matlab_engine is not None:
+            try:
+                flags = " ".join(self.config.matlab_flags).strip()
+                self.engine = matlab_engine.start_matlab(flags)
+                self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
+                if startup_command:
+                    self.eval(startup_command, timeout_s=self.config.startup_timeout_s)
+                else:
+                    self.eval(
+                        f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}));",
+                        timeout_s=self.config.startup_timeout_s,
+                    )
+                return
+            except Exception as exc:
+                if self.config.simulation_mode == "auto":
+                    self.engine = None
+                    self._start_simulated()
+                    self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
+                    return
+                raise MatlabSessionError(
+                    f"Could not start MATLAB Engine for path '{self.config.name}': {exc}"
+                ) from exc
 
         command = [self.config.matlab_executable, *self.config.matlab_flags]
         if startup_command:
@@ -150,6 +180,12 @@ class MatlabSession:
         if self.simulated:
             self.simulated = False
             return
+        if self.engine is not None:
+            try:
+                self.engine.quit()
+            finally:
+                self.engine = None
+            return
         if self.process is None:
             return
         if self.started_with_launch:
@@ -177,6 +213,8 @@ class MatlabSession:
     def eval(self, command: str, timeout_s: float = 30.0) -> list[str]:
         if self.simulated:
             return self._simulate_eval(command)
+        if self.engine is not None:
+            return self._eval_via_engine(command, timeout_s)
         if self.process is None:
             raise MatlabSessionError(f"MATLAB session '{self.config.name}' is not running.")
         if self.started_with_launch:
@@ -225,6 +263,32 @@ class MatlabSession:
                 return lines
             lines.append(stripped)
 
+    def _eval_via_engine(self, command: str, timeout_s: float) -> list[str]:
+        assert self.engine is not None
+        output_buffer = io.StringIO()
+        error_holder: list[BaseException] = []
+        done = threading.Event()
+
+        def worker() -> None:
+            try:
+                self.engine.eval(command, nargout=0, stdout=output_buffer, stderr=output_buffer)
+            except BaseException as exc:
+                error_holder.append(exc)
+            finally:
+                done.set()
+
+        threading.Thread(target=worker, daemon=True).start()
+        if not done.wait(timeout_s):
+            raise MatlabSessionError(
+                f"Timed out waiting for MATLAB path '{self.config.name}' while executing command."
+            )
+        if error_holder:
+            raise MatlabSessionError(
+                f"MATLAB command failed in path '{self.config.name}':\n{error_holder[0]}"
+            )
+        text = output_buffer.getvalue()
+        return [line for line in text.splitlines() if line.strip()]
+
     def _eval_via_command_files(self, command: str, timeout_s: float) -> list[str]:
         self.command_dir.mkdir(parents=True, exist_ok=True)
         command_id = uuid.uuid4().hex
@@ -258,8 +322,6 @@ class MatlabSession:
                 raise MatlabSessionError(
                     f"MATLAB command returned malformed response in path '{self.config.name}': {status}"
                 )
-            if self.process.poll() is not None:
-                raise MatlabSessionError(f"MATLAB path '{self.config.name}' exited before completing a command.")
             time.sleep(0.1)
         raise MatlabSessionError(
             f"Timed out waiting for MATLAB path '{self.config.name}' while executing command."
