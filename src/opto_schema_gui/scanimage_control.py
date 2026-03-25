@@ -7,9 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
     QComboBox,
     QFormLayout,
     QGridLayout,
@@ -18,20 +17,20 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .legacy_matlab_codec import build_ready_message, extract_legacy_command
 from .matlab_bridge import (
-    MatlabSession,
-    MatlabSessionError,
-    MachineConfig,
-    PathConfig,
     ExperimentContext,
+    MachineConfig,
+    MatlabSession,
+    PathConfig,
     autodetect_machine_name,
     build_experiment_context,
     build_global_preamble,
@@ -48,8 +47,7 @@ from .matlab_bridge import (
 class ScanImageSignals(QObject):
     log_message = pyqtSignal(str)
     path_status = pyqtSignal(str, str)
-    udp_message = pyqtSignal(str, bytes, tuple)
-    refresh_listener_info = pyqtSignal()
+    path_udp_log = pyqtSignal(str, str)
 
 
 @dataclass
@@ -61,6 +59,21 @@ class PathRuntime:
     launched: bool = False
     last_context: ExperimentContext | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+@dataclass
+class PathTabWidgets:
+    tab: QWidget
+    status_label: QLabel
+    listener_label: QLabel
+    udp_list: QListWidget
+    launch_btn: QPushButton
+    stop_btn: QPushButton
+    focus_btn: QPushButton
+    acquire_btn: QPushButton
+    stop_acq_btn: QPushButton
+    start_listener_btn: QPushButton
+    stop_listener_btn: QPushButton
 
 
 class UdpListener(threading.Thread):
@@ -87,7 +100,12 @@ class UdpListener(threading.Thread):
                     continue
                 except OSError:
                     break
-                self.signals.udp_message.emit(self.path_name, payload, address)
+                self.signals.path_udp_log.emit(
+                    self.path_name,
+                    f"recv {address[0]}:{address[1]} {payload[:200]!r}",
+                )
+                self.signals.log_message.emit(f"[{self.path_name}] UDP packet from {address[0]}:{address[1]}")
+                self.signals.parent().udp_message.emit(self.path_name, payload, address)  # type: ignore[attr-defined]
         finally:
             try:
                 sock.close()
@@ -112,22 +130,23 @@ class UdpListener(threading.Thread):
             pass
 
 
+class _ControlSignals(ScanImageSignals):
+    udp_message = pyqtSignal(str, bytes, tuple)
+
+
 class ScanImageControlWidget(QWidget):
-    def __init__(
-        self,
-        schema_path_provider: Callable[[], Path | None],
-        parent: QWidget | None = None,
-    ):
+    def __init__(self, schema_path_provider: Callable[[], Path | None], parent: QWidget | None = None):
         super().__init__(parent)
         self.schema_path_provider = schema_path_provider
         self.repo_root = Path(__file__).resolve().parents[2]
-        self.signals = ScanImageSignals()
+        self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
         self.signals.path_status.connect(self._set_path_status)
+        self.signals.path_udp_log.connect(self._append_path_udp_log)
         self.signals.udp_message.connect(self._handle_udp_message)
-        self.signals.refresh_listener_info.connect(self._refresh_listener_info)
         self.machine_config: MachineConfig | None = None
         self._runtimes: dict[str, PathRuntime] = {}
+        self._path_tabs: dict[str, PathTabWidgets] = {}
         self._ignore_combo_changes = False
         self._current_machine_name = ""
         self._current_config_name = ""
@@ -141,76 +160,38 @@ class ScanImageControlWidget(QWidget):
         config_form = QFormLayout(config_box)
         self.machine_combo = QComboBox()
         self.config_combo = QComboBox()
-        self.reload_btn = QPushButton("Reload Configs")
-        self.photostim_label = QLabel("Photostim path: none")
-        self.photostim_label.setWordWrap(True)
-        config_row = QHBoxLayout()
-        config_row.addWidget(self.reload_btn)
-        config_row.addStretch(1)
-        config_form.addRow("Machine", self.machine_combo)
-        config_form.addRow("Config", self.config_combo)
-        config_form.addRow("Photostim path", self.photostim_label)
-        config_form.addRow("", config_row)
-        layout.addWidget(config_box)
-
-        run_box = QGroupBox("Config Actions")
-        run_layout = QGridLayout(run_box)
         self.exp_id_edit = QLineEdit("2014-01-01_01_TEST")
+        self.photostim_label = QLabel("none")
+        self.photostim_label.setWordWrap(True)
+        self.reload_btn = QPushButton("Reload Configs")
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
         self.import_patterns_btn = QPushButton("Import Patterns")
-        run_layout.addWidget(QLabel("Exp ID"), 0, 0)
-        run_layout.addWidget(self.exp_id_edit, 0, 1, 1, 2)
-        run_layout.addWidget(self.start_config_btn, 1, 0)
-        run_layout.addWidget(self.stop_config_btn, 1, 1)
-        run_layout.addWidget(self.import_patterns_btn, 1, 2)
-        layout.addWidget(run_box)
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.reload_btn)
+        button_row.addWidget(self.start_config_btn)
+        button_row.addWidget(self.stop_config_btn)
+        button_row.addWidget(self.import_patterns_btn)
+        button_row.addStretch(1)
+        config_form.addRow("Machine", self.machine_combo)
+        config_form.addRow("Config", self.config_combo)
+        config_form.addRow("Exp ID", self.exp_id_edit)
+        config_form.addRow("Photostim path", self.photostim_label)
+        config_form.addRow("", button_row)
+        layout.addWidget(config_box)
 
         paths_box = QGroupBox("Paths")
         paths_layout = QVBoxLayout(paths_box)
-        self.path_list = QListWidget()
-        self.path_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        paths_layout.addWidget(self.path_list)
-        path_buttons = QGridLayout()
-        self.launch_path_btn = QPushButton("Launch Path")
-        self.stop_path_btn = QPushButton("Stop Path")
-        self.focus_btn = QPushButton("Focus")
-        self.acquire_btn = QPushButton("Acquire")
-        self.stop_acq_btn = QPushButton("Stop Acquisition")
-        self.start_listener_btn = QPushButton("Start Listener")
-        self.stop_listener_btn = QPushButton("Stop Listener")
-        button_specs = [
-            (self.launch_path_btn, 0, 0),
-            (self.stop_path_btn, 0, 1),
-            (self.focus_btn, 1, 0),
-            (self.acquire_btn, 1, 1),
-            (self.stop_acq_btn, 2, 0),
-            (self.start_listener_btn, 2, 1),
-            (self.stop_listener_btn, 3, 0),
-        ]
-        for button, row, col in button_specs:
-            path_buttons.addWidget(button, row, col)
-        path_buttons.setColumnStretch(2, 1)
-        paths_layout.addLayout(path_buttons)
-        layout.addWidget(paths_box)
-
-        udp_box = QGroupBox("UDP")
-        udp_layout = QFormLayout(udp_box)
-        self.listener_info_label = QLabel("No paths configured")
-        self.listener_info_label.setWordWrap(True)
-        self.udp_help_label = QLabel(
-            "Each path has its own listener. Python handles legacy MATLAB-serialized COM/GOGO and COM/STOP packets and replies with READY."
-        )
-        self.udp_help_label.setWordWrap(True)
-        udp_layout.addRow("Listeners", self.listener_info_label)
-        udp_layout.addRow("", self.udp_help_label)
-        layout.addWidget(udp_box)
+        self.path_tabs = QTabWidget()
+        paths_layout.addWidget(self.path_tabs)
+        layout.addWidget(paths_box, 1)
 
         log_box = QGroupBox("Debug Log")
         log_layout = QVBoxLayout(log_box)
-        self.log_list = QListWidget()
+        self.log_text = QPlainTextEdit()
+        self.log_text.setReadOnly(True)
         self.clear_log_btn = QPushButton("Clear Log")
-        log_layout.addWidget(self.log_list)
+        log_layout.addWidget(self.log_text)
         clear_row = QHBoxLayout()
         clear_row.addStretch(1)
         clear_row.addWidget(self.clear_log_btn)
@@ -223,27 +204,18 @@ class ScanImageControlWidget(QWidget):
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
         self.import_patterns_btn.clicked.connect(self.import_patterns_for_photostim)
-        self.launch_path_btn.clicked.connect(lambda: self._run_for_selected("launch path", self._launch_path))
-        self.stop_path_btn.clicked.connect(lambda: self._run_for_selected("stop path", self._stop_path))
-        self.focus_btn.clicked.connect(lambda: self._run_for_selected("focus", self._focus_path))
-        self.acquire_btn.clicked.connect(lambda: self._run_for_selected("acquire", self._acquire_path_from_ui))
-        self.stop_acq_btn.clicked.connect(lambda: self._run_for_selected("stop acquisition", self._stop_acquisition))
-        self.start_listener_btn.clicked.connect(lambda: self._run_for_selected("start listener", self._start_listener))
-        self.stop_listener_btn.clicked.connect(lambda: self._run_for_selected("stop listener", self._stop_listener))
-        self.clear_log_btn.clicked.connect(self.log_list.clear)
+        self.clear_log_btn.clicked.connect(self.log_text.clear)
 
     def reload_discovery(self) -> None:
         machine_names = list_machine_names(self.repo_root)
         self._ignore_combo_changes = True
         self.machine_combo.clear()
         self.machine_combo.addItems(machine_names)
-
         desired_machine = self._current_machine_name or autodetect_machine_name(self.repo_root)
         if desired_machine and desired_machine in machine_names:
             self.machine_combo.setCurrentText(desired_machine)
         elif machine_names:
             self.machine_combo.setCurrentIndex(0)
-
         self._ignore_combo_changes = False
         self._populate_configs_for_machine(self.machine_combo.currentText())
         self.signals.log_message.emit(f"Discovered machines: {', '.join(machine_names) if machine_names else 'none'}")
@@ -304,9 +276,9 @@ class ScanImageControlWidget(QWidget):
         if not machine_name or not config_name:
             self.machine_config = None
             self._runtimes = {}
-            self.path_list.clear()
-            self.photostim_label.setText("Photostim path: none")
-            self.signals.refresh_listener_info.emit()
+            self._path_tabs = {}
+            self.path_tabs.clear()
+            self.photostim_label.setText("none")
             return
 
         try:
@@ -323,37 +295,91 @@ class ScanImageControlWidget(QWidget):
             path_name: PathRuntime(path_config=path_config)
             for path_name, path_config in machine_config.paths.items()
         }
-        self.path_list.clear()
-        for path_name in machine_config.launch_order:
-            item = QListWidgetItem()
-            item.setData(Qt.ItemDataRole.UserRole, path_name)
-            item.setSelected(True)
-            self.path_list.addItem(item)
-            self._set_path_status(path_name, "stopped")
-        photostim_text = machine_config.photostim_path or "none"
-        self.photostim_label.setText(f"Photostim path: {photostim_text}")
+        self._rebuild_path_tabs()
+        self.photostim_label.setText(machine_config.photostim_path or "none")
         self.signals.log_message.emit(
             f"Loaded {machine_name}/{config_name} with paths: {', '.join(machine_config.launch_order)}"
         )
-        self.signals.refresh_listener_info.emit()
 
-    def _selected_path_names(self) -> list[str]:
-        items = self.path_list.selectedItems()
-        if not items:
-            return list(self._runtimes)
-        return [item.data(Qt.ItemDataRole.UserRole) for item in items]
-
-    def _run_for_selected(self, label: str, fn: Callable[[str], None]) -> None:
-        path_names = self._selected_path_names()
-        if not path_names:
-            QMessageBox.warning(self, "No paths", "No ScanImage paths are configured.")
+    def _rebuild_path_tabs(self) -> None:
+        self.path_tabs.clear()
+        self._path_tabs = {}
+        if self.machine_config is None:
             return
-        for path_name in path_names:
-            threading.Thread(
-                target=self._run_action,
-                args=(path_name, label, fn),
-                daemon=True,
-            ).start()
+        for path_name in self.machine_config.launch_order:
+            self._add_path_tab(path_name)
+
+    def _add_path_tab(self, path_name: str) -> None:
+        runtime = self._runtimes[path_name]
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info_box = QGroupBox("Path")
+        info_form = QFormLayout(info_box)
+        status_label = QLabel("stopped")
+        listener_label = QLabel(self._listener_summary(path_name))
+        listener_label.setWordWrap(True)
+        info_form.addRow("Status", status_label)
+        info_form.addRow("UDP listener", listener_label)
+        layout.addWidget(info_box)
+
+        buttons_box = QGroupBox("Actions")
+        buttons_layout = QGridLayout(buttons_box)
+        launch_btn = QPushButton("Launch Path")
+        stop_btn = QPushButton("Stop Path")
+        focus_btn = QPushButton("Focus")
+        acquire_btn = QPushButton("Acquire")
+        stop_acq_btn = QPushButton("Stop Acquisition")
+        start_listener_btn = QPushButton("Start Listener")
+        stop_listener_btn = QPushButton("Stop Listener")
+        specs = [
+            (launch_btn, 0, 0),
+            (stop_btn, 0, 1),
+            (focus_btn, 1, 0),
+            (acquire_btn, 1, 1),
+            (stop_acq_btn, 2, 0),
+            (start_listener_btn, 2, 1),
+            (stop_listener_btn, 3, 0),
+        ]
+        for button, row, col in specs:
+            buttons_layout.addWidget(button, row, col)
+        layout.addWidget(buttons_box)
+
+        udp_box = QGroupBox("UDP Messages")
+        udp_layout = QVBoxLayout(udp_box)
+        udp_list = QListWidget()
+        udp_layout.addWidget(udp_list)
+        layout.addWidget(udp_box, 1)
+
+        widgets = PathTabWidgets(
+            tab=tab,
+            status_label=status_label,
+            listener_label=listener_label,
+            udp_list=udp_list,
+            launch_btn=launch_btn,
+            stop_btn=stop_btn,
+            focus_btn=focus_btn,
+            acquire_btn=acquire_btn,
+            stop_acq_btn=stop_acq_btn,
+            start_listener_btn=start_listener_btn,
+            stop_listener_btn=stop_listener_btn,
+        )
+        self._path_tabs[path_name] = widgets
+        self.path_tabs.addTab(tab, path_name)
+
+        launch_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "launch path", self._launch_path))
+        stop_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop path", self._stop_path))
+        focus_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "focus", self._focus_path))
+        acquire_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "acquire", self._acquire_path_from_ui))
+        stop_acq_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop acquisition", self._stop_acquisition))
+        start_listener_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "start listener", self._start_listener))
+        stop_listener_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop listener", self._stop_listener))
+
+        self._set_path_status(path_name, runtime.status)
+        self._refresh_path_listener_info(path_name)
+
+    def _spawn_action(self, path_name: str, label: str, fn: Callable[[str], None]) -> None:
+        threading.Thread(target=self._run_action, args=(path_name, label, fn), daemon=True).start()
 
     def _run_action(self, path_name: str, label: str, fn: Callable[[str], None]) -> bool:
         self.signals.log_message.emit(f"[{path_name}] {label}")
@@ -405,23 +431,18 @@ class ScanImageControlWidget(QWidget):
         if not self.machine_config.photostim_path:
             self.signals.log_message.emit("Pattern import skipped: no photostim path configured")
             return
-        photostim_path = self.machine_config.photostim_path
-        threading.Thread(
-            target=self._run_action,
-            args=(photostim_path, "import patterns", lambda name: self._import_patterns(name, schema_path)),
-            daemon=True,
-        ).start()
+        path_name = self.machine_config.photostim_path
+        self._spawn_action(path_name, "import patterns", lambda name: self._import_patterns(name, schema_path))
 
     def _ensure_session(self, path_name: str) -> PathRuntime:
         runtime = self._runtimes[path_name]
         with runtime.lock:
             if runtime.session is None:
                 runtime.session = MatlabSession(runtime.path_config)
-                startup_command = self._build_launch_startup_command(runtime.path_config)
-                runtime.session.start(startup_command=startup_command)
-                runtime.status = "simulated" if runtime.session.simulated else "matlab"
+                runtime.session.start(startup_command=self._build_launch_startup_command(runtime.path_config))
+                runtime.status = "simulated" if runtime.session.simulated else "ready"
+                runtime.launched = True
                 self.signals.path_status.emit(path_name, runtime.status)
-                runtime.launched = runtime.session.started_with_launch
                 if runtime.session.simulated:
                     self.signals.log_message.emit(f"[{path_name}] simulated MATLAB session started")
                 else:
@@ -436,28 +457,11 @@ class ScanImageControlWidget(QWidget):
                 f"addpath(genpath({matlab_string(str(path_config.repo_matlab_path))}))",
                 f"cd({matlab_string(str(path_config.directory))})",
                 "run('launch.m')",
-                f"opto.scanimage.startCommandServer({matlab_string(str(path_config.directory))})",
             ]
         )
 
-    def _ensure_path_launched(self, path_name: str) -> PathRuntime:
-        runtime = self._ensure_session(path_name)
-        with runtime.lock:
-            assert runtime.session is not None
-            if runtime.launched:
-                return runtime
-            lines = runtime.session.eval(
-                build_run_script_command(runtime.path_config, "launch.m"),
-                timeout_s=runtime.path_config.startup_timeout_s,
-            )
-            runtime.launched = True
-            runtime.status = "ready"
-            self.signals.path_status.emit(path_name, runtime.status)
-            self._emit_lines(path_name, lines)
-        return runtime
-
     def _launch_path(self, path_name: str) -> None:
-        self._ensure_path_launched(path_name)
+        self._ensure_session(path_name)
 
     def _stop_path(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
@@ -473,16 +477,11 @@ class ScanImageControlWidget(QWidget):
             self.signals.log_message.emit(f"[{path_name}] MATLAB path stopped")
 
     def _focus_path(self, path_name: str) -> None:
-        runtime = self._ensure_path_launched(path_name)
+        runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                "\n".join(
-                    [
-                        build_global_preamble(runtime.path_config),
-                        runtime.path_config.focus_command,
-                    ]
-                ),
+                "\n".join([build_global_preamble(runtime.path_config), runtime.path_config.focus_command]),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "focus"
@@ -499,7 +498,7 @@ class ScanImageControlWidget(QWidget):
         self._start_acquisition(path_name, exp_id)
 
     def _start_acquisition(self, path_name: str, exp_id: str) -> None:
-        runtime = self._ensure_path_launched(path_name)
+        runtime = self._ensure_session(path_name)
         context = build_experiment_context(runtime.path_config, exp_id)
         with runtime.lock:
             assert runtime.session is not None
@@ -517,7 +516,7 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
 
     def _stop_acquisition(self, path_name: str) -> None:
-        runtime = self._ensure_path_launched(path_name)
+        runtime = self._ensure_session(path_name)
         context_vars = (
             context_to_matlab_variables(runtime.last_context)
             if runtime.last_context is not None
@@ -534,7 +533,7 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
 
     def _import_patterns(self, path_name: str, schema_path: Path) -> None:
-        runtime = self._ensure_path_launched(path_name)
+        runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
@@ -555,15 +554,39 @@ class ScanImageControlWidget(QWidget):
                 self.signals.log_message.emit(f"[{path_name}] {cleaned}")
 
     def _append_log(self, message: str) -> None:
-        self.log_list.addItem(message)
-        self.log_list.scrollToBottom()
+        self.log_text.appendPlainText(message)
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def _set_path_status(self, path_name: str, status: str) -> None:
-        for index in range(self.path_list.count()):
-            item = self.path_list.item(index)
-            if item.data(Qt.ItemDataRole.UserRole) == path_name:
-                item.setText(f"{path_name} [{status}]")
-                break
+        runtime = self._runtimes.get(path_name)
+        if runtime is not None:
+            runtime.status = status
+        widgets = self._path_tabs.get(path_name)
+        if widgets is not None:
+            widgets.status_label.setText(status)
+            index = self.path_tabs.indexOf(widgets.tab)
+            if index >= 0:
+                self.path_tabs.setTabText(index, f"{path_name} [{status}]")
+
+    def _append_path_udp_log(self, path_name: str, message: str) -> None:
+        widgets = self._path_tabs.get(path_name)
+        if widgets is None:
+            return
+        widgets.udp_list.addItem(message)
+        widgets.udp_list.scrollToBottom()
+
+    def _listener_summary(self, path_name: str) -> str:
+        runtime = self._runtimes[path_name]
+        state = "on" if runtime.udp_listener is not None else "off"
+        cfg = runtime.path_config
+        return f"{cfg.listener_host}:{cfg.listener_port} [{state}]"
+
+    def _refresh_path_listener_info(self, path_name: str) -> None:
+        widgets = self._path_tabs.get(path_name)
+        if widgets is None:
+            return
+        widgets.listener_label.setText(self._listener_summary(path_name))
 
     def _handle_udp_message(self, path_name: str, payload: bytes, address: tuple) -> None:
         legacy = extract_legacy_command(payload)
@@ -572,7 +595,7 @@ class ScanImageControlWidget(QWidget):
             return
 
         message = payload.decode("utf-8", errors="replace").strip()
-        self.signals.log_message.emit(f"[{path_name} udp {address[0]}:{address[1]}] {message}")
+        self.signals.path_udp_log.emit(path_name, f"text {address[0]}:{address[1]} {message}")
         if not message:
             return
 
@@ -582,25 +605,13 @@ class ScanImageControlWidget(QWidget):
             if not exp_id:
                 self.signals.log_message.emit(f"[{path_name} udp] acquire ignored: no expID provided")
                 return
-            threading.Thread(
-                target=self._run_action,
-                args=(path_name, f"UDP {command}", lambda name: self._start_acquisition(name, exp_id)),
-                daemon=True,
-            ).start()
+            self._spawn_action(path_name, f"UDP {command}", lambda name: self._start_acquisition(name, exp_id))
             return
         if command == "focus":
-            threading.Thread(
-                target=self._run_action,
-                args=(path_name, "UDP focus", self._focus_path),
-                daemon=True,
-            ).start()
+            self._spawn_action(path_name, "UDP focus", self._focus_path)
             return
         if command in {"stop", "abort"}:
-            threading.Thread(
-                target=self._run_action,
-                args=(path_name, f"UDP {command}", self._stop_acquisition),
-                daemon=True,
-            ).start()
+            self._spawn_action(path_name, f"UDP {command}", self._stop_acquisition)
             return
         if command == "import":
             self.import_patterns_for_photostim()
@@ -617,13 +628,8 @@ class ScanImageControlWidget(QWidget):
             return command.strip().lower(), exp_id.strip() or None
         return stripped.lower(), None
 
-    def _handle_legacy_udp_message(
-        self,
-        path_name: str,
-        message: dict[str, object],
-        address: tuple[str, int],
-    ) -> None:
-        self.signals.log_message.emit(f"[{path_name} udp {address[0]}:{address[1]}] legacy {message}")
+    def _handle_legacy_udp_message(self, path_name: str, message: dict[str, object], address: tuple[str, int]) -> None:
+        self.signals.path_udp_log.emit(path_name, f"legacy {address[0]}:{address[1]} {message}")
         if str(message.get("messageType", "")) != "COM":
             self.signals.log_message.emit(f"[{path_name} udp] ignored legacy packet with unsupported messageType")
             return
@@ -645,8 +651,9 @@ class ScanImageControlWidget(QWidget):
                 reply_address = (cfg.reply_host, cfg.reply_port)
             if listener is not None:
                 listener.send(ready_payload, reply_address)
-            self.signals.log_message.emit(
-                f"[{path_name} udp {reply_address[0]}:{reply_address[1]}] sent legacy READY"
+            self.signals.path_udp_log.emit(
+                path_name,
+                f"send {reply_address[0]}:{reply_address[1]} legacy READY",
             )
 
         if command == "GOGO":
@@ -689,7 +696,7 @@ class ScanImageControlWidget(QWidget):
                 signals=self.signals,
             )
             runtime.udp_listener.start()
-        self.signals.refresh_listener_info.emit()
+        self._refresh_path_listener_info(path_name)
 
     def _stop_listener(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
@@ -698,16 +705,4 @@ class ScanImageControlWidget(QWidget):
                 return
             runtime.udp_listener.stop()
             runtime.udp_listener = None
-        self.signals.refresh_listener_info.emit()
-
-    def _refresh_listener_info(self) -> None:
-        if not self._runtimes:
-            self.listener_info_label.setText("No paths configured")
-            return
-        lines = []
-        for path_name in self.machine_config.launch_order if self.machine_config else self._runtimes.keys():
-            runtime = self._runtimes[path_name]
-            active = "on" if runtime.udp_listener is not None else "off"
-            cfg = runtime.path_config
-            lines.append(f"{path_name}: {cfg.listener_host}:{cfg.listener_port} [{active}]")
-        self.listener_info_label.setText("\n".join(lines))
+        self._refresh_path_listener_info(path_name)

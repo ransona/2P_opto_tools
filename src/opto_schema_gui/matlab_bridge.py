@@ -4,12 +4,8 @@ import configparser
 import io
 import ntpath
 import os
-import queue
 import socket
-import subprocess
 import threading
-import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,16 +98,12 @@ class MatlabSession:
     def __init__(self, config: PathConfig):
         self.config = config
         self.engine = None
-        self.process: subprocess.Popen[str] | None = None
-        self._output_queue: queue.Queue[str] = queue.Queue()
-        self._reader_thread: threading.Thread | None = None
         self.simulated = False
         self.current_directory = str(config.directory)
         self.started_with_launch = False
-        self.command_dir = self.config.directory / ".opto_matlab_bridge"
 
     def start(self, startup_command: str | None = None) -> None:
-        if self.engine is not None or self.process is not None or self.simulated:
+        if self.engine is not None or self.simulated:
             return
 
         if self.config.simulation_mode == "always":
@@ -119,57 +111,23 @@ class MatlabSession:
             self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
             return
 
-        if matlab_engine is not None:
-            try:
-                flags = " ".join(self.config.matlab_flags).strip()
-                self.engine = matlab_engine.start_matlab(flags)
-                self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-                if startup_command:
-                    self.eval(startup_command, timeout_s=self.config.startup_timeout_s)
-                else:
-                    self.eval(
-                        f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}));",
-                        timeout_s=self.config.startup_timeout_s,
-                    )
-                return
-            except Exception as exc:
-                if self.config.simulation_mode == "auto":
-                    self.engine = None
-                    self._start_simulated()
-                    self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-                    return
-                raise MatlabSessionError(
-                    f"Could not start MATLAB Engine for path '{self.config.name}': {exc}"
-                ) from exc
-
-        command = [self.config.matlab_executable, *self.config.matlab_flags]
-        if startup_command:
-            startup_compact = " ".join(line.strip() for line in startup_command.splitlines() if line.strip())
-            command.extend(["-r", startup_compact])
-        try:
-            self.process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-        except FileNotFoundError as exc:
-            if self.config.simulation_mode == "auto":
-                self._start_simulated()
-                self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-                return
+        if matlab_engine is None:
             raise MatlabSessionError(
-                f"Could not launch MATLAB for path '{self.config.name}'. "
-                f"Executable not found: {self.config.matlab_executable}"
+                "matlab.engine is not installed in this Python environment. "
+                "Install the MATLAB Engine for Python to run live ScanImage control."
+            )
+
+        try:
+            flags = " ".join(self.config.matlab_flags).strip()
+            self.engine = matlab_engine.start_matlab(flags)
+        except Exception as exc:
+            raise MatlabSessionError(
+                f"Could not start MATLAB Engine for path '{self.config.name}': {exc}"
             ) from exc
 
-        assert self.process.stdout is not None
-        self._reader_thread = threading.Thread(target=self._pump_output, daemon=True)
-        self._reader_thread.start()
         self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
         if startup_command:
+            self.eval(startup_command, timeout_s=self.config.startup_timeout_s)
             return
         self.eval(
             f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}));",
@@ -186,82 +144,13 @@ class MatlabSession:
             finally:
                 self.engine = None
             return
-        if self.process is None:
-            return
-        if self.started_with_launch:
-            try:
-                self.eval("exit", timeout_s=5)
-            except Exception:
-                pass
-        try:
-            if self.process is not None:
-                self.send_raw("exit\n")
-                self.process.wait(timeout=5)
-        except Exception:
-            self.process.kill()
-        finally:
-            self.process = None
-
-    def send_raw(self, text: str) -> None:
-        if self.simulated:
-            return
-        if self.process is None or self.process.stdin is None:
-            raise MatlabSessionError(f"MATLAB session '{self.config.name}' is not running.")
-        self.process.stdin.write(text)
-        self.process.stdin.flush()
 
     def eval(self, command: str, timeout_s: float = 30.0) -> list[str]:
         if self.simulated:
             return self._simulate_eval(command)
         if self.engine is not None:
             return self._eval_via_engine(command, timeout_s)
-        if self.process is None:
-            raise MatlabSessionError(f"MATLAB session '{self.config.name}' is not running.")
-        if self.started_with_launch:
-            return self._eval_via_command_files(command, timeout_s)
-
-        token = f"CODEX_{uuid.uuid4().hex}"
-        wrapped = "\n".join(
-            [
-                f"fprintf('{token}_BEGIN\\n');",
-                "try",
-                command,
-                f"fprintf('{token}_OK\\n');",
-                "catch ME",
-                f"fprintf(2, '{token}_ERR:%s\\n', getReport(ME, 'extended', 'hyperlinks', 'off'));",
-                "end",
-                f"fprintf('{token}_END\\n');",
-                "",
-            ]
-        )
-        self.send_raw(wrapped)
-
-        lines: list[str] = []
-        saw_begin = False
-        while True:
-            try:
-                line = self._output_queue.get(timeout=timeout_s)
-            except queue.Empty as exc:
-                raise MatlabSessionError(
-                    f"Timed out waiting for MATLAB path '{self.config.name}' while executing command."
-                ) from exc
-
-            stripped = line.rstrip("\n")
-            if stripped == f"{token}_BEGIN":
-                saw_begin = True
-                continue
-            if not saw_begin:
-                continue
-            if stripped == f"{token}_OK":
-                continue
-            if stripped.startswith(f"{token}_ERR:"):
-                raise MatlabSessionError(
-                    f"MATLAB command failed in path '{self.config.name}':\n"
-                    + stripped[len(f"{token}_ERR:") :]
-                )
-            if stripped == f"{token}_END":
-                return lines
-            lines.append(stripped)
+        raise MatlabSessionError(f"MATLAB session '{self.config.name}' is not running.")
 
     def _eval_via_engine(self, command: str, timeout_s: float) -> list[str]:
         assert self.engine is not None
@@ -288,50 +177,6 @@ class MatlabSession:
             )
         text = output_buffer.getvalue()
         return [line for line in text.splitlines() if line.strip()]
-
-    def _eval_via_command_files(self, command: str, timeout_s: float) -> list[str]:
-        self.command_dir.mkdir(parents=True, exist_ok=True)
-        command_id = uuid.uuid4().hex
-        request_path = self.command_dir / f"request_{command_id}.m"
-        result_path = self.command_dir / f"result_{command_id}.txt"
-        request_path.write_text(command, encoding="utf-8")
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if result_path.exists():
-                try:
-                    lines = result_path.read_text(encoding="utf-8").splitlines()
-                finally:
-                    try:
-                        result_path.unlink()
-                    except OSError:
-                        pass
-                    try:
-                        request_path.unlink()
-                    except OSError:
-                        pass
-                if not lines:
-                    return []
-                status = lines[0].strip()
-                payload = lines[1:]
-                if status == "STATUS:OK":
-                    return payload
-                if status == "STATUS:ERR":
-                    raise MatlabSessionError(
-                        f"MATLAB command failed in path '{self.config.name}':\n" + "\n".join(payload)
-                    )
-                raise MatlabSessionError(
-                    f"MATLAB command returned malformed response in path '{self.config.name}': {status}"
-                )
-            time.sleep(0.1)
-        raise MatlabSessionError(
-            f"Timed out waiting for MATLAB path '{self.config.name}' while executing command."
-        )
-
-    def _pump_output(self) -> None:
-        assert self.process is not None
-        assert self.process.stdout is not None
-        for line in self.process.stdout:
-            self._output_queue.put(line)
 
     def _start_simulated(self) -> None:
         self.simulated = True
