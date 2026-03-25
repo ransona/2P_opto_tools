@@ -435,6 +435,7 @@ class ScanImageControlWidget(QWidget):
                 f"addpath(genpath({matlab_string(str(path_config.repo_matlab_path))}))",
                 f"cd({matlab_string(str(path_config.directory))})",
                 "run('launch.m')",
+                f"opto.scanimage.startCommandServer({matlab_string(str(path_config.directory))})",
             ]
         )
 

@@ -124,6 +124,7 @@ def _build_launch_startup_command(path_config) -> str:
             f"addpath(genpath({matlab_string(str(path_config.repo_matlab_path))}))",
             f"cd({matlab_string(str(path_config.directory))})",
             "run('launch.m')",
+            f"opto.scanimage.startCommandServer({matlab_string(str(path_config.directory))})",
         ]
     )
 

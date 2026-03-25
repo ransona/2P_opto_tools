@@ -7,6 +7,7 @@ import queue
 import socket
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +101,7 @@ class MatlabSession:
         self.simulated = False
         self.current_directory = str(config.directory)
         self.started_with_launch = False
+        self.command_dir = self.config.directory / ".opto_matlab_bridge"
 
     def start(self, startup_command: str | None = None) -> None:
         if self.process is not None or self.simulated:
@@ -150,9 +152,15 @@ class MatlabSession:
             return
         if self.process is None:
             return
+        if self.started_with_launch:
+            try:
+                self.eval("exit", timeout_s=5)
+            except Exception:
+                pass
         try:
-            self.send_raw("exit\n")
-            self.process.wait(timeout=5)
+            if self.process is not None:
+                self.send_raw("exit\n")
+                self.process.wait(timeout=5)
         except Exception:
             self.process.kill()
         finally:
@@ -171,6 +179,8 @@ class MatlabSession:
             return self._simulate_eval(command)
         if self.process is None:
             raise MatlabSessionError(f"MATLAB session '{self.config.name}' is not running.")
+        if self.started_with_launch:
+            return self._eval_via_command_files(command, timeout_s)
 
         token = f"CODEX_{uuid.uuid4().hex}"
         wrapped = "\n".join(
@@ -214,6 +224,46 @@ class MatlabSession:
             if stripped == f"{token}_END":
                 return lines
             lines.append(stripped)
+
+    def _eval_via_command_files(self, command: str, timeout_s: float) -> list[str]:
+        self.command_dir.mkdir(parents=True, exist_ok=True)
+        command_id = uuid.uuid4().hex
+        request_path = self.command_dir / f"request_{command_id}.m"
+        result_path = self.command_dir / f"result_{command_id}.txt"
+        request_path.write_text(command, encoding="utf-8")
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if result_path.exists():
+                try:
+                    lines = result_path.read_text(encoding="utf-8").splitlines()
+                finally:
+                    try:
+                        result_path.unlink()
+                    except OSError:
+                        pass
+                    try:
+                        request_path.unlink()
+                    except OSError:
+                        pass
+                if not lines:
+                    return []
+                status = lines[0].strip()
+                payload = lines[1:]
+                if status == "STATUS:OK":
+                    return payload
+                if status == "STATUS:ERR":
+                    raise MatlabSessionError(
+                        f"MATLAB command failed in path '{self.config.name}':\n" + "\n".join(payload)
+                    )
+                raise MatlabSessionError(
+                    f"MATLAB command returned malformed response in path '{self.config.name}': {status}"
+                )
+            if self.process.poll() is not None:
+                raise MatlabSessionError(f"MATLAB path '{self.config.name}' exited before completing a command.")
+            time.sleep(0.1)
+        raise MatlabSessionError(
+            f"Timed out waiting for MATLAB path '{self.config.name}' while executing command."
+        )
 
     def _pump_output(self) -> None:
         assert self.process is not None
