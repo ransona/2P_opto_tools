@@ -706,8 +706,8 @@ class MainWindow(QMainWindow):
         load_schema_btn.clicked.connect(self.load_schema_dialog)
         save_schema_btn.clicked.connect(self.save_schema_dialog)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
+        schema_left = QWidget()
+        schema_left_layout = QVBoxLayout(schema_left)
 
         project_box = QGroupBox("Project")
         project_form = QFormLayout(project_box)
@@ -721,7 +721,7 @@ class MainWindow(QMainWindow):
         project_form.addRow("Project", self.project_edit)
         project_form.addRow("Save root", QLabel(str(self.save_root)))
         project_form.addRow("Default schema path", self.save_path_label)
-        left_layout.addWidget(project_box)
+        schema_left_layout.addWidget(project_box)
 
         pattern_box = QGroupBox("Patterns")
         pattern_layout = QVBoxLayout(pattern_box)
@@ -734,7 +734,6 @@ class MainWindow(QMainWindow):
         pattern_buttons.addWidget(self.copy_pattern_btn)
         pattern_buttons.addWidget(self.delete_pattern_btn)
         pattern_layout.addLayout(pattern_buttons)
-        left_layout.addWidget(pattern_box)
 
         sequence_box = QGroupBox("Sequences")
         sequence_layout = QVBoxLayout(sequence_box)
@@ -747,18 +746,25 @@ class MainWindow(QMainWindow):
         sequence_buttons.addWidget(self.copy_sequence_btn)
         sequence_buttons.addWidget(self.delete_sequence_btn)
         sequence_layout.addLayout(sequence_buttons)
-        left_layout.addWidget(sequence_box)
 
-        self.editor_tabs = QTabWidget()
-        self.editor_tabs.addTab(self.pattern_editor, "Pattern Editor")
-        self.editor_tabs.addTab(self.sequence_editor, "Sequence Editor")
-        self.editor_tabs.addTab(self.scanimage_control, "ScanImage Control")
+        self.project_tabs = QTabWidget()
+        self.project_tabs.addTab(pattern_box, "Project Patterns")
+        self.project_tabs.addTab(sequence_box, "Project Sequences")
+        schema_left_layout.addWidget(self.project_tabs, 1)
 
-        splitter = QSplitter()
-        splitter.addWidget(left)
-        splitter.addWidget(self.editor_tabs)
-        splitter.setStretchFactor(1, 1)
-        self.setCentralWidget(splitter)
+        self.schema_editor_tabs = QTabWidget()
+        self.schema_editor_tabs.addTab(self.pattern_editor, "Pattern Editor")
+        self.schema_editor_tabs.addTab(self.sequence_editor, "Sequence Editor")
+
+        schema_splitter = QSplitter()
+        schema_splitter.addWidget(schema_left)
+        schema_splitter.addWidget(self.schema_editor_tabs)
+        schema_splitter.setStretchFactor(1, 1)
+
+        self.main_tabs = QTabWidget()
+        self.main_tabs.addTab(self.scanimage_control, "ScanImage Control")
+        self.main_tabs.addTab(schema_splitter, "Stimulation Schema")
+        self.setCentralWidget(self.main_tabs)
 
         self.add_pattern_btn.clicked.connect(self.add_pattern)
         self.copy_pattern_btn.clicked.connect(self.copy_pattern)
@@ -850,6 +856,8 @@ class MainWindow(QMainWindow):
             return
         name = current.text()
         if name in self.project.patterns:
+            self.project_tabs.setCurrentIndex(0)
+            self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
             self.pattern_editor.load_pattern(name)
 
     def _sequence_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
@@ -857,6 +865,8 @@ class MainWindow(QMainWindow):
             return
         name = current.text()
         if name in self.project.sequences:
+            self.project_tabs.setCurrentIndex(1)
+            self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
             self.sequence_editor.load_sequence(name)
             self.preview.set_sequence(name)
 
@@ -874,7 +884,9 @@ class MainWindow(QMainWindow):
         matches = self.pattern_list.findItems(name, Qt.MatchFlag.MatchExactly)
         if matches:
             self.pattern_list.setCurrentItem(matches[0])
-        self.editor_tabs.setCurrentWidget(self.pattern_editor)
+        self.main_tabs.setCurrentIndex(1)
+        self.project_tabs.setCurrentIndex(0)
+        self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def copy_pattern(self) -> None:
         current = self.pattern_list.currentItem()
@@ -896,7 +908,9 @@ class MainWindow(QMainWindow):
         matches = self.pattern_list.findItems(copied.name, Qt.MatchFlag.MatchExactly)
         if matches:
             self.pattern_list.setCurrentItem(matches[0])
-        self.editor_tabs.setCurrentWidget(self.pattern_editor)
+        self.main_tabs.setCurrentIndex(1)
+        self.project_tabs.setCurrentIndex(0)
+        self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def delete_pattern(self) -> None:
         current = self.pattern_list.currentItem()
@@ -920,7 +934,9 @@ class MainWindow(QMainWindow):
         matches = self.sequence_list.findItems(name, Qt.MatchFlag.MatchExactly)
         if matches:
             self.sequence_list.setCurrentItem(matches[0])
-        self.editor_tabs.setCurrentWidget(self.sequence_editor)
+        self.main_tabs.setCurrentIndex(1)
+        self.project_tabs.setCurrentIndex(1)
+        self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
 
     def copy_sequence(self) -> None:
         current = self.sequence_list.currentItem()
@@ -939,7 +955,9 @@ class MainWindow(QMainWindow):
         matches = self.sequence_list.findItems(copied.name, Qt.MatchFlag.MatchExactly)
         if matches:
             self.sequence_list.setCurrentItem(matches[0])
-        self.editor_tabs.setCurrentWidget(self.sequence_editor)
+        self.main_tabs.setCurrentIndex(1)
+        self.project_tabs.setCurrentIndex(1)
+        self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
 
     def delete_sequence(self) -> None:
         current = self.sequence_list.currentItem()

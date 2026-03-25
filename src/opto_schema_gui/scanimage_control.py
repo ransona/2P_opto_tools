@@ -11,7 +11,6 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -66,9 +65,8 @@ class PathTabWidgets:
     tab: QWidget
     status_label: QLabel
     listener_label: QLabel
-    udp_list: QListWidget
+    udp_text: QPlainTextEdit
     launch_btn: QPushButton
-    stop_btn: QPushButton
     focus_btn: QPushButton
     acquire_btn: QPushButton
     stop_acq_btn: QPushButton
@@ -100,11 +98,9 @@ class UdpListener(threading.Thread):
                     continue
                 except OSError:
                     break
-                self.signals.path_udp_log.emit(
-                    self.path_name,
-                    f"recv {address[0]}:{address[1]} {payload[:200]!r}",
-                )
-                self.signals.log_message.emit(f"[{self.path_name}] UDP packet from {address[0]}:{address[1]}")
+                udp_line = f"[{self.path_name} udp {address[0]}:{address[1]}] recv {payload[:200]!r}"
+                self.signals.path_udp_log.emit(self.path_name, udp_line)
+                self.signals.log_message.emit(udp_line)
                 self.signals.parent().udp_message.emit(self.path_name, payload, address)  # type: ignore[attr-defined]
         finally:
             try:
@@ -150,6 +146,7 @@ class ScanImageControlWidget(QWidget):
         self._ignore_combo_changes = False
         self._current_machine_name = ""
         self._current_config_name = ""
+        self._last_exp_id = ""
         self._build_ui()
         self.reload_discovery()
 
@@ -157,34 +154,34 @@ class ScanImageControlWidget(QWidget):
         layout = QVBoxLayout(self)
 
         config_box = QGroupBox("ScanImage Config")
-        config_form = QFormLayout(config_box)
-        self.machine_combo = QComboBox()
-        self.config_combo = QComboBox()
-        self.exp_id_edit = QLineEdit("2014-01-01_01_TEST")
-        self.photostim_label = QLabel("none")
-        self.photostim_label.setWordWrap(True)
-        self.reload_btn = QPushButton("Reload Configs")
+        config_layout = QHBoxLayout(config_box)
+        button_column = QVBoxLayout()
+        button_column.setSpacing(6)
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
-        self.import_patterns_btn = QPushButton("Import Patterns")
-        button_row = QHBoxLayout()
-        button_row.addWidget(self.reload_btn)
-        button_row.addWidget(self.start_config_btn)
-        button_row.addWidget(self.stop_config_btn)
-        button_row.addWidget(self.import_patterns_btn)
-        button_row.addStretch(1)
+        self.reload_btn = QPushButton("Reload Configs")
+        self.start_config_btn.setStyleSheet("color: #15803d;")
+        self.stop_config_btn.setStyleSheet("color: #b91c1c;")
+        button_column.addWidget(self.start_config_btn)
+        button_column.addWidget(self.stop_config_btn)
+        button_column.addWidget(self.reload_btn)
+        button_column.addStretch(1)
+        config_layout.addLayout(button_column)
+
+        config_form_container = QWidget()
+        config_form = QFormLayout(config_form_container)
+        self.machine_combo = QComboBox()
+        self.config_combo = QComboBox()
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
-        config_form.addRow("Exp ID", self.exp_id_edit)
-        config_form.addRow("Photostim path", self.photostim_label)
-        config_form.addRow("", button_row)
+        config_layout.addWidget(config_form_container, 1)
         layout.addWidget(config_box)
 
-        paths_box = QGroupBox("Paths")
-        paths_layout = QVBoxLayout(paths_box)
+        self.paths_box = QGroupBox("Paths")
+        paths_layout = QVBoxLayout(self.paths_box)
         self.path_tabs = QTabWidget()
         paths_layout.addWidget(self.path_tabs)
-        layout.addWidget(paths_box, 1)
+        layout.addWidget(self.paths_box, 1)
 
         log_box = QGroupBox("Debug Log")
         log_layout = QVBoxLayout(log_box)
@@ -203,7 +200,6 @@ class ScanImageControlWidget(QWidget):
         self.config_combo.currentTextChanged.connect(self._on_config_changed)
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
-        self.import_patterns_btn.clicked.connect(self.import_patterns_for_photostim)
         self.clear_log_btn.clicked.connect(self.log_text.clear)
 
     def reload_discovery(self) -> None:
@@ -278,7 +274,7 @@ class ScanImageControlWidget(QWidget):
             self._runtimes = {}
             self._path_tabs = {}
             self.path_tabs.clear()
-            self.photostim_label.setText("none")
+            self.paths_box.setTitle("Paths")
             return
 
         try:
@@ -296,7 +292,7 @@ class ScanImageControlWidget(QWidget):
             for path_name, path_config in machine_config.paths.items()
         }
         self._rebuild_path_tabs()
-        self.photostim_label.setText(machine_config.photostim_path or "none")
+        self.paths_box.setTitle(f"Paths - {config_name}")
         self.signals.log_message.emit(
             f"Loaded {machine_name}/{config_name} with paths: {', '.join(machine_config.launch_order)}"
         )
@@ -324,40 +320,38 @@ class ScanImageControlWidget(QWidget):
         layout.addWidget(info_box)
 
         buttons_box = QGroupBox("Actions")
-        buttons_layout = QGridLayout(buttons_box)
+        buttons_layout = QHBoxLayout(buttons_box)
         launch_btn = QPushButton("Launch Path")
-        stop_btn = QPushButton("Stop Path")
         focus_btn = QPushButton("Focus")
         acquire_btn = QPushButton("Acquire")
-        stop_acq_btn = QPushButton("Stop Acquisition")
+        stop_acq_btn = QPushButton("Stop")
         start_listener_btn = QPushButton("Start Listener")
         stop_listener_btn = QPushButton("Stop Listener")
-        specs = [
-            (launch_btn, 0, 0),
-            (stop_btn, 0, 1),
-            (focus_btn, 1, 0),
-            (acquire_btn, 1, 1),
-            (stop_acq_btn, 2, 0),
-            (start_listener_btn, 2, 1),
-            (stop_listener_btn, 3, 0),
-        ]
-        for button, row, col in specs:
-            buttons_layout.addWidget(button, row, col)
+        for button in [
+            launch_btn,
+            acquire_btn,
+            focus_btn,
+            stop_acq_btn,
+            start_listener_btn,
+            stop_listener_btn,
+        ]:
+            buttons_layout.addWidget(button)
+        buttons_layout.addStretch(1)
         layout.addWidget(buttons_box)
 
         udp_box = QGroupBox("UDP Messages")
         udp_layout = QVBoxLayout(udp_box)
-        udp_list = QListWidget()
-        udp_layout.addWidget(udp_list)
+        udp_text = QPlainTextEdit()
+        udp_text.setReadOnly(True)
+        udp_layout.addWidget(udp_text)
         layout.addWidget(udp_box, 1)
 
         widgets = PathTabWidgets(
             tab=tab,
             status_label=status_label,
             listener_label=listener_label,
-            udp_list=udp_list,
+            udp_text=udp_text,
             launch_btn=launch_btn,
-            stop_btn=stop_btn,
             focus_btn=focus_btn,
             acquire_btn=acquire_btn,
             stop_acq_btn=stop_acq_btn,
@@ -368,7 +362,6 @@ class ScanImageControlWidget(QWidget):
         self.path_tabs.addTab(tab, path_name)
 
         launch_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "launch path", self._launch_path))
-        stop_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop path", self._stop_path))
         focus_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "focus", self._focus_path))
         acquire_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "acquire", self._acquire_path_from_ui))
         stop_acq_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop acquisition", self._stop_acquisition))
@@ -489,7 +482,7 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
 
     def _current_exp_id(self) -> str:
-        return self.exp_id_edit.text().strip()
+        return self._last_exp_id.strip()
 
     def _acquire_path_from_ui(self, path_name: str) -> None:
         exp_id = self._current_exp_id()
@@ -500,6 +493,7 @@ class ScanImageControlWidget(QWidget):
     def _start_acquisition(self, path_name: str, exp_id: str) -> None:
         runtime = self._ensure_session(path_name)
         context = build_experiment_context(runtime.path_config, exp_id)
+        self._last_exp_id = exp_id
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
@@ -573,8 +567,9 @@ class ScanImageControlWidget(QWidget):
         widgets = self._path_tabs.get(path_name)
         if widgets is None:
             return
-        widgets.udp_list.addItem(message)
-        widgets.udp_list.scrollToBottom()
+        widgets.udp_text.appendPlainText(message)
+        scrollbar = widgets.udp_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def _listener_summary(self, path_name: str) -> str:
         runtime = self._runtimes[path_name]
@@ -595,7 +590,9 @@ class ScanImageControlWidget(QWidget):
             return
 
         message = payload.decode("utf-8", errors="replace").strip()
-        self.signals.path_udp_log.emit(path_name, f"text {address[0]}:{address[1]} {message}")
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] text {message}"
+        self.signals.path_udp_log.emit(path_name, udp_line)
+        self.signals.log_message.emit(udp_line)
         if not message:
             return
 
@@ -629,7 +626,9 @@ class ScanImageControlWidget(QWidget):
         return stripped.lower(), None
 
     def _handle_legacy_udp_message(self, path_name: str, message: dict[str, object], address: tuple[str, int]) -> None:
-        self.signals.path_udp_log.emit(path_name, f"legacy {address[0]}:{address[1]} {message}")
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] legacy {message}"
+        self.signals.path_udp_log.emit(path_name, udp_line)
+        self.signals.log_message.emit(udp_line)
         if str(message.get("messageType", "")) != "COM":
             self.signals.log_message.emit(f"[{path_name} udp] ignored legacy packet with unsupported messageType")
             return
@@ -651,10 +650,9 @@ class ScanImageControlWidget(QWidget):
                 reply_address = (cfg.reply_host, cfg.reply_port)
             if listener is not None:
                 listener.send(ready_payload, reply_address)
-            self.signals.path_udp_log.emit(
-                path_name,
-                f"send {reply_address[0]}:{reply_address[1]} legacy READY",
-            )
+            ready_line = f"[{path_name} udp {reply_address[0]}:{reply_address[1]}] send legacy READY"
+            self.signals.path_udp_log.emit(path_name, ready_line)
+            self.signals.log_message.emit(ready_line)
 
         if command == "GOGO":
             meta = message.get("meta")
