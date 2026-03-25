@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -98,9 +99,12 @@ class UdpListener(threading.Thread):
                     continue
                 except OSError:
                     break
-                udp_line = f"[{self.path_name} udp {address[0]}:{address[1]}] recv {payload[:200]!r}"
-                self.signals.log_message.emit(udp_line)
-                self.signals.udp_message.emit(self.path_name, payload, address)
+                try:
+                    self.signals.udp_message.emit(self.path_name, payload, address)
+                except Exception as exc:  # pragma: no cover - defensive thread guard
+                    self.signals.log_message.emit(
+                        f"[{self.path_name}] UDP listener handler error: {exc}"
+                    )
         finally:
             try:
                 sock.close()
@@ -547,7 +551,7 @@ class ScanImageControlWidget(QWidget):
                 self.signals.log_message.emit(f"[{path_name}] {cleaned}")
 
     def _append_log(self, message: str) -> None:
-        self.log_text.appendPlainText(message)
+        self.log_text.appendPlainText(f"{self._timestamp()} {message}")
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -566,9 +570,12 @@ class ScanImageControlWidget(QWidget):
         widgets = self._path_tabs.get(path_name)
         if widgets is None:
             return
-        widgets.udp_text.appendPlainText(message)
+        widgets.udp_text.appendPlainText(f"{self._timestamp()} {message}")
         scrollbar = widgets.udp_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _timestamp(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
 
     def _listener_summary(self, path_name: str) -> str:
         runtime = self._runtimes[path_name]
@@ -681,9 +688,12 @@ class ScanImageControlWidget(QWidget):
 
         if command == "STOP":
             def worker() -> None:
+                self.signals.log_message.emit(f"[{path_name}] handling legacy STOP")
                 ok = self._run_action(path_name, "legacy STOP", self._stop_acquisition)
                 if ok:
                     send_ready()
+                else:
+                    self.signals.log_message.emit(f"[{path_name}] legacy STOP failed before READY")
 
             threading.Thread(target=worker, daemon=True).start()
             return
