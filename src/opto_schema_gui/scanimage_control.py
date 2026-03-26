@@ -457,7 +457,7 @@ class PhotostimTestDialog(QDialog):
         self.seq_num_spin.setValue(0)
         form.addRow("Schema Name", self.schema_name_edit)
         form.addRow("Exp ID", self.exp_id_edit)
-        form.addRow("Seq Num", self.seq_num_spin)
+        form.addRow("Seq Num (0-based)", self.seq_num_spin)
         layout.addLayout(form)
 
         button_row = QHBoxLayout()
