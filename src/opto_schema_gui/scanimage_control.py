@@ -527,9 +527,11 @@ class ScanImageControlWidget(QWidget):
         self.machine_combo = QComboBox()
         self.config_combo = QComboBox()
         self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
+        self.ignore_incomplete_trigger_checkbox = QCheckBox("Ignore incomplete stim seqs")
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
         config_form.addRow("", self.force_simulated_checkbox)
+        config_form.addRow("", self.ignore_incomplete_trigger_checkbox)
         config_layout.addWidget(config_form_container, 1)
         layout.addWidget(config_box)
 
@@ -1538,10 +1540,14 @@ class ScanImageControlWidget(QWidget):
             and current_position is not None
             and current_position < expected_position
         ):
-            raise RuntimeError(
+            message = (
                 "Previous photostim sequence does not appear complete: "
                 f"current sequencePosition={current_position}, expected at least {expected_position}"
             )
+            if self.ignore_incomplete_trigger_checkbox.isChecked():
+                self.signals.log_message.emit(f"[{path_name}] WARNING: {message}")
+            else:
+                raise RuntimeError(message)
         lines = self._apply_trigger_sequence(path_name, sequence_indices)
         insert_position = self._parse_trigger_insert_position(lines)
         if insert_position is None:
