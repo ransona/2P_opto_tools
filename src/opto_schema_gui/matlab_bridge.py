@@ -545,22 +545,17 @@ def build_test_photostim_command(
         cells = pattern.get("cells", [])
         if not cells:
             continue
-        center_x_um = sum(float(cell["x"]) for cell in cells) / len(cells)
-        center_y_um = sum(float(cell["y"]) for cell in cells) / len(cells)
-        slm_pattern_um = _matlab_matrix(
+        point_rows = [
             [
-                [
-                    float(cell["x"]) - center_x_um,
-                    float(cell["y"]) - center_y_um,
-                    float(cell["z"]),
-                    float(cell.get("relative_power", 1.0)),
-                ]
-                for cell in cells
+                float(cell["x"]),
+                float(cell["y"]),
+                float(cell["z"]),
+                float(cell.get("relative_power", 1.0)),
             ]
-        )
-        power_fractions = _matlab_matrix(
-            [[float(cell.get("relative_power", 1.0))] for cell in cells]
-        )
+            for cell in cells
+        ]
+        points_um = _matlab_matrix(point_rows)
+        power_fractions = _matlab_matrix([[row[3]] for row in point_rows])
         group_name = matlab_string(str(pattern.get("name", f"TEST SLM Group {index}")))
         duration_s = float(pattern.get("duration_s", 0.010))
         overall_power = float(pattern.get("overall_power", 5.0))
@@ -572,19 +567,22 @@ def build_test_photostim_command(
                 f"spiralWidthUm = {spiral_width};",
                 f"spiralHeightUm = {spiral_height};",
                 f"sf = scanimage.mroi.scanfield.fields.StimulusField();",
-                f"centerUm = [{center_x_um} {center_y_um}];",
-                "if isscalar(resXY); centerRef = centerUm ./ [resXY resXY]; else; centerRef = centerUm ./ resXY(1:2); end",
+                f"pointsUm = {points_um};",
+                "pointsRef = pointsUm;",
+                "if isscalar(resXY); pointsRef(:,1:2) = pointsUm(:,1:2) ./ [resXY resXY]; else; pointsRef(:,1) = pointsUm(:,1) ./ resXY(1); pointsRef(:,2) = pointsUm(:,2) ./ resXY(2); end",
+                "weights = pointsRef(:,4);",
+                "weightSum = sum(weights);",
+                "assert(weightSum > 0, 'SLM point weights must sum to a positive value.');",
+                "centerRef = sum(pointsRef(:,1:2) .* weights, 1) ./ weightSum;",
                 "if isscalar(resXY); sizeRef = [spiralWidthUm spiralHeightUm] ./ [resXY resXY]; else; sizeRef = [spiralWidthUm spiralHeightUm] ./ resXY(1:2); end",
-                f"slmPatternUm = {slm_pattern_um};",
-                "slmPatternRef = slmPatternUm;",
-                "if isscalar(resXY); slmPatternRef(:,1:2) = slmPatternUm(:,1:2) ./ [resXY resXY]; else; slmPatternRef(:,1) = slmPatternUm(:,1) ./ resXY(1); slmPatternRef(:,2) = slmPatternUm(:,2) ./ resXY(2); end",
                 "sf.centerXY = centerRef;",
                 "sf.sizeXY = sizeRef;",
                 f"sf.duration = {duration_s};",
                 "sf.repetitions = 1;",
                 "sf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;",
                 "sf.stimparams = {'revolutions', 5, 'direction', 'outward'};",
-                "sf.slmPattern = slmPatternRef;",
+                "sf.slmPattern = [pointsRef(:,1:2) - centerRef, pointsRef(:,3:4)];",
+                "if ismethod(sf, 'recenterGalvoOntoSlmPattern'); sf.recenterGalvoOntoSlmPattern(); end",
                 f"if isprop(sf,'powerFractions'); sf.powerFractions = {power_fractions}; end",
                 "powers = zeros(1, nBeams);",
                 f"powers(3) = {overall_power};",
