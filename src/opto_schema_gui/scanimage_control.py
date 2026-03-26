@@ -1147,7 +1147,7 @@ class ScanImageControlWidget(QWidget):
                 prep_state.imported_pattern_names = list(pattern_names)
                 prep_state.pattern_to_schema_index = dict(pattern_to_schema_index)
                 prep_state.pattern_to_stimulus_group = {
-                    pattern_name: index + 1 for index, pattern_name in enumerate(pattern_names)
+                    pattern_name: index + 3 for index, pattern_name in enumerate(pattern_names)
                 }
                 payload["stimulus_groups"] = [
                     {

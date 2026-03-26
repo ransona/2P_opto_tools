@@ -293,6 +293,18 @@ class MatlabSession:
 
         if "addpath(genpath(" in command_lower:
             return []
+        if "prepareschemaphotostim" in command_lower:
+            schema_path = _extract_schema_path_from_import(command)
+            if schema_path is None:
+                return ["Simulated photostim prep completed"]
+            data = yaml.safe_load(Path(schema_path).read_text()) or {}
+            pattern_names = list((data.get("patterns") or {}).keys())
+            outputs.append(f"Simulated photostim prep from {schema_path}")
+            outputs.append("Prepared photostim sequence mode")
+            outputs.append("sequence")
+            outputs.append("Simulated photostim mask generation ready")
+            outputs.extend(pattern_names)
+            return outputs
         if "importschemapatterns" in command_lower:
             schema_path = _extract_schema_path_from_import(command)
             if schema_path is None:
@@ -494,18 +506,25 @@ def build_import_command(
     if pattern_names:
         quoted = "; ".join(matlab_string(name) for name in pattern_names)
         pattern_names_expr = f"string([{quoted}])"
+    if prepare_sequence or start_photostim:
+        lines = [
+            build_global_preamble(path_config),
+            f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, {schema_expr}, ...",
+            f"    PatternNames={pattern_names_expr}, ...",
+            "    PreStimPauseDuration=0.001, ...",
+            "    BlankDuration=0.001, ...",
+            "    ParkDuration=0.001, ...",
+            "    MinCenterDistanceUm=15, ...",
+            "    Revolutions=5);",
+            "disp('Prepared schema photostim patterns:');",
+            "disp(importedPatternNames);",
+            "disp(importedPatternNumbers);",
+        ]
+        return '\n'.join(lines)
     lines = [
         build_global_preamble(path_config),
         f"hPs = {path_config.hsi_variable}.hPhotostim;",
     ]
-    if prepare_sequence or start_photostim:
-        lines.extend(
-            [
-                "if hPs.active",
-                "    hPs.abort();",
-                "end",
-            ]
-        )
     lines.extend(
         [
             f"importedPatternNames = opto.scanimage.importSchemaPatterns({path_config.hsi_variable}, {schema_expr}, ...",
@@ -524,26 +543,6 @@ def build_import_command(
             "disp(importedPatternNames);",
         ]
     )
-    if prepare_sequence:
-        lines.extend(
-            [
-                "stimCount = numel(hPs.stimRoiGroups);",
-                "hPs.stimulusMode = 'sequence';",
-                "hPs.sequenceSelectedStimuli = 1:stimCount;",
-                "hPs.numSequences = 1;",
-                "disp('Prepared photostim sequence mode');",
-                "disp(string(hPs.stimulusMode));",
-                "disp(hPs.sequenceSelectedStimuli);",
-                "disp(hPs.numSequences);",
-            ]
-        )
-    if start_photostim:
-        lines.extend(
-            [
-                "hPs.start();",
-                "disp('Photostim started');",
-            ]
-        )
     return "\n".join(lines)
 
 
@@ -877,8 +876,11 @@ def _extract_disp_messages(command: str) -> list[str]:
 
 
 def _extract_schema_path_from_import(command: str) -> str | None:
-    marker = "importSchemaPatterns("
-    idx = command.find(marker)
+    idx = -1
+    for marker in ("importSchemaPatterns(", "prepareSchemaPhotostim("):
+        idx = command.find(marker)
+        if idx >= 0:
+            break
     if idx < 0:
         return None
     quoted_start = command.find("'", idx)

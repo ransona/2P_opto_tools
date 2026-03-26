@@ -1,0 +1,222 @@
+function [importedPatternNames, patternNumbers] = prepareSchemaPhotostim(hSI, schemaPath, opts)
+arguments
+    hSI
+    schemaPath (1,1) string
+    opts.PatternNames string = strings(0, 1)
+    opts.PythonExecutable (1,1) string = "python"
+    opts.PreStimPauseDuration (1,1) double = 0.001
+    opts.BlankDuration (1,1) double = 0.001
+    opts.ParkDuration (1,1) double = 0.001
+    opts.MinCenterDistanceUm (1,1) double = 15
+    opts.Revolutions (1,1) double = 5
+end
+
+if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
+    error('The provided hSI handle does not expose hPhotostim.');
+end
+
+schema = opto.scanimage.loadSchemaYaml(schemaPath, opts.PythonExecutable);
+if ~isfield(schema, 'patterns')
+    error('Schema file does not contain a patterns block: %s', schemaPath);
+end
+
+patternNames = string(fieldnames(schema.patterns));
+if ~isempty(opts.PatternNames)
+    patternNames = string(opts.PatternNames(:));
+end
+
+hPs = hSI.hPhotostim;
+if hPs.active
+    hPs.abort();
+end
+hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);
+hPs.sequenceSelectedStimuli = [];
+
+hPs.stimRoiGroups(end + 1) = makePauseOnlyGroup("BLANK", opts.BlankDuration);
+hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration);
+
+importedPatternNames = strings(0, 1);
+patternNumbers = zeros(0, 1);
+
+schemaPatternNames = string(fieldnames(schema.patterns));
+
+for idx = 1:numel(patternNames)
+    patternName = patternNames(idx);
+    patternField = char(patternName);
+    if ~isfield(schema.patterns, patternField)
+        error('Pattern "%s" was requested but is not present in schema %s.', patternName, schemaPath);
+    end
+
+    patternNumber = find(schemaPatternNames == patternName, 1, 'first');
+    if isempty(patternNumber)
+        error('Could not resolve schema pattern number for pattern "%s".', patternName);
+    end
+
+    pattern = schema.patterns.(patternField);
+    if ~isfield(pattern, 'name') || strlength(string(pattern.name)) == 0
+        pattern.name = sprintf('P%d', patternNumber);
+    end
+
+    hGroup = buildSlmStimGroup(pattern, patternNumber, hSI, opts);
+    hPs.stimRoiGroups(end + 1) = hGroup;
+    importedPatternNames(end + 1, 1) = patternName; %#ok<AGROW>
+    patternNumbers(end + 1, 1) = patternNumber; %#ok<AGROW>
+end
+
+hPs.stimulusMode = 'sequence';
+hPs.sequenceSelectedStimuli = 1:numel(hPs.stimRoiGroups);
+hPs.numSequences = 1;
+
+disp('Prepared photostim sequence mode');
+disp(string(hPs.stimulusMode));
+disp(hPs.sequenceSelectedStimuli);
+disp(hPs.numSequences);
+disp('Starting photostim mask generation');
+hPs.start();
+disp('Photostim mask generation ready');
+end
+
+
+function hGroup = buildSlmStimGroup(pattern, patternNumber, hSI, opts)
+validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
+validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
+validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
+assert(isfield(pattern, 'cells') && ~isempty(pattern.cells), 'Pattern P%d contains no cells.', patternNumber);
+
+[resX, resY] = getResolutionXY(hSI);
+pointsUm = zeros(numel(pattern.cells), 4);
+for i = 1:numel(pattern.cells)
+    c = pattern.cells(i);
+    pointsUm(i,:) = [double(c.x) double(c.y) double(c.z) double(c.power_scale)];
+end
+
+weights = pointsUm(:,4);
+if ~any(weights > 0)
+    weights = ones(size(weights));
+end
+
+centerUm = chooseSpiralCenter(pointsUm(:,1:2), weights, opts.MinCenterDistanceUm);
+pointsRef = pointsUm;
+pointsRef(:,1) = pointsUm(:,1) ./ resX;
+pointsRef(:,2) = pointsUm(:,2) ./ resY;
+centerRef = [centerUm(1) ./ resX, centerUm(2) ./ resY];
+
+stimDuration = pattern.duty_cycle ./ pattern.frequency_hz;
+spiralWidth = getfieldwithdefault(pattern, 'spiral_width', 10); %#ok<GFLD>
+spiralHeight = getfieldwithdefault(pattern, 'spiral_height', 10); %#ok<GFLD>
+sizeRef = [double(spiralWidth) ./ resX, double(spiralHeight) ./ resY];
+
+stimField = scanimage.mroi.scanfield.fields.StimulusField();
+stimField.centerXY = centerRef;
+stimField.sizeXY = sizeRef;
+stimField.duration = stimDuration;
+stimField.repetitions = 1;
+stimField.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;
+stimField.stimparams = {'revolutions', opts.Revolutions, 'direction', 'outward'};
+stimField.slmPattern = [pointsRef(:,1:2) - centerRef, pointsRef(:,3), pointsRef(:,4)];
+if ismethod(stimField, 'recenterGalvoOntoSlmPattern')
+    stimField.recenterGalvoOntoSlmPattern();
+end
+
+nBeams = 1;
+try
+    ss = hPsStimScannerset(hSI);
+    if most.idioms.isValidObj(ss)
+        nBeams = numel(ss.beams);
+    end
+catch
+    nBeams = 1;
+end
+assert(nBeams >= 3, 'Photostim expects at least 3 beams; only %d configured.', nBeams);
+beamPowers = zeros(1, nBeams);
+beamPowers(3) = pattern.power_percent;
+stimField.powers = beamPowers;
+
+hGroup = scanimage.mroi.RoiGroup(sprintf('P%d', patternNumber));
+hGroup.add(makePauseRoi(opts.PreStimPauseDuration));
+stimRoi = scanimage.mroi.Roi();
+stimRoi.add(0, stimField);
+hGroup.add(stimRoi);
+end
+
+
+function group = makePauseOnlyGroup(name, durationSeconds)
+group = scanimage.mroi.RoiGroup(char(name));
+group.add(makePauseRoi(durationSeconds));
+end
+
+
+function group = makeParkOnlyGroup(name, durationSeconds)
+group = scanimage.mroi.RoiGroup(char(name));
+sfPark = scanimage.mroi.scanfield.fields.StimulusField();
+sfPark.stimfcnhdl = @scanimage.mroi.stimulusfunctions.park;
+sfPark.duration = durationSeconds;
+roi = scanimage.mroi.Roi();
+roi.add(0, sfPark);
+group.add(roi);
+end
+
+
+function roi = makePauseRoi(durationSeconds)
+sfPause = scanimage.mroi.scanfield.fields.StimulusField();
+sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
+sfPause.duration = durationSeconds;
+roi = scanimage.mroi.Roi();
+roi.add(0, sfPause);
+end
+
+
+function [resX, resY] = getResolutionXY(hSI)
+assert(~isempty(hSI.objectiveResolution), 'objectiveResolution is not set in ScanImage.');
+res = hSI.objectiveResolution;
+if isscalar(res)
+    resX = res;
+    resY = res;
+else
+    assert(numel(res) >= 2, 'objectiveResolution must be scalar or 2-element.');
+    resX = res(1);
+    resY = res(2);
+end
+end
+
+
+function center = chooseSpiralCenter(pointsXY, weights, minDistanceUm)
+weights = weights(:);
+if ~any(weights > 0)
+    weights = ones(size(weights));
+end
+center0 = sum(pointsXY .* weights, 1) ./ sum(weights);
+if all(vecnorm(pointsXY - center0, 2, 2) >= minDistanceUm)
+    center = center0;
+    return;
+end
+
+angles = linspace(0, 2*pi, 361);
+maxRadius = max([minDistanceUm * 4, max(vecnorm(pointsXY - center0, 2, 2)) + minDistanceUm * 2, 50]);
+radii = linspace(0, maxRadius, 801);
+for r = radii
+    for a = angles
+        candidate = center0 + r * [cos(a) sin(a)];
+        if all(vecnorm(pointsXY - candidate, 2, 2) >= minDistanceUm)
+            center = candidate;
+            return;
+        end
+    end
+end
+
+center = center0 + [minDistanceUm 0];
+end
+
+
+function value = getfieldwithdefault(s, fieldName, defaultValue)
+if isfield(s, fieldName) && ~isempty(s.(fieldName))
+    value = s.(fieldName);
+else
+    value = defaultValue;
+end
+end
+
+
+function ss = hPsStimScannerset(hSI)
+ss = hSI.hPhotostim.stimScannerset;
+end
