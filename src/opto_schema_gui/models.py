@@ -103,6 +103,10 @@ class ExperimentProject:
                 if key in seen:
                     errors.append(f"Pattern '{name}' contains duplicate coordinates {key}.")
                 seen.add(key)
+                if cell.power_scale < 0:
+                    errors.append(f"Pattern '{name}' cell '{cell.label}' must have power scale >= 0.")
+                if cell.power_scale > 1:
+                    errors.append(f"Pattern '{name}' cell '{cell.label}' must have power scale <= 1.")
 
         for name, sequence in self.sequences.items():
             if not name.strip():

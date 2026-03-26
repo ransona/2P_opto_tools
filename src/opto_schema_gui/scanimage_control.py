@@ -397,6 +397,14 @@ class TestSlmDialog(QDialog):
                     x, y, z, relative_power = (float(value) for value in values)
                 except ValueError as exc:
                     raise ValueError(f"Pattern {pattern_index} cell row {row + 1} contains invalid numbers.") from exc
+                if relative_power < 0:
+                    raise ValueError(
+                        f"Pattern {pattern_index} cell row {row + 1} must have Relative Power >= 0."
+                    )
+                if relative_power > 1:
+                    raise ValueError(
+                        f"Pattern {pattern_index} cell row {row + 1} must have Relative Power <= 1."
+                    )
                 cells.append(
                     {
                         "x": x,
