@@ -855,6 +855,21 @@ def build_photostim_sequence_status_command(path_config: PathConfig) -> str:
     )
 
 
+def build_abort_photostim_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "if hPs.active;",
+            "    hPs.abort();",
+            "end",
+            "disp('ABORT_PHOTOSTIM_READY');",
+        ]
+    )
+
+
 def build_experiment_context(path_config: PathConfig, exp_id: str) -> ExperimentContext:
     animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
     exp_dir = ntpath.join(path_config.local_data_root, animal_id, exp_id, path_config.acquisition_folder)

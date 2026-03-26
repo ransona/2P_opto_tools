@@ -46,6 +46,7 @@ from .matlab_bridge import (
     MatlabSession,
     PathConfig,
     autodetect_machine_name,
+    build_abort_photostim_command,
     build_experiment_context,
     build_global_preamble,
     build_import_command,
@@ -464,10 +465,12 @@ class PhotostimTestDialog(QDialog):
         button_row = QHBoxLayout()
         self.run_prep_btn = QPushButton("Run Prep")
         self.run_trigger_btn = QPushButton("Run Trigger")
+        self.run_abort_btn = QPushButton("Run Abort")
         self.cancel_btn = QPushButton("Cancel")
         button_row.addStretch(1)
         button_row.addWidget(self.run_prep_btn)
         button_row.addWidget(self.run_trigger_btn)
+        button_row.addWidget(self.run_abort_btn)
         button_row.addWidget(self.cancel_btn)
         layout.addLayout(button_row)
 
@@ -606,7 +609,7 @@ class ScanImageControlWidget(QWidget):
         dialog = PhotostimTestDialog(self)
         def run_mode(mode: str) -> None:
             schema_name, exp_id, seq_num = dialog.values()
-            if not schema_name or not exp_id:
+            if mode != "abort" and (not schema_name or not exp_id):
                 QMessageBox.warning(self, "Invalid photostim input", "Schema Name and Exp ID are required.")
                 return
             if mode == "prep":
@@ -618,6 +621,12 @@ class ScanImageControlWidget(QWidget):
                     schema_name=schema_name,
                     exp_id=exp_id,
                     seq_num=seq_num,
+                    reply_address=None,
+                )
+            elif mode == "abort":
+                self.signals.log_message.emit("[config] GUI abort_photo_stim")
+                self._handle_abort_photo_stim_request(
+                    request_path_name=self.machine_config.photostim_path if self.machine_config else "",
                     reply_address=None,
                 )
             else:
@@ -633,6 +642,7 @@ class ScanImageControlWidget(QWidget):
                 )
         dialog.run_prep_btn.clicked.connect(lambda: run_mode("prep"))
         dialog.run_trigger_btn.clicked.connect(lambda: run_mode("trigger"))
+        dialog.run_abort_btn.clicked.connect(lambda: run_mode("abort"))
         dialog.exec()
 
     def shutdown(self) -> None:
@@ -1258,6 +1268,23 @@ class ScanImageControlWidget(QWidget):
                     },
                 )
             return
+        if action == "abort_photo_stim":
+            try:
+                self._handle_abort_photo_stim_request(
+                    request_path_name=path_name,
+                    reply_address=address,
+                )
+            except Exception as exc:
+                self._send_json_reply(
+                    path_name,
+                    address,
+                    {
+                        "action": "abort_photo_stim",
+                        "status": "error",
+                        "error": str(exc),
+                    },
+                )
+            return
         self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
 
     def _send_json_reply(self, path_name: str, address: tuple[str, int], payload: dict[str, object]) -> None:
@@ -1440,6 +1467,44 @@ class ScanImageControlWidget(QWidget):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _handle_abort_photo_stim_request(
+        self,
+        request_path_name: str,
+        reply_address: tuple[str, int] | None,
+    ) -> None:
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if not photostim_path:
+            payload = {
+                "action": "abort_photo_stim",
+                "status": "error",
+                "error": "No photostim path configured",
+            }
+            if reply_address is not None:
+                self._send_json_reply(request_path_name, reply_address, payload)
+            else:
+                self.signals.log_message.emit("[config] abort_photo_stim skipped: no photostim path configured")
+            return
+
+        def worker() -> None:
+            ok = self._run_action(
+                photostim_path,
+                "json abort_photo_stim" if reply_address is not None else "gui abort_photo_stim",
+                self._abort_photo_stim,
+            )
+            payload = {
+                "action": "abort_photo_stim",
+                "status": "ready" if ok else "error",
+            }
+            if not ok:
+                payload["error"] = "abort_photo_stim failed"
+
+            if reply_address is not None:
+                self._send_json_reply(request_path_name, reply_address, payload)
+            else:
+                self.signals.log_message.emit(f"[config] gui abort_photo_stim result={payload}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _expand_trigger_sequence(
         self,
         project,
@@ -1482,6 +1547,20 @@ class ScanImageControlWidget(QWidget):
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
             return lines
+
+    def _abort_photo_stim(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_abort_photostim_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+            runtime.prepared_photostim.expected_sequence_position = None
+            runtime.prepared_photostim.last_trigger_insert_position = None
+            runtime.status = "photostim aborted"
+            self.signals.path_status.emit(path_name, runtime.status)
+            self._emit_lines(path_name, lines)
 
     def _query_photostim_sequence_state(self, path_name: str) -> tuple[bool, int | None, list[int]]:
         runtime = self._ensure_session(path_name)
