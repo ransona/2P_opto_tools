@@ -41,6 +41,7 @@ from .matlab_bridge import (
     build_run_script_command,
     build_test_photostim_command,
     context_to_matlab_variables,
+    get_machine_default_config_name,
     list_config_names,
     list_machine_names,
     load_machine_config,
@@ -219,7 +220,7 @@ class ScanImageControlWidget(QWidget):
         log_layout = QVBoxLayout(log_box)
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        self.clear_log_btn = QPushButton("Clear Log")
+        self.clear_log_btn = QPushButton("Clear Debug Output")
         log_layout.addWidget(self.log_text)
         clear_row = QHBoxLayout()
         clear_row.addStretch(1)
@@ -288,8 +289,12 @@ class ScanImageControlWidget(QWidget):
         desired_config = self._current_config_name
         if desired_config and desired_config in config_names:
             self.config_combo.setCurrentText(desired_config)
-        elif config_names:
-            self.config_combo.setCurrentIndex(0)
+        else:
+            default_config = get_machine_default_config_name(self.repo_root, machine_name) if machine_name else None
+            if default_config and default_config in config_names:
+                self.config_combo.setCurrentText(default_config)
+            elif config_names:
+                self.config_combo.setCurrentIndex(0)
         self._ignore_combo_changes = False
         self._load_selected_config()
 

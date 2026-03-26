@@ -19,6 +19,7 @@ except ModuleNotFoundError:
 
 
 DEFAULT_CONFIGS_ROOT = Path("configs")
+MACHINE_CONFIG_FILENAME = "machine.ini"
 
 
 @dataclass
@@ -88,6 +89,13 @@ class ExperimentContext:
     exp_dir_remote: str
     reply_host: str
     reply_port: int
+
+
+@dataclass
+class MachineUiConfig:
+    default_config: str | None
+    screen_index: int | None
+    start_maximized: bool
 
 
 class MatlabSessionError(RuntimeError):
@@ -254,6 +262,32 @@ def list_config_names(repo_root: str | Path, machine_name: str) -> list[str]:
     return sorted(path.name for path in machine_dir.iterdir() if path.is_dir())
 
 
+def get_machine_default_config_name(repo_root: str | Path, machine_name: str) -> str | None:
+    return load_machine_ui_config(repo_root, machine_name).default_config
+
+
+def load_machine_ui_config(repo_root: str | Path, machine_name: str) -> MachineUiConfig:
+    machine_dir = configs_root(repo_root) / machine_name
+    machine_ini = machine_dir / MACHINE_CONFIG_FILENAME
+    if not machine_ini.is_file():
+        return MachineUiConfig(default_config=None, screen_index=None, start_maximized=True)
+
+    parser = configparser.ConfigParser()
+    parser.read(machine_ini)
+    section = parser["machine"] if parser.has_section("machine") else {}
+    default_config = _get_string(section, None, "default_config", "").strip()
+    raw_screen_index = _get_string(section, None, "screen_index", "").strip()
+    screen_index = None
+    if raw_screen_index:
+        screen_index = int(raw_screen_index)
+    start_maximized = _get_bool(section, None, "start_maximized", True)
+    return MachineUiConfig(
+        default_config=default_config or None,
+        screen_index=screen_index,
+        start_maximized=start_maximized,
+    )
+
+
 def autodetect_machine_name(repo_root: str | Path) -> str | None:
     available = {name.lower(): name for name in list_machine_names(repo_root)}
     if not available:
@@ -414,33 +448,44 @@ def build_test_photostim_command(path_config: PathConfig) -> str:
         [
             build_global_preamble(path_config),
             f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
-            f"{hsi}.hPhotostim.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);",
-            "hSf = scanimage.mroi.scanfield.fields.StimulusField();",
-            "hSf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.point;",
-            "hSf.duration = 0.010;",
-            "hSf.repetitions = 1;",
-            "hSf.powers = [5];",
-            "hSf.sizeXY = [0 0];",
-            "hRoiTemplate = scanimage.mroi.Roi();",
-            "hRoiTemplate.add(0, hSf);",
-            "hRoi1 = hRoiTemplate.copy();",
-            "hRoi1.scanfields(1).centerXY = [0.25 0.50];",
-            "hRoi2 = hRoiTemplate.copy();",
-            "hRoi2.scanfields(1).centerXY = [0.75 0.50];",
+            "hPs = " + hsi + ".hPhotostim;",
+            "hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);",
+            "baseSf = scanimage.mroi.scanfield.fields.StimulusField();",
+            "baseSf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.point;",
+            "baseSf.duration = 0.010;",
+            "baseSf.repetitions = 1;",
+            "baseSf.powers = [5];",
+            "baseSf.sizeXY = [0 0];",
+            "group1xy = [0.25 0.45; 0.35 0.55];",
+            "group2xy = [0.65 0.35; 0.75 0.50; 0.85 0.65];",
             "hGroup1 = scanimage.mroi.RoiGroup();",
-            "hGroup1.add(hRoi1);",
+            "for idx = 1:size(group1xy,1); hSf = baseSf.copy(); hSf.centerXY = group1xy(idx,:); hRoi = scanimage.mroi.Roi(); hRoi.add(0, hSf); hGroup1.add(hRoi); end",
             "hGroup2 = scanimage.mroi.RoiGroup();",
-            "hGroup2.add(hRoi2);",
-            f"{hsi}.hPhotostim.stimRoiGroups(end + 1) = hGroup1;",
-            f"{hsi}.hPhotostim.stimRoiGroups(end + 1) = hGroup2;",
+            "for idx = 1:size(group2xy,1); hSf = baseSf.copy(); hSf.centerXY = group2xy(idx,:); hRoi = scanimage.mroi.Roi(); hRoi.add(0, hSf); hGroup2.add(hRoi); end",
+            "hPs.stimRoiGroups(end + 1) = hGroup1;",
+            "hPs.stimRoiGroups(end + 1) = hGroup2;",
             "disp('TEST_PHOTOSTIM_GROUP_COUNT');",
-            f"disp(numel({hsi}.hPhotostim.stimRoiGroups));",
-            "disp('TEST_PHOTOSTIM_PROPERTIES_BEGIN');",
-            f"disp(properties({hsi}.hPhotostim));",
-            "disp('TEST_PHOTOSTIM_PROPERTIES_END');",
-            "disp('TEST_PHOTOSTIM_METHODS_BEGIN');",
-            f"disp(methods({hsi}.hPhotostim));",
-            "disp('TEST_PHOTOSTIM_METHODS_END');",
+            "disp(numel(hPs.stimRoiGroups));",
+            "disp('TEST_GROUP_1_ROI_COUNT');",
+            "disp(numel(hGroup1.rois));",
+            "disp('TEST_GROUP_2_ROI_COUNT');",
+            "disp(numel(hGroup2.rois));",
+            "psProps = string(properties(hPs));",
+            "psMethods = string(methods(hPs));",
+            "propMask = contains(lower(psProps), 'seq') | contains(lower(psProps), 'mode') | contains(lower(psProps), 'stim');",
+            "methodMask = contains(lower(psMethods), 'seq') | contains(lower(psMethods), 'mode') | contains(lower(psMethods), 'stim');",
+            "disp('TEST_PHOTOSTIM_RELEVANT_PROPERTIES');",
+            "disp(psProps(propMask));",
+            "disp('TEST_PHOTOSTIM_RELEVANT_METHODS');",
+            "disp(psMethods(methodMask));",
+            "sequenceModeConfigured = false;",
+            "modeCandidates = {'mode','stimMode','photostimMode','sequenceModeEnabled'};",
+            "for idx = 1:numel(modeCandidates); prop = modeCandidates{idx}; if any(strcmp(psProps, prop)); try; if islogical(hPs.(prop)); hPs.(prop) = true; else; hPs.(prop) = 'sequence'; end; disp(['TEST_SEQUENCE_MODE_SET ' prop]); sequenceModeConfigured = true; break; catch ME; disp(['TEST_SEQUENCE_MODE_FAILED ' prop ' :: ' ME.message]); end; end; end",
+            "if ~sequenceModeConfigured; disp('TEST_SEQUENCE_MODE_SET none'); end",
+            "sequenceConfigured = false;",
+            "sequenceCandidates = {'sequenceSelectedStimuli','sequenceSelectedStimulusGroups','stimulusGroupSequence','stimSequence','sequenceStimuli','selectedStimuli'};",
+            "for idx = 1:numel(sequenceCandidates); prop = sequenceCandidates{idx}; if any(strcmp(psProps, prop)); try; hPs.(prop) = [1 2 1]; disp(['TEST_SEQUENCE_SET ' prop ' = [1 2 1]']); sequenceConfigured = true; break; catch ME; disp(['TEST_SEQUENCE_SET_FAILED ' prop ' :: ' ME.message]); end; end; end",
+            "if ~sequenceConfigured; disp('TEST_SEQUENCE_SET none'); end",
         ]
     )
 
