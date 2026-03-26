@@ -830,6 +830,24 @@ def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: l
     )
 
 
+def build_photostim_sequence_status_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "disp('PHOTOSTIM_ACTIVE');",
+            "disp(double(hPs.active));",
+            "disp('PHOTOSTIM_SEQUENCE_POSITION');",
+            "if isempty(hPs.sequencePosition); disp('NaN'); else; disp(double(hPs.sequencePosition)); end",
+            "disp('PHOTOSTIM_SEQUENCE_SELECTED');",
+            "disp(hPs.sequenceSelectedStimuli);",
+            "disp('PHOTOSTIM_STATUS_READY');",
+        ]
+    )
+
+
 def build_experiment_context(path_config: PathConfig, exp_id: str) -> ExperimentContext:
     animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
     exp_dir = ntpath.join(path_config.local_data_root, animal_id, exp_id, path_config.acquisition_folder)

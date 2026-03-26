@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import html
 import json
 import random
 import socket
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -47,6 +49,7 @@ from .matlab_bridge import (
     build_global_preamble,
     build_import_command,
     build_inspect_photostim_command,
+    build_photostim_sequence_status_command,
     build_run_script_command,
     build_test_photostim_command,
     build_trigger_photostim_command,
@@ -78,6 +81,8 @@ class PreparedPhotostimState:
     triggered_seq_num: int | None = None
     triggered_sequence_name: str = ""
     triggered_stimulus_groups: list[int] = field(default_factory=list)
+    last_trigger_insert_position: int | None = None
+    expected_sequence_position: int | None = None
 
     def reset(self) -> None:
         self.schema_path = None
@@ -91,6 +96,8 @@ class PreparedPhotostimState:
         self.triggered_seq_num = None
         self.triggered_sequence_name = ""
         self.triggered_stimulus_groups = []
+        self.last_trigger_insert_position = None
+        self.expected_sequence_position = None
 
 
 @dataclass
@@ -533,7 +540,7 @@ class ScanImageControlWidget(QWidget):
 
         log_box = QGroupBox("Debug Log")
         log_layout = QVBoxLayout(log_box)
-        self.log_text = QPlainTextEdit()
+        self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.clear_log_btn = QPushButton("Clear Debug Output")
         self.clear_all_logs_btn = QPushButton("All")
@@ -1037,7 +1044,13 @@ class ScanImageControlWidget(QWidget):
                 self.signals.log_message.emit(f"[{path_name}] {cleaned}")
 
     def _append_log(self, message: str) -> None:
-        self.log_text.appendPlainText(f"{self._timestamp()} {message}")
+        line = f"{self._timestamp()} {message}"
+        if "ERROR:" in message:
+            self.log_text.appendHtml(
+                f"<span style='color:#b91c1c;'>{html.escape(line)}</span>"
+            )
+        else:
+            self.log_text.append(html.escape(line))
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -1390,7 +1403,7 @@ class ScanImageControlWidget(QWidget):
             ok = self._run_action(
                 photostim_path,
                 "json trigger_photo_stim" if reply_address is not None else "gui trigger_photo_stim",
-                lambda name: self._apply_trigger_sequence(name, expanded_groups),
+                lambda name: self._trigger_photo_stim_checked(name, expanded_groups),
             )
             prep_state_local = self._runtimes[photostim_path].prepared_photostim
             status = "ready" if ok else "error"
@@ -1461,6 +1474,76 @@ class ScanImageControlWidget(QWidget):
             runtime.status = "photostim triggered"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
+            return lines
+
+    def _query_photostim_sequence_state(self, path_name: str) -> tuple[bool, int | None, list[int]]:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_photostim_sequence_status_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        active = False
+        position: int | None = None
+        sequence: list[int] = []
+        marker = None
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line in {"PHOTOSTIM_ACTIVE", "PHOTOSTIM_SEQUENCE_POSITION", "PHOTOSTIM_SEQUENCE_SELECTED", "PHOTOSTIM_STATUS_READY"}:
+                marker = line
+                continue
+            if marker == "PHOTOSTIM_ACTIVE":
+                try:
+                    active = bool(int(float(line)))
+                except ValueError:
+                    active = False
+            elif marker == "PHOTOSTIM_SEQUENCE_POSITION":
+                try:
+                    position = int(float(line))
+                except ValueError:
+                    position = None
+            elif marker == "PHOTOSTIM_SEQUENCE_SELECTED":
+                try:
+                    sequence.extend(int(float(part)) for part in line.split())
+                except ValueError:
+                    pass
+        return active, position, sequence
+
+    def _parse_trigger_insert_position(self, lines: list[str]) -> int | None:
+        for index, raw_line in enumerate(lines):
+            if raw_line.strip() == "TRIGGER_PHOTOSTIM_INSERT_POSITION":
+                if index + 1 >= len(lines):
+                    return None
+                try:
+                    return int(float(lines[index + 1].strip()))
+                except ValueError:
+                    return None
+        return None
+
+    def _trigger_photo_stim_checked(self, path_name: str, sequence_indices: list[int]) -> None:
+        runtime = self._ensure_session(path_name)
+        prep_state = runtime.prepared_photostim
+        active, current_position, _ = self._query_photostim_sequence_state(path_name)
+        expected_position = prep_state.expected_sequence_position
+        if (
+            expected_position is not None
+            and active
+            and current_position is not None
+            and current_position < expected_position
+        ):
+            raise RuntimeError(
+                "Previous photostim sequence does not appear complete: "
+                f"current sequencePosition={current_position}, expected at least {expected_position}"
+            )
+        lines = self._apply_trigger_sequence(path_name, sequence_indices)
+        insert_position = self._parse_trigger_insert_position(lines)
+        if insert_position is None:
+            insert_position = current_position if current_position is not None else 1
+        prep_state.last_trigger_insert_position = insert_position
+        prep_state.expected_sequence_position = insert_position + len(sequence_indices)
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:
         animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
