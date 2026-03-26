@@ -442,57 +442,119 @@ def build_run_script_command(
     return "\n".join(lines)
 
 
-def build_test_photostim_command(path_config: PathConfig) -> str:
+def _matlab_matrix(rows: list[list[float]]) -> str:
+    if not rows:
+        return "zeros(0, 4)"
+    return "[" + "; ".join(" ".join(repr(value) for value in row) for row in rows) + "]"
+
+
+def build_test_photostim_command(
+    path_config: PathConfig,
+    patterns: list[dict[str, Any]] | None = None,
+) -> str:
     hsi = path_config.hsi_variable
+    if patterns is None:
+        patterns = [
+            {
+                "name": "TEST SLM Group 1",
+                "duration_s": 0.010,
+                "overall_power": 5.0,
+                "spiral_width": 0.0,
+                "spiral_height": 0.0,
+                "cells": [
+                    {"x": 0.25, "y": 0.45, "z": 0.0, "relative_power": 1.0},
+                    {"x": 0.35, "y": 0.55, "z": 0.0, "relative_power": 1.0},
+                ],
+            },
+            {
+                "name": "TEST SLM Group 2",
+                "duration_s": 0.010,
+                "overall_power": 5.0,
+                "spiral_width": 0.0,
+                "spiral_height": 0.0,
+                "cells": [
+                    {"x": 0.65, "y": 0.35, "z": 0.0, "relative_power": 1.0},
+                    {"x": 0.75, "y": 0.50, "z": 0.0, "relative_power": 1.0},
+                    {"x": 0.85, "y": 0.65, "z": 0.0, "relative_power": 1.0},
+                ],
+            },
+        ]
+
+    group_lines: list[str] = []
+    sequence_indices: list[str] = []
+    for index, pattern in enumerate(patterns, start=1):
+        cells = pattern.get("cells", [])
+        if not cells:
+            continue
+        center_x = sum(float(cell["x"]) for cell in cells) / len(cells)
+        center_y = sum(float(cell["y"]) for cell in cells) / len(cells)
+        slm_pattern = _matlab_matrix(
+            [
+                [
+                    float(cell["x"]),
+                    float(cell["y"]),
+                    float(cell["z"]),
+                    float(cell.get("relative_power", 1.0)),
+                ]
+                for cell in cells
+            ]
+        )
+        group_name = matlab_string(str(pattern.get("name", f"TEST SLM Group {index}")))
+        duration_s = float(pattern.get("duration_s", 0.010))
+        overall_power = float(pattern.get("overall_power", 5.0))
+        spiral_width = float(pattern.get("spiral_width", 0.0))
+        spiral_height = float(pattern.get("spiral_height", 0.0))
+        group_lines.extend(
+            [
+                f"hGroup{index} = scanimage.mroi.RoiGroup({group_name});",
+                f"sf = scanimage.mroi.scanfield.fields.StimulusField();",
+                f"sf.centerXY = [{center_x} {center_y}];",
+                f"sf.sizeXY = [{spiral_width} {spiral_height}];",
+                f"sf.duration = {duration_s};",
+                "sf.repetitions = 1;",
+                "sf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;",
+                "sf.stimparams = {'revolutions', 5, 'direction', 'outward'};",
+                f"sf.slmPattern = {slm_pattern};",
+                "powers = zeros(1, nBeams);",
+                f"powers(3) = {overall_power};",
+                "sf.powers = powers;",
+                "roi = scanimage.mroi.Roi();",
+                "roi.add(0, sf);",
+                f"hGroup{index}.add(roi);",
+                f"hPs.stimRoiGroups(end + 1) = hGroup{index};",
+                f"disp('TEST_GROUP_{index}_ROI_COUNT');",
+                f"disp(numel(hGroup{index}.rois));",
+                f"disp('TEST_GROUP_{index}_POINT_COUNT');",
+                f"disp(size(sf.slmPattern, 1));",
+            ]
+        )
+        sequence_indices.append(str(index))
+
     return "\n".join(
         [
             build_global_preamble(path_config),
             f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
             "hPs = " + hsi + ".hPhotostim;",
+            "assert(isprop(hPs,'hasSlm') && hPs.hasSlm, 'No SLM available in the photostim configuration.');",
             "hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);",
-            "pattern1 = struct();",
-            "pattern1.name = 'test_group_1';",
-            "pattern1.duration_s = 0.010;",
-            "pattern1.power_percent = 5;",
-            "pattern1.frequency_hz = 10;",
-            "pattern1.cells = struct('label', {'cell1','cell2'}, 'x', {0.25,0.35}, 'y', {0.45,0.55}, 'z', {0,0}, 'power_scale', {1,1});",
-            "pattern2 = struct();",
-            "pattern2.name = 'test_group_2';",
-            "pattern2.duration_s = 0.010;",
-            "pattern2.power_percent = 5;",
-            "pattern2.frequency_hz = 10;",
-            "pattern2.cells = struct('label', {'cell1','cell2','cell3'}, 'x', {0.65,0.75,0.85}, 'y', {0.35,0.50,0.65}, 'z', {0,0,0}, 'power_scale', {1,1,1});",
-            "hGroup1 = opto.scanimage.buildStimRoiGroupFromPattern(pattern1, StimulusFunction='point', PointSizeXY=[0 0], RotationDegrees=0, PauseDuration=0, ParkDuration=0, XYTransform=@(xyz)[xyz(1) xyz(2)], ZTransform=@(xyz)xyz(3), PowerScaleMode='multiply', IgnoreFrequency=true);",
-            "hGroup2 = opto.scanimage.buildStimRoiGroupFromPattern(pattern2, StimulusFunction='point', PointSizeXY=[0 0], RotationDegrees=0, PauseDuration=0, ParkDuration=0, XYTransform=@(xyz)[xyz(1) xyz(2)], ZTransform=@(xyz)xyz(3), PowerScaleMode='multiply', IgnoreFrequency=true);",
-            "hPs.stimRoiGroups(end + 1) = hGroup1;",
-            "hPs.stimRoiGroups(end + 1) = hGroup2;",
+            "hPs.sequenceSelectedStimuli = [];",
+            "nBeams = 1;",
+            "try; ss = hPs.stimScannerset; if most.idioms.isValidObj(ss); nBeams = numel(ss.beams); end; catch; nBeams = 1; end",
+            "assert(nBeams >= 3, sprintf('Photostim expects at least 3 beams; only %d configured.', nBeams));",
+            *group_lines,
+            "hPs.stimulusMode = 'sequence';",
+            f"hPs.sequenceSelectedStimuli = [{ ' '.join(sequence_indices) if sequence_indices else '' }];",
+            "hPs.numSequences = 1;",
+            "if isprop(hPs,'autoTriggerPeriod'); hPs.autoTriggerPeriod = 0; end",
+            "if isprop(hPs,'stimImmediately'); hPs.stimImmediately = false; end",
             "disp('TEST_PHOTOSTIM_GROUP_COUNT');",
             "disp(numel(hPs.stimRoiGroups));",
-            "disp('TEST_GROUP_1_ROI_COUNT');",
-            "disp(numel(hGroup1.rois));",
-            "disp('TEST_GROUP_2_ROI_COUNT');",
-            "disp(numel(hGroup2.rois));",
-            "psProps = string(properties(hPs));",
-            "psMethods = string(methods(hPs));",
-            "propMask = contains(lower(psProps), 'seq') | contains(lower(psProps), 'mode') | contains(lower(psProps), 'stim');",
-            "methodMask = contains(lower(psMethods), 'seq') | contains(lower(psMethods), 'mode') | contains(lower(psMethods), 'stim');",
-            "disp('TEST_PHOTOSTIM_RELEVANT_PROPERTIES');",
-            "disp(psProps(propMask));",
-            "disp('TEST_PHOTOSTIM_RELEVANT_METHODS');",
-            "disp(psMethods(methodMask));",
-            "sequenceModeConfigured = false;",
-            "modeCandidates = {'stimSelectionMode','mode','stimMode','photostimMode','sequenceModeEnabled'};",
-            "modeValues = {'sequence','sequence','sequence','sequence',true};",
-            "for idx = 1:numel(modeCandidates); prop = modeCandidates{idx}; if any(strcmp(psProps, prop)); try; hPs.(prop) = modeValues{idx}; disp(['TEST_SEQUENCE_MODE_SET ' prop ' = ' char(string(hPs.(prop)))]); sequenceModeConfigured = true; break; catch ME; disp(['TEST_SEQUENCE_MODE_FAILED ' prop ' :: ' ME.message]); end; end; end",
-            "if ~sequenceModeConfigured; disp('TEST_SEQUENCE_MODE_SET none'); end",
-            "sequenceConfigured = false;",
-            "sequenceCandidates = {'sequenceSelectedStimuli','sequenceSelectedStimulusGroups','stimulusGroupSequence','stimSequence','sequenceStimuli','selectedStimuli'};",
-            "for idx = 1:numel(sequenceCandidates); prop = sequenceCandidates{idx}; if any(strcmp(psProps, prop)); try; hPs.(prop) = [1 2 1]; disp(['TEST_SEQUENCE_SET ' prop ' = [1 2 1]']); sequenceConfigured = true; break; catch ME; disp(['TEST_SEQUENCE_SET_FAILED ' prop ' :: ' ME.message]); end; end; end",
-            "if ~sequenceConfigured; disp('TEST_SEQUENCE_SET none'); end",
-            "sequenceCountConfigured = false;",
-            "sequenceCountCandidates = {'numSequences','sequenceCount','numberOfSequences'};",
-            "for idx = 1:numel(sequenceCountCandidates); prop = sequenceCountCandidates{idx}; if any(strcmp(psProps, prop)); try; hPs.(prop) = 1; disp(['TEST_SEQUENCE_COUNT_SET ' prop ' = ' num2str(hPs.(prop))]); sequenceCountConfigured = true; break; catch ME; disp(['TEST_SEQUENCE_COUNT_FAILED ' prop ' :: ' ME.message]); end; end; end",
-            "if ~sequenceCountConfigured; disp('TEST_SEQUENCE_COUNT_SET none'); end",
+            "disp('TEST_STIMULUS_MODE');",
+            "disp(string(hPs.stimulusMode));",
+            "disp('TEST_SEQUENCE_SELECTED_STIMULI');",
+            "disp(hPs.sequenceSelectedStimuli);",
+            "disp('TEST_NUM_SEQUENCES');",
+            "disp(hPs.numSequences);",
         ]
     )
 

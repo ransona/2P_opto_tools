@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import random
 import socket
 import threading
 import time
@@ -12,7 +13,10 @@ from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
+    QDialog,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -22,7 +26,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -87,6 +94,16 @@ class PathRuntime:
     last_context: ExperimentContext | None = None
     prepared_photostim: PreparedPhotostimState = field(default_factory=PreparedPhotostimState)
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+@dataclass
+class TestSlmPatternWidgets:
+    name_edit: QLineEdit
+    overall_power_spin: QDoubleSpinBox
+    duration_spin: QDoubleSpinBox
+    spiral_width_spin: QDoubleSpinBox
+    spiral_height_spin: QDoubleSpinBox
+    cells_table: QTableWidget
 
 
 @dataclass
@@ -160,6 +177,166 @@ class UdpListener(threading.Thread):
 
 class _ControlSignals(ScanImageSignals):
     udp_message = pyqtSignal(str, bytes, tuple)
+
+
+class TestSlmDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Test SLM Patterns")
+        self.resize(900, 700)
+        self._pattern_widgets: list[TestSlmPatternWidgets] = []
+        self._build_ui()
+        self._regenerate_patterns()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        config_box = QGroupBox("Random Pattern Settings")
+        config_form = QFormLayout(config_box)
+        self.pattern_count_spin = QSpinBox()
+        self.pattern_count_spin.setRange(1, 50)
+        self.pattern_count_spin.setValue(3)
+        self.neuron_count_spin = QSpinBox()
+        self.neuron_count_spin.setRange(1, 100)
+        self.neuron_count_spin.setValue(3)
+        self.range_min_spin = QDoubleSpinBox()
+        self.range_min_spin.setRange(-100000.0, 100000.0)
+        self.range_min_spin.setDecimals(4)
+        self.range_min_spin.setValue(-50.0)
+        self.range_max_spin = QDoubleSpinBox()
+        self.range_max_spin.setRange(-100000.0, 100000.0)
+        self.range_max_spin.setDecimals(4)
+        self.range_max_spin.setValue(50.0)
+        config_form.addRow("Pattern Count", self.pattern_count_spin)
+        config_form.addRow("Neurons Per Pattern", self.neuron_count_spin)
+        config_form.addRow("Min Coordinate", self.range_min_spin)
+        config_form.addRow("Max Coordinate", self.range_max_spin)
+        layout.addWidget(config_box)
+
+        self.pattern_tabs = QTabWidget()
+        layout.addWidget(self.pattern_tabs, 1)
+
+        button_row = QHBoxLayout()
+        self.generate_btn = QPushButton("Gen New Random Pattern")
+        self.send_btn = QPushButton("Send To ScanImage")
+        self.cancel_btn = QPushButton("Cancel")
+        button_row.addWidget(self.generate_btn)
+        button_row.addStretch(1)
+        button_row.addWidget(self.send_btn)
+        button_row.addWidget(self.cancel_btn)
+        layout.addLayout(button_row)
+
+        self.generate_btn.clicked.connect(self._regenerate_patterns)
+        self.send_btn.clicked.connect(self._accept_if_valid)
+        self.cancel_btn.clicked.connect(self.reject)
+
+    def _random_value(self) -> float:
+        low = self.range_min_spin.value()
+        high = self.range_max_spin.value()
+        if low > high:
+            low, high = high, low
+        return random.uniform(low, high)
+
+    def _regenerate_patterns(self) -> None:
+        self.pattern_tabs.clear()
+        self._pattern_widgets = []
+        pattern_count = self.pattern_count_spin.value()
+        neuron_count = self.neuron_count_spin.value()
+        for pattern_index in range(pattern_count):
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            form_box = QGroupBox(f"Pattern {pattern_index + 1}")
+            form = QFormLayout(form_box)
+            name_edit = QLineEdit(f"test_pattern_{pattern_index + 1}")
+            overall_power_spin = QDoubleSpinBox()
+            overall_power_spin.setRange(0.0, 100.0)
+            overall_power_spin.setDecimals(4)
+            overall_power_spin.setValue(5.0)
+            duration_spin = QDoubleSpinBox()
+            duration_spin.setRange(0.0001, 9999.0)
+            duration_spin.setDecimals(4)
+            duration_spin.setValue(0.010)
+            spiral_width_spin = QDoubleSpinBox()
+            spiral_width_spin.setRange(0.0, 9999.0)
+            spiral_width_spin.setDecimals(4)
+            spiral_width_spin.setValue(0.0)
+            spiral_height_spin = QDoubleSpinBox()
+            spiral_height_spin.setRange(0.0, 9999.0)
+            spiral_height_spin.setDecimals(4)
+            spiral_height_spin.setValue(0.0)
+            form.addRow("Name", name_edit)
+            form.addRow("Overall Power", overall_power_spin)
+            form.addRow("Duration (s)", duration_spin)
+            form.addRow("Spiral Width", spiral_width_spin)
+            form.addRow("Spiral Height", spiral_height_spin)
+            tab_layout.addWidget(form_box)
+
+            cells_table = QTableWidget(neuron_count, 4)
+            cells_table.setHorizontalHeaderLabels(["X", "Y", "Z", "Relative Power"])
+            cells_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            cells_table.horizontalHeader().setStretchLastSection(True)
+            for row in range(neuron_count):
+                cells_table.setItem(row, 0, QTableWidgetItem(f"{self._random_value():.4f}"))
+                cells_table.setItem(row, 1, QTableWidgetItem(f"{self._random_value():.4f}"))
+                cells_table.setItem(row, 2, QTableWidgetItem(f"{self._random_value():.4f}"))
+                cells_table.setItem(row, 3, QTableWidgetItem(f"{random.uniform(0.5, 1.5):.4f}"))
+            tab_layout.addWidget(QLabel("SLM Target Points"))
+            tab_layout.addWidget(cells_table, 1)
+            self.pattern_tabs.addTab(tab, f"Pattern {pattern_index + 1}")
+            self._pattern_widgets.append(
+                TestSlmPatternWidgets(
+                    name_edit=name_edit,
+                    overall_power_spin=overall_power_spin,
+                    duration_spin=duration_spin,
+                    spiral_width_spin=spiral_width_spin,
+                    spiral_height_spin=spiral_height_spin,
+                    cells_table=cells_table,
+                )
+            )
+
+    def _accept_if_valid(self) -> None:
+        try:
+            self.gather_patterns()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Test SLM Pattern", str(exc))
+            return
+        self.accept()
+
+    def gather_patterns(self) -> list[dict[str, object]]:
+        patterns: list[dict[str, object]] = []
+        for pattern_index, widgets in enumerate(self._pattern_widgets, start=1):
+            cells: list[dict[str, float]] = []
+            for row in range(widgets.cells_table.rowCount()):
+                values: list[str] = []
+                for col in range(widgets.cells_table.columnCount()):
+                    item = widgets.cells_table.item(row, col)
+                    values.append(item.text().strip() if item is not None else "")
+                if any(not value for value in values):
+                    raise ValueError(f"Pattern {pattern_index} cell row {row + 1} is incomplete.")
+                try:
+                    x, y, z, relative_power = (float(value) for value in values)
+                except ValueError as exc:
+                    raise ValueError(f"Pattern {pattern_index} cell row {row + 1} contains invalid numbers.") from exc
+                cells.append(
+                    {
+                        "x": x,
+                        "y": y,
+                        "z": z,
+                        "relative_power": relative_power,
+                    }
+                )
+            name = widgets.name_edit.text().strip() or f"test_pattern_{pattern_index}"
+            patterns.append(
+                {
+                    "name": name,
+                    "overall_power": widgets.overall_power_spin.value(),
+                    "duration_s": widgets.duration_spin.value(),
+                    "spiral_width": widgets.spiral_width_spin.value(),
+                    "spiral_height": widgets.spiral_height_spin.value(),
+                    "cells": cells,
+                }
+            )
+        return patterns
 
 
 class ScanImageControlWidget(QWidget):
@@ -418,7 +595,7 @@ class ScanImageControlWidget(QWidget):
         focus_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "focus", self._focus_path))
         acquire_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "acquire", self._acquire_path_from_ui))
         stop_acq_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop acquisition", self._stop_acquisition))
-        test_slm_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "test slm", self._test_photostim_api))
+        test_slm_btn.clicked.connect(lambda _, name=path_name: self._open_test_slm_dialog(name))
         start_listener_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "start listener", self._start_listener))
         stop_listener_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop listener", self._stop_listener))
 
@@ -581,12 +758,19 @@ class ScanImageControlWidget(QWidget):
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
 
-    def _test_photostim_api(self, path_name: str) -> None:
+    def _open_test_slm_dialog(self, path_name: str) -> None:
+        dialog = TestSlmDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        patterns = dialog.gather_patterns()
+        self._spawn_action(path_name, "test slm", lambda name: self._test_photostim_api(name, patterns))
+
+    def _test_photostim_api(self, path_name: str, patterns: list[dict[str, object]] | None = None) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                build_test_photostim_command(runtime.path_config),
+                build_test_photostim_command(runtime.path_config, patterns),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "photostim test"
