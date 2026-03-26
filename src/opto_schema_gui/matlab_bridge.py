@@ -459,8 +459,8 @@ def build_test_photostim_command(
                 "name": "TEST SLM Group 1",
                 "duration_s": 0.010,
                 "overall_power": 5.0,
-                "spiral_width": 0.0,
-                "spiral_height": 0.0,
+                "spiral_width": 10.0,
+                "spiral_height": 10.0,
                 "cells": [
                     {"x": 0.25, "y": 0.45, "z": 0.0, "relative_power": 1.0},
                     {"x": 0.35, "y": 0.55, "z": 0.0, "relative_power": 1.0},
@@ -470,8 +470,8 @@ def build_test_photostim_command(
                 "name": "TEST SLM Group 2",
                 "duration_s": 0.010,
                 "overall_power": 5.0,
-                "spiral_width": 0.0,
-                "spiral_height": 0.0,
+                "spiral_width": 10.0,
+                "spiral_height": 10.0,
                 "cells": [
                     {"x": 0.65, "y": 0.35, "z": 0.0, "relative_power": 1.0},
                     {"x": 0.75, "y": 0.50, "z": 0.0, "relative_power": 1.0},
@@ -486,8 +486,8 @@ def build_test_photostim_command(
         cells = pattern.get("cells", [])
         if not cells:
             continue
-        center_x = sum(float(cell["x"]) for cell in cells) / len(cells)
-        center_y = sum(float(cell["y"]) for cell in cells) / len(cells)
+        center_x_um = sum(float(cell["x"]) for cell in cells) / len(cells)
+        center_y_um = sum(float(cell["y"]) for cell in cells) / len(cells)
         slm_pattern = _matlab_matrix(
             [
                 [
@@ -507,9 +507,14 @@ def build_test_photostim_command(
         group_lines.extend(
             [
                 f"hGroup{index} = scanimage.mroi.RoiGroup({group_name});",
+                f"spiralWidthUm = {spiral_width};",
+                f"spiralHeightUm = {spiral_height};",
                 f"sf = scanimage.mroi.scanfield.fields.StimulusField();",
-                f"sf.centerXY = [{center_x} {center_y}];",
-                f"sf.sizeXY = [{spiral_width} {spiral_height}];",
+                f"centerUm = [{center_x_um} {center_y_um}];",
+                "if isscalar(resXY); centerRef = centerUm ./ [resXY resXY]; else; centerRef = centerUm ./ resXY(1:2); end",
+                "if isscalar(resXY); sizeRef = [spiralWidthUm spiralHeightUm] ./ [resXY resXY]; else; sizeRef = [spiralWidthUm spiralHeightUm] ./ resXY(1:2); end",
+                "sf.centerXY = centerRef;",
+                "sf.sizeXY = sizeRef;",
                 f"sf.duration = {duration_s};",
                 "sf.repetitions = 1;",
                 "sf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;",
@@ -534,7 +539,9 @@ def build_test_photostim_command(
         [
             build_global_preamble(path_config),
             f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            f"assert(~isempty({hsi}.objectiveResolution), 'objectiveResolution is not set in ScanImage.');",
             "hPs = " + hsi + ".hPhotostim;",
+            f"resXY = {hsi}.objectiveResolution;",
             "assert(isprop(hPs,'hasSlm') && hPs.hasSlm, 'No SLM available in the photostim configuration.');",
             "hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);",
             "hPs.sequenceSelectedStimuli = [];",
@@ -547,6 +554,8 @@ def build_test_photostim_command(
             "hPs.numSequences = 1;",
             "if isprop(hPs,'autoTriggerPeriod'); hPs.autoTriggerPeriod = 0; end",
             "if isprop(hPs,'stimImmediately'); hPs.stimImmediately = false; end",
+            "disp('TEST_WARNING');",
+            "disp('slmPattern is still using the temporary placeholder path; use Inspect SLM to identify the true stored SLM loci field.');",
             "disp('TEST_PHOTOSTIM_GROUP_COUNT');",
             "disp(numel(hPs.stimRoiGroups));",
             "disp('TEST_STIMULUS_MODE');",
@@ -555,6 +564,44 @@ def build_test_photostim_command(
             "disp(hPs.sequenceSelectedStimuli);",
             "disp('TEST_NUM_SEQUENCES');",
             "disp(hPs.numSequences);",
+        ]
+    )
+
+
+def build_inspect_photostim_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "assert(~isempty(hPs.stimRoiGroups), 'No photostim stimulus groups exist to inspect.');",
+            "rg = hPs.stimRoiGroups(1);",
+            "disp('INSPECT_GROUP_NAME');",
+            "disp(string(rg.name));",
+            "disp('INSPECT_GROUP_ROI_COUNT');",
+            "disp(numel(rg.rois));",
+            "assert(~isempty(rg.rois), 'Stimulus group has no ROIs.');",
+            "roi = rg.rois(1);",
+            "disp('INSPECT_ROI_SCANFIELD_COUNT');",
+            "disp(numel(roi.scanfields));",
+            "assert(~isempty(roi.scanfields), 'Stimulus ROI has no scanfields.');",
+            "sf = roi.scanfields(1);",
+            "disp('INSPECT_SCANFIELD_CLASS');",
+            "disp(class(sf));",
+            "disp('INSPECT_CENTER_XY');",
+            "if isprop(sf,'centerXY'); disp(sf.centerXY); else; disp('missing'); end",
+            "disp('INSPECT_SIZE_XY');",
+            "if isprop(sf,'sizeXY'); disp(sf.sizeXY); else; disp('missing'); end",
+            "disp('INSPECT_POWERS');",
+            "if isprop(sf,'powers'); disp(sf.powers); else; disp('missing'); end",
+            "disp('INSPECT_STIMPARAMS');",
+            "if isprop(sf,'stimparams'); disp(sf.stimparams); else; disp('missing'); end",
+            "disp('INSPECT_SLMPATTERN');",
+            "if isprop(sf,'slmPattern'); disp(sf.slmPattern); else; disp('missing'); end",
+            "disp('INSPECT_RELEVANT_SCANFIELD_PROPS');",
+            "sfProps = string(properties(sf));",
+            "disp(sfProps(contains(lower(sfProps),'slm') | contains(lower(sfProps),'point') | contains(lower(sfProps),'target') | contains(lower(sfProps),'weight') | contains(lower(sfProps),'power')));",
         ]
     )
 
