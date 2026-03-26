@@ -141,8 +141,12 @@ end
 function group = makeParkOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
 sfPark = scanimage.mroi.scanfield.fields.StimulusField();
+sfPark.centerXY = [0 0];
+sfPark.sizeXY = [0 0];
 sfPark.stimfcnhdl = @scanimage.mroi.stimulusfunctions.park;
+sfPark.stimparams = {};
 sfPark.duration = durationSeconds;
+sfPark.repetitions = 1;
 sfPark.powers = zeros(1, nBeams);
 roi = scanimage.mroi.Roi();
 roi.add(0, sfPark);
@@ -152,8 +156,12 @@ end
 
 function roi = makePauseRoi(durationSeconds, nBeams)
 sfPause = scanimage.mroi.scanfield.fields.StimulusField();
+sfPause.centerXY = [0 0];
+sfPause.sizeXY = [0 0];
 sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
+sfPause.stimparams = {'poweredPause', false};
 sfPause.duration = durationSeconds;
+sfPause.repetitions = 1;
 sfPause.powers = zeros(1, nBeams);
 roi = scanimage.mroi.Roi();
 roi.add(0, sfPause);
