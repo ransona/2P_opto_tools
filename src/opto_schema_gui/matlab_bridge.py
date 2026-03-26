@@ -363,6 +363,10 @@ class MatlabSession:
             outputs.append("1")
             outputs.append("TRIGGER_PHOTOSTIM_READY")
             return outputs
+        if "hps.triggerstim()" in command_lower:
+            self.sim_sequence_position += 1
+            outputs.append("SOFTWARE_TRIGGER_FIRED")
+            return outputs
         if script_name == "launch.m":
             outputs.append(f"Simulated launch.m executed in {self.current_directory}")
         elif script_name == "start_script.m":
@@ -866,6 +870,19 @@ def build_abort_photostim_command(path_config: PathConfig) -> str:
             "    hPs.abort();",
             "end",
             "disp('ABORT_PHOTOSTIM_READY');",
+        ]
+    )
+
+
+def build_software_trigger_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "hPs.triggerStim();",
+            "disp('SOFTWARE_TRIGGER_FIRED');",
         ]
     )
 

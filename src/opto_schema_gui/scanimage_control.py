@@ -53,6 +53,7 @@ from .matlab_bridge import (
     build_inspect_photostim_command,
     build_photostim_sequence_status_command,
     build_run_script_command,
+    build_software_trigger_command,
     build_test_photostim_command,
     build_trigger_photostim_command,
     context_to_matlab_variables,
@@ -112,6 +113,8 @@ class PathRuntime:
     last_context: ExperimentContext | None = None
     prepared_photostim: PreparedPhotostimState = field(default_factory=PreparedPhotostimState)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    software_trigger_stop: threading.Event | None = None
+    software_trigger_thread: threading.Thread | None = None
 
 
 @dataclass
@@ -532,10 +535,12 @@ class ScanImageControlWidget(QWidget):
         self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
         self.ignore_incomplete_trigger_checkbox = QCheckBox("Ignore incomplete stim seqs")
         self.ignore_incomplete_trigger_checkbox.setChecked(True)
+        self.software_trigger_checkbox = QCheckBox("Software trigger stim seqs")
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
         config_form.addRow("", self.force_simulated_checkbox)
         config_form.addRow("", self.ignore_incomplete_trigger_checkbox)
+        config_form.addRow("", self.software_trigger_checkbox)
         config_layout.addWidget(config_form_container, 1)
         layout.addWidget(config_box)
 
@@ -1431,7 +1436,11 @@ class ScanImageControlWidget(QWidget):
         if not prep_state.pattern_to_stimulus_group:
             raise ValueError("No prepared stimulus group mapping is available. Run prep_patterns first.")
 
-        sequence_name, expanded_groups = self._expand_trigger_sequence(project, seq_num, prep_state.pattern_to_stimulus_group)
+        sequence_name, expanded_groups, trigger_times_s = self._expand_trigger_sequence(
+            project,
+            seq_num,
+            prep_state.pattern_to_stimulus_group,
+        )
 
         def worker() -> None:
             ok = self._run_action(
@@ -1464,6 +1473,8 @@ class ScanImageControlWidget(QWidget):
                 self._send_json_reply(request_path_name, reply_address, payload)
             else:
                 self.signals.log_message.emit(f"[config] gui trigger_photo_stim result={payload}")
+            if ok and self.software_trigger_checkbox.isChecked():
+                self._start_software_trigger_schedule(photostim_path, sequence_name, trigger_times_s)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1510,7 +1521,7 @@ class ScanImageControlWidget(QWidget):
         project,
         seq_num: int,
         pattern_to_stimulus_group: dict[str, int],
-    ) -> tuple[str, list[int]]:
+    ) -> tuple[str, list[int], list[float]]:
         sequence_names = list(project.sequences.keys())
         if not sequence_names:
             raise ValueError("Schema does not contain any sequences")
@@ -1520,6 +1531,8 @@ class ScanImageControlWidget(QWidget):
         sequence_name = sequence_names[seq_num]
         sequence = project.sequences[sequence_name]
         expanded_groups: list[int] = []
+        trigger_times_s: list[float] = []
+        end_time_s = 0.0
         for step in sequence.steps:
             if step.pattern not in project.patterns:
                 raise ValueError(f"Sequence '{sequence_name}' references unknown pattern '{step.pattern}'")
@@ -1530,10 +1543,14 @@ class ScanImageControlWidget(QWidget):
             pattern = project.patterns[step.pattern]
             repeat_count_float = pattern.duration_s * pattern.frequency_hz
             repeat_count = max(1, int(round(repeat_count_float)))
+            period_s = 1.0 / pattern.frequency_hz
             expanded_groups.extend([pattern_to_stimulus_group[step.pattern]] * repeat_count)
+            trigger_times_s.extend(step.start_s + period_s * index for index in range(repeat_count))
+            end_time_s = max(end_time_s, step.start_s + pattern.duration_s)
 
         expanded_groups.append(2)
-        return sequence_name, expanded_groups
+        trigger_times_s.append(end_time_s)
+        return sequence_name, expanded_groups, trigger_times_s
 
     def _apply_trigger_sequence(self, path_name: str, sequence_indices: list[int]) -> None:
         runtime = self._ensure_session(path_name)
@@ -1561,6 +1578,7 @@ class ScanImageControlWidget(QWidget):
             runtime.status = "photostim aborted"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
+        self._cancel_software_trigger(path_name)
 
     def _query_photostim_sequence_state(self, path_name: str) -> tuple[bool, int | None, list[int]]:
         runtime = self._ensure_session(path_name)
@@ -1597,6 +1615,62 @@ class ScanImageControlWidget(QWidget):
                 except ValueError:
                     pass
         return active, position, sequence
+
+    def _fire_software_trigger(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_software_trigger_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        self._emit_lines(path_name, lines)
+
+    def _cancel_software_trigger(self, path_name: str) -> None:
+        runtime = self._runtimes[path_name]
+        if runtime.software_trigger_stop is not None:
+            runtime.software_trigger_stop.set()
+        runtime.software_trigger_stop = None
+        runtime.software_trigger_thread = None
+
+    def _start_software_trigger_schedule(
+        self,
+        path_name: str,
+        sequence_name: str,
+        trigger_times_s: list[float],
+    ) -> None:
+        self._cancel_software_trigger(path_name)
+        runtime = self._runtimes[path_name]
+        stop_event = threading.Event()
+        runtime.software_trigger_stop = stop_event
+
+        def worker() -> None:
+            start_time = time.monotonic()
+            self.signals.log_message.emit(
+                f"[{path_name}] software trigger schedule started for sequence '{sequence_name}' with {len(trigger_times_s)} trigger(s)"
+            )
+            for index, trigger_time_s in enumerate(trigger_times_s, start=1):
+                while True:
+                    if stop_event.is_set():
+                        self.signals.log_message.emit(f"[{path_name}] software trigger schedule cancelled")
+                        return
+                    remaining = start_time + trigger_time_s - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(remaining, 0.05))
+                try:
+                    self._fire_software_trigger(path_name)
+                    self.signals.log_message.emit(
+                        f"[{path_name}] software trigger fired {index}/{len(trigger_times_s)} at t={trigger_time_s:.4f}s"
+                    )
+                except Exception as exc:
+                    self.signals.log_message.emit(f"[{path_name}] ERROR: software trigger failed: {exc}")
+                    return
+            self.signals.log_message.emit(f"[{path_name}] software trigger schedule completed")
+
+        thread = threading.Thread(target=worker, daemon=True)
+        runtime.software_trigger_thread = thread
+        thread.start()
 
     def _parse_trigger_insert_position(self, lines: list[str]) -> int | None:
         for index, raw_line in enumerate(lines):
