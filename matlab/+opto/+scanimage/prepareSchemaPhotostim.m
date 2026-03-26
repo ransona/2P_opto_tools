@@ -58,6 +58,9 @@ for idx = 1:numel(patternNames)
         pattern.name = sprintf('P%d', patternNumber);
     end
 
+    disp("Preparing schema pattern:");
+    disp(patternName);
+    disp(patternNumber);
     hGroup = buildSlmStimGroup(pattern, patternNumber, hSI, opts);
     hPs.stimRoiGroups(end + 1) = hGroup;
     importedPatternNames(end + 1, 1) = patternName; %#ok<AGROW>
@@ -101,6 +104,7 @@ pointsRef = pointsUm;
 pointsRef(:,1) = pointsUm(:,1) ./ resX;
 pointsRef(:,2) = pointsUm(:,2) ./ resY;
 centerRef = [centerUm(1) ./ resX, centerUm(2) ./ resY];
+centerRef = reshape(centerRef, 1, []);
 
 stimDuration = pattern.duty_cycle ./ pattern.frequency_hz;
 spiralWidth = getfieldwithdefault(pattern, 'spiral_width', 10); %#ok<GFLD>
@@ -114,7 +118,13 @@ stimField.duration = stimDuration;
 stimField.repetitions = 1;
 stimField.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;
 stimField.stimparams = {'revolutions', opts.Revolutions, 'direction', 'outward'};
-stimField.slmPattern = [pointsRef(:,1:2) - centerRef, pointsRef(:,3), pointsRef(:,4)];
+nPoints = size(pointsRef, 1);
+slmPattern = zeros(nPoints, 4);
+slmPattern(:,1) = pointsRef(:,1) - centerRef(1);
+slmPattern(:,2) = pointsRef(:,2) - centerRef(2);
+slmPattern(:,3) = pointsRef(:,3);
+slmPattern(:,4) = pointsRef(:,4);
+stimField.slmPattern = slmPattern;
 if ismethod(stimField, 'recenterGalvoOntoSlmPattern')
     stimField.recenterGalvoOntoSlmPattern();
 end
