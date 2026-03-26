@@ -536,10 +536,12 @@ class ScanImageControlWidget(QWidget):
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
         self.clear_log_btn = QPushButton("Clear Debug Output")
+        self.clear_all_logs_btn = QPushButton("All")
         log_layout.addWidget(self.log_text)
         clear_row = QHBoxLayout()
         clear_row.addStretch(1)
         clear_row.addWidget(self.clear_log_btn)
+        clear_row.addWidget(self.clear_all_logs_btn)
         log_layout.addLayout(clear_row)
         layout.addWidget(log_box, 1)
 
@@ -550,7 +552,13 @@ class ScanImageControlWidget(QWidget):
         self.stop_config_btn.clicked.connect(self.stop_config)
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
         self.clear_log_btn.clicked.connect(self.log_text.clear)
+        self.clear_all_logs_btn.clicked.connect(self._clear_all_logs)
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
+
+    def _clear_all_logs(self) -> None:
+        self.log_text.clear()
+        for widgets in self._path_tabs.values():
+            widgets.udp_text.clear()
 
     def reload_discovery(self) -> None:
         machine_names = list_machine_names(self.repo_root)
