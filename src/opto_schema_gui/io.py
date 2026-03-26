@@ -30,6 +30,8 @@ def load_schema(path: str | Path) -> ExperimentProject:
             duration_s=pattern_data.get("duration_s", 0.0),
             frequency_hz=pattern_data.get("frequency_hz", 0.0),
             power_percent=pattern_data.get("power_percent", 0.0),
+            spiral_width=pattern_data.get("spiral_width", 10.0),
+            spiral_height=pattern_data.get("spiral_height", 10.0),
             notes=pattern_data.get("notes", ""),
             cells=cells,
         )

@@ -29,6 +29,8 @@ class Pattern:
     duration_s: float
     frequency_hz: float
     power_percent: float
+    spiral_width: float = 10.0
+    spiral_height: float = 10.0
     notes: str = ""
     cells: List[CellSpec] = field(default_factory=list)
 
@@ -38,6 +40,8 @@ class Pattern:
             "duration_s": self.duration_s,
             "frequency_hz": self.frequency_hz,
             "power_percent": self.power_percent,
+            "spiral_width": self.spiral_width,
+            "spiral_height": self.spiral_height,
             "notes": self.notes,
             "cells": [cell.as_dict() for cell in self.cells],
         }

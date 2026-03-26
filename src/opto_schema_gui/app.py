@@ -191,6 +191,16 @@ class PatternEditor(QWidget):
         self.power_spin.setDecimals(2)
         self.power_spin.setValue(20.0)
 
+        self.spiral_width_spin = QDoubleSpinBox()
+        self.spiral_width_spin.setRange(0.0, 9999.0)
+        self.spiral_width_spin.setDecimals(4)
+        self.spiral_width_spin.setValue(10.0)
+
+        self.spiral_height_spin = QDoubleSpinBox()
+        self.spiral_height_spin.setRange(0.0, 9999.0)
+        self.spiral_height_spin.setDecimals(4)
+        self.spiral_height_spin.setValue(10.0)
+
         self.notes_edit = QLineEdit()
         self.clear_btn = QPushButton("Clear")
 
@@ -198,6 +208,8 @@ class PatternEditor(QWidget):
         form.addRow("Duration (s)", self.duration_spin)
         form.addRow("Frequency (Hz)", self.freq_spin)
         form.addRow("Power (%)", self.power_spin)
+        form.addRow("Spiral Width", self.spiral_width_spin)
+        form.addRow("Spiral Height", self.spiral_height_spin)
         form.addRow("Notes", self.notes_edit)
         form.addRow("", self.clear_btn)
 
@@ -229,6 +241,8 @@ class PatternEditor(QWidget):
         self.duration_spin.valueChanged.connect(self._on_form_changed)
         self.freq_spin.valueChanged.connect(self._on_form_changed)
         self.power_spin.valueChanged.connect(self._on_form_changed)
+        self.spiral_width_spin.valueChanged.connect(self._on_form_changed)
+        self.spiral_height_spin.valueChanged.connect(self._on_form_changed)
         self.notes_edit.editingFinished.connect(self._on_form_changed)
 
     def add_cell_row(self, cell: CellSpec | None = None) -> None:
@@ -292,6 +306,8 @@ class PatternEditor(QWidget):
         self.duration_spin.setValue(pattern.duration_s)
         self.freq_spin.setValue(pattern.frequency_hz)
         self.power_spin.setValue(pattern.power_percent)
+        self.spiral_width_spin.setValue(pattern.spiral_width)
+        self.spiral_height_spin.setValue(pattern.spiral_height)
         self.notes_edit.setText(pattern.notes)
         self.cells_table.setRowCount(0)
         for cell in pattern.cells:
@@ -308,6 +324,8 @@ class PatternEditor(QWidget):
         self.duration_spin.setValue(1.0)
         self.freq_spin.setValue(10.0)
         self.power_spin.setValue(20.0)
+        self.spiral_width_spin.setValue(10.0)
+        self.spiral_height_spin.setValue(10.0)
         self.notes_edit.clear()
         self.cells_table.setRowCount(0)
         self._loading = False
@@ -328,6 +346,8 @@ class PatternEditor(QWidget):
             duration_s=pattern.duration_s,
             frequency_hz=pattern.frequency_hz,
             power_percent=pattern.power_percent,
+            spiral_width=pattern.spiral_width,
+            spiral_height=pattern.spiral_height,
             notes=pattern.notes,
             cells=[CellSpec(**cell.as_dict()) for cell in pattern.cells],
         )
@@ -358,6 +378,8 @@ class PatternEditor(QWidget):
             duration_s=self.duration_spin.value(),
             frequency_hz=self.freq_spin.value(),
             power_percent=self.power_spin.value(),
+            spiral_width=self.spiral_width_spin.value(),
+            spiral_height=self.spiral_height_spin.value(),
             notes=self.notes_edit.text().strip(),
             cells=cells,
         )
@@ -878,6 +900,8 @@ class MainWindow(QMainWindow):
             duration_s=1.0,
             frequency_hz=10.0,
             power_percent=20.0,
+            spiral_width=10.0,
+            spiral_height=10.0,
             cells=[CellSpec(label="cell1", x=0, y=0, z=0)],
         )
         self.pattern_dirty = True
@@ -900,6 +924,8 @@ class MainWindow(QMainWindow):
             duration_s=pattern.duration_s,
             frequency_hz=pattern.frequency_hz,
             power_percent=pattern.power_percent,
+            spiral_width=pattern.spiral_width,
+            spiral_height=pattern.spiral_height,
             notes=pattern.notes,
             cells=[CellSpec(label=cell.label, x=cell.x, y=cell.y, z=cell.z, power_scale=cell.power_scale) for cell in pattern.cells],
         )
