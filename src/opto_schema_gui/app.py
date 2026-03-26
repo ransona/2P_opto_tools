@@ -797,10 +797,8 @@ class MainWindow(QMainWindow):
         sequence_buttons.addWidget(self.delete_sequence_btn)
         sequence_layout.addLayout(sequence_buttons)
 
-        self.project_tabs = QTabWidget()
-        self.project_tabs.addTab(pattern_box, "Project Patterns")
-        self.project_tabs.addTab(sequence_box, "Project Sequences")
-        schema_left_layout.addWidget(self.project_tabs, 1)
+        schema_left_layout.addWidget(pattern_box, 1)
+        schema_left_layout.addWidget(sequence_box, 1)
 
         self.schema_editor_tabs = QTabWidget()
         self.schema_editor_tabs.addTab(self.pattern_editor, "Pattern Editor")
@@ -906,7 +904,6 @@ class MainWindow(QMainWindow):
             return
         name = self._item_name(current)
         if name in self.project.patterns:
-            self.project_tabs.setCurrentIndex(0)
             self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
             self.pattern_editor.load_pattern(name)
 
@@ -915,7 +912,6 @@ class MainWindow(QMainWindow):
             return
         name = self._item_name(current)
         if name in self.project.sequences:
-            self.project_tabs.setCurrentIndex(1)
             self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
             self.sequence_editor.load_sequence(name)
             self.preview.set_sequence(name)
@@ -936,7 +932,6 @@ class MainWindow(QMainWindow):
         self.refresh_lists()
         self._select_item_by_name(self.pattern_list, name)
         self.main_tabs.setCurrentIndex(1)
-        self.project_tabs.setCurrentIndex(0)
         self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def copy_pattern(self) -> None:
@@ -961,7 +956,6 @@ class MainWindow(QMainWindow):
         self.refresh_lists()
         self._select_item_by_name(self.pattern_list, copied.name)
         self.main_tabs.setCurrentIndex(1)
-        self.project_tabs.setCurrentIndex(0)
         self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def delete_pattern(self) -> None:
@@ -985,7 +979,6 @@ class MainWindow(QMainWindow):
         self.refresh_lists()
         self._select_item_by_name(self.sequence_list, name)
         self.main_tabs.setCurrentIndex(1)
-        self.project_tabs.setCurrentIndex(1)
         self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
 
     def copy_sequence(self) -> None:
@@ -1004,7 +997,6 @@ class MainWindow(QMainWindow):
         self.refresh_lists()
         self._select_item_by_name(self.sequence_list, copied.name)
         self.main_tabs.setCurrentIndex(1)
-        self.project_tabs.setCurrentIndex(1)
         self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
 
     def delete_sequence(self) -> None:
