@@ -5,7 +5,9 @@ import io
 import ntpath
 import os
 import socket
+import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -111,6 +113,7 @@ class MatlabSession:
         self.current_directory = str(config.directory)
         self.started_with_launch = False
         self.attached = False
+        self.launch_process = None
 
     def start(self, startup_command: str | None = None) -> None:
         if self.engine is not None or self.simulated:
@@ -134,24 +137,9 @@ class MatlabSession:
             self._validate_connected_session()
             return
 
-        try:
-            flags = " ".join(self.config.matlab_flags).strip()
-            self.engine = matlab_engine.start_matlab(flags)
-        except Exception as exc:
-            raise MatlabSessionError(
-                f"Could not start MATLAB Engine for path '{self.config.name}': {exc}"
-            ) from exc
-
         self.attached = False
         self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-        self._share_engine()
-        if startup_command:
-            self.eval(startup_command, timeout_s=self.config.startup_timeout_s)
-            return
-        self.eval(
-            f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}));",
-            timeout_s=self.config.startup_timeout_s,
-        )
+        self._launch_external_and_connect(startup_command)
 
     def stop(self) -> None:
         if self.simulated:
@@ -247,6 +235,52 @@ class MatlabSession:
         )
         if not lines:
             return
+
+    def _launch_external_and_connect(self, startup_command: str | None) -> None:
+        assert matlab_engine is not None
+        matlab_cmd = [self.config.matlab_executable, *self.config.matlab_flags]
+        startup = self._build_startup_command(startup_command)
+        matlab_cmd.extend(["-r", startup])
+        try:
+            self.launch_process = subprocess.Popen(matlab_cmd)
+        except Exception as exc:
+            raise MatlabSessionError(
+                f"Could not launch MATLAB process for path '{self.config.name}': {exc}"
+            ) from exc
+
+        deadline = time.monotonic() + self.config.startup_timeout_s
+        last_error = None
+        while time.monotonic() < deadline:
+            try:
+                available = matlab_engine.find_matlab()
+            except Exception as exc:
+                last_error = exc
+                available = ()
+            if self.config.engine_name in available:
+                try:
+                    self.engine = matlab_engine.connect_matlab(self.config.engine_name)
+                    self._validate_connected_session()
+                    return
+                except Exception as exc:
+                    last_error = exc
+            time.sleep(1.0)
+        raise MatlabSessionError(
+            f"Timed out waiting to connect to shared MATLAB engine '{self.config.engine_name}' "
+            f"for path '{self.config.name}'. Last error: {last_error}"
+        )
+
+    def _build_startup_command(self, startup_command: str | None) -> str:
+        commands = [f"matlab.engine.shareEngine({matlab_string(self.config.engine_name)})"]
+        if startup_command:
+            commands.append(startup_command)
+        else:
+            commands.append(f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}))")
+        body = "; ".join(commands)
+        return (
+            "try; "
+            + body
+            + "; catch ME; disp(getReport(ME,'extended')); end"
+        )
 
     def _simulate_eval(self, command: str) -> list[str]:
         outputs: list[str] = []
