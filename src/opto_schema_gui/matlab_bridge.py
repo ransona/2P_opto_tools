@@ -589,7 +589,7 @@ def build_test_photostim_command(
             for cell in cells
         ]
         points_um = _matlab_matrix(point_rows)
-        power_fractions = _matlab_matrix([[row[3]] for row in point_rows])
+        power_fractions = "[" + " ".join(repr(row[3]) for row in point_rows) + "]"
         group_name = matlab_string(str(pattern.get("name", f"TEST SLM Group {index}")))
         duration_s = float(pattern.get("duration_s", 0.010))
         overall_power = float(pattern.get("overall_power", 5.0))
