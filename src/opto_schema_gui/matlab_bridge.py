@@ -491,8 +491,8 @@ def build_test_photostim_command(
         slm_pattern = _matlab_matrix(
             [
                 [
-                    float(cell["x"]),
-                    float(cell["y"]),
+                    float(cell["x"]) - center_x_um,
+                    float(cell["y"]) - center_y_um,
                     float(cell["z"]),
                     float(cell.get("relative_power", 1.0)),
                 ]
