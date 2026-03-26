@@ -453,8 +453,8 @@ class PhotostimTestDialog(QDialog):
         self.schema_name_edit = QLineEdit("DEFAULT")
         self.exp_id_edit = QLineEdit("2026-03-25_10_TEST")
         self.seq_num_spin = QSpinBox()
-        self.seq_num_spin.setRange(1, 1000000)
-        self.seq_num_spin.setValue(1)
+        self.seq_num_spin.setRange(0, 1000000)
+        self.seq_num_spin.setValue(0)
         form.addRow("Schema Name", self.schema_name_edit)
         form.addRow("Exp ID", self.exp_id_edit)
         form.addRow("Seq Num", self.seq_num_spin)
@@ -1291,6 +1291,7 @@ class ScanImageControlWidget(QWidget):
             return
 
         schema_path = self._resolve_schema_path(schema_name, exp_id)
+        self.signals.log_message.emit(f"Loading schema: {schema_path}")
         project = load_schema(schema_path)
         runtime = self._runtimes[photostim_path]
         prep_state = runtime.prepared_photostim
@@ -1389,6 +1390,7 @@ class ScanImageControlWidget(QWidget):
             return
 
         schema_path = self._resolve_schema_path(schema_name, exp_id)
+        self.signals.log_message.emit(f"Loading schema: {schema_path}")
         project = load_schema(schema_path)
         runtime = self._runtimes[photostim_path]
         prep_state = runtime.prepared_photostim
@@ -1442,10 +1444,10 @@ class ScanImageControlWidget(QWidget):
         sequence_names = list(project.sequences.keys())
         if not sequence_names:
             raise ValueError("Schema does not contain any sequences")
-        if seq_num < 1 or seq_num > len(sequence_names):
+        if seq_num < 0 or seq_num >= len(sequence_names):
             raise IndexError(f"seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)")
 
-        sequence_name = sequence_names[seq_num - 1]
+        sequence_name = sequence_names[seq_num]
         sequence = project.sequences[sequence_name]
         expanded_groups: list[int] = []
         for step in sequence.steps:
@@ -1577,9 +1579,9 @@ class ScanImageControlWidget(QWidget):
         prepared_sequence_names: list[str] = []
         used_pattern_names: set[str] = set()
         for seq_num in seq_nums:
-            if seq_num < 1 or seq_num > len(sequence_names):
+            if seq_num < 0 or seq_num >= len(sequence_names):
                 raise IndexError(f"seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)")
-            sequence_name = sequence_names[seq_num - 1]
+            sequence_name = sequence_names[seq_num]
             prepared_sequence_names.append(sequence_name)
             sequence = project.sequences[sequence_name]
             for step in sequence.steps:
