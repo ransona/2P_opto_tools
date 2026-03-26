@@ -166,6 +166,8 @@ Each config INI defines:
 
 When MATLAB is not available, the bridge runs in simulated mode. In that mode the GUI still launches paths, runs simulated `launch.m` / `start_script.m` / `stop_script.m`, imports schema patterns, accepts UDP commands, and logs simulated ScanImage responses.
 
+The `ScanImage Control` tab also includes a `Force Simulated Mode` toggle. When enabled, path launches and photostim prep stay entirely in the simulated backend even if MATLAB is installed. This is useful for testing UDP flow, schema resolution, and prep logic without touching a live ScanImage session.
+
 ### File format
 
 The app writes one YAML file:

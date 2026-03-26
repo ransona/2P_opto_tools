@@ -106,8 +106,9 @@ class MatlabSessionError(RuntimeError):
 
 
 class MatlabSession:
-    def __init__(self, config: PathConfig):
+    def __init__(self, config: PathConfig, force_simulated: bool = False):
         self.config = config
+        self.force_simulated = force_simulated
         self.engine = None
         self.simulated = False
         self.current_directory = str(config.directory)
@@ -119,12 +120,16 @@ class MatlabSession:
         if self.engine is not None or self.simulated:
             return
 
-        if self.config.simulation_mode == "always":
+        if self.force_simulated or self.config.simulation_mode == "always":
             self._start_simulated()
             self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
             return
 
         if matlab_engine is None:
+            if self.config.simulation_mode == "auto":
+                self._start_simulated()
+                self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
+                return
             raise MatlabSessionError(
                 "matlab.engine is not installed in this Python environment. "
                 "Install the MATLAB Engine for Python to run live ScanImage control."
@@ -139,7 +144,13 @@ class MatlabSession:
 
         self.attached = False
         self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-        self._launch_external_and_connect(startup_command)
+        try:
+            self._launch_external_and_connect(startup_command)
+        except MatlabSessionError:
+            if self.config.simulation_mode == "auto":
+                self._start_simulated()
+                return
+            raise
 
     def stop(self) -> None:
         if self.simulated:
@@ -298,12 +309,23 @@ class MatlabSession:
             if schema_path is None:
                 return ["Simulated photostim prep completed"]
             data = yaml.safe_load(Path(schema_path).read_text()) or {}
-            pattern_names = list((data.get("patterns") or {}).keys())
+            patterns = data.get("patterns") or {}
+            pattern_names = list(patterns.keys())
+            pattern_numbers = [
+                index + 1
+                for index, name in enumerate(pattern_names)
+            ]
             outputs.append(f"Simulated photostim prep from {schema_path}")
+            outputs.append("Reserved stimulus groups: 1=BLANK, 2=PARK")
+            for pattern_name, pattern_number in zip(pattern_names, pattern_numbers):
+                outputs.append(f"Prepared P{pattern_number} from pattern '{pattern_name}' as stimulus group {pattern_number + 2}")
             outputs.append("Prepared photostim sequence mode")
             outputs.append("sequence")
+            outputs.append("Prepared stimulus group sequence")
+            outputs.append(str(list(range(1, len(pattern_names) + 3))))
+            outputs.append("Prepared number of sequences")
+            outputs.append("1")
             outputs.append("Simulated photostim mask generation ready")
-            outputs.extend(pattern_names)
             return outputs
         if "importschemapatterns" in command_lower:
             schema_path = _extract_schema_path_from_import(command)

@@ -14,6 +14,7 @@ from typing import Callable
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -470,8 +471,10 @@ class ScanImageControlWidget(QWidget):
         config_form = QFormLayout(config_form_container)
         self.machine_combo = QComboBox()
         self.config_combo = QComboBox()
+        self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
+        config_form.addRow("", self.force_simulated_checkbox)
         config_layout.addWidget(config_form_container, 1)
         layout.addWidget(config_box)
 
@@ -499,6 +502,7 @@ class ScanImageControlWidget(QWidget):
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
         self.clear_log_btn.clicked.connect(self.log_text.clear)
+        self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
 
     def reload_discovery(self) -> None:
         machine_names = list_machine_names(self.repo_root)
@@ -526,6 +530,10 @@ class ScanImageControlWidget(QWidget):
         if not schema_root.is_absolute():
             schema_root = (self.repo_root / schema_root).resolve()
         return save_root, schema_root
+
+    def _on_force_simulated_toggled(self, checked: bool) -> None:
+        mode = "enabled" if checked else "disabled"
+        self.signals.log_message.emit(f"[config] Force Simulated Mode {mode}")
 
     def shutdown(self) -> None:
         for path_name in list(self._runtimes):
@@ -754,7 +762,10 @@ class ScanImageControlWidget(QWidget):
         runtime = self._runtimes[path_name]
         with runtime.lock:
             if runtime.session is None:
-                session = MatlabSession(runtime.path_config)
+                session = MatlabSession(
+                    runtime.path_config,
+                    force_simulated=self.force_simulated_checkbox.isChecked(),
+                )
                 try:
                     session.start(startup_command=self._build_launch_startup_command(runtime.path_config))
                 except Exception:
@@ -770,7 +781,8 @@ class ScanImageControlWidget(QWidget):
                 runtime.launched = True
                 self.signals.path_status.emit(path_name, runtime.status)
                 if session.simulated:
-                    self.signals.log_message.emit(f"[{path_name}] simulated MATLAB session started")
+                    mode = "forced simulated mode" if self.force_simulated_checkbox.isChecked() else "simulated mode"
+                    self.signals.log_message.emit(f"[{path_name}] MATLAB session started in {mode}")
                 elif session.attached:
                     self.signals.log_message.emit(
                         f"[{path_name}] reconnected to existing MATLAB session '{runtime.path_config.engine_name}'"
