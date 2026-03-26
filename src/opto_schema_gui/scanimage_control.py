@@ -1700,15 +1700,13 @@ class ScanImageControlWidget(QWidget):
             if insert_position is not None:
                 expected_stimuli = max(0, expected_position - insert_position)
                 delivered_stimuli = max(0, current_position - insert_position)
-            message = (
-                "Previous photostim sequence does not appear complete: "
-                f"current sequencePosition={current_position}, expected at least {expected_position}"
-            )
             if expected_stimuli is not None and delivered_stimuli is not None:
-                message += (
-                    f" ({delivered_stimuli} stimuli delivered, "
-                    f"{expected_stimuli} expected)"
+                message = (
+                    "Previous photostim sequence does not appear complete: "
+                    f"{delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
                 )
+            else:
+                message = "Previous photostim sequence does not appear complete."
             if self.ignore_incomplete_trigger_checkbox.isChecked():
                 self.signals.log_message.emit(f"[{path_name}] WARNING: {message}")
             else:
