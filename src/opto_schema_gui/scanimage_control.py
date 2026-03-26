@@ -180,8 +180,9 @@ class _ControlSignals(ScanImageSignals):
 
 
 class TestSlmDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, send_callback: Callable[[list[dict[str, object]]], None], parent: QWidget | None = None):
         super().__init__(parent)
+        self._send_callback = send_callback
         self.setWindowTitle("Test SLM Patterns")
         self.resize(900, 700)
         self._pattern_widgets: list[TestSlmPatternWidgets] = []
@@ -227,7 +228,7 @@ class TestSlmDialog(QDialog):
         layout.addLayout(button_row)
 
         self.generate_btn.clicked.connect(self._regenerate_patterns)
-        self.send_btn.clicked.connect(self._accept_if_valid)
+        self.send_btn.clicked.connect(self._send_if_valid)
         self.cancel_btn.clicked.connect(self.reject)
 
     def _random_value(self) -> float:
@@ -259,11 +260,11 @@ class TestSlmDialog(QDialog):
             spiral_width_spin = QDoubleSpinBox()
             spiral_width_spin.setRange(0.0, 9999.0)
             spiral_width_spin.setDecimals(4)
-            spiral_width_spin.setValue(0.0)
+            spiral_width_spin.setValue(10.0)
             spiral_height_spin = QDoubleSpinBox()
             spiral_height_spin.setRange(0.0, 9999.0)
             spiral_height_spin.setDecimals(4)
-            spiral_height_spin.setValue(0.0)
+            spiral_height_spin.setValue(10.0)
             form.addRow("Name", name_edit)
             form.addRow("Overall Power", overall_power_spin)
             form.addRow("Duration (s)", duration_spin)
@@ -294,13 +295,13 @@ class TestSlmDialog(QDialog):
                 )
             )
 
-    def _accept_if_valid(self) -> None:
+    def _send_if_valid(self) -> None:
         try:
-            self.gather_patterns()
+            patterns = self.gather_patterns()
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid Test SLM Pattern", str(exc))
             return
-        self.accept()
+        self._send_callback(patterns)
 
     def gather_patterns(self) -> list[dict[str, object]]:
         patterns: list[dict[str, object]] = []
@@ -759,11 +760,15 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
 
     def _open_test_slm_dialog(self, path_name: str) -> None:
-        dialog = TestSlmDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        patterns = dialog.gather_patterns()
-        self._spawn_action(path_name, "test slm", lambda name: self._test_photostim_api(name, patterns))
+        dialog = TestSlmDialog(
+            lambda patterns: self._spawn_action(
+                path_name,
+                "test slm",
+                lambda name: self._test_photostim_api(name, patterns),
+            ),
+            self,
+        )
+        dialog.exec()
 
     def _test_photostim_api(self, path_name: str, patterns: list[dict[str, object]] | None = None) -> None:
         runtime = self._ensure_session(path_name)
