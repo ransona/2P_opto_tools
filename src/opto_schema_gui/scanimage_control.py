@@ -901,15 +901,28 @@ class ScanImageControlWidget(QWidget):
     def _import_patterns(self, path_name: str, schema_path: Path) -> None:
         self._import_pattern_subset(path_name, schema_path, None)
 
-    def _import_pattern_subset(self, path_name: str, schema_path: Path, pattern_names: list[str] | None) -> None:
+    def _import_pattern_subset(
+        self,
+        path_name: str,
+        schema_path: Path,
+        pattern_names: list[str] | None,
+        prepare_sequence: bool = False,
+        start_photostim: bool = False,
+    ) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                build_import_command(schema_path, runtime.path_config, pattern_names=pattern_names),
+                build_import_command(
+                    schema_path,
+                    runtime.path_config,
+                    pattern_names=pattern_names,
+                    prepare_sequence=prepare_sequence,
+                    start_photostim=start_photostim,
+                ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
-            runtime.status = "patterns imported"
+            runtime.status = "photostim ready" if start_photostim else "patterns imported"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
 
@@ -1107,7 +1120,13 @@ class ScanImageControlWidget(QWidget):
             ok = self._run_action(
                 photostim_path,
                 "json prep_patterns",
-                lambda name: self._import_pattern_subset(name, schema_path, pattern_names),
+                lambda name: self._import_pattern_subset(
+                    name,
+                    schema_path,
+                    pattern_names,
+                    prepare_sequence=True,
+                    start_photostim=True,
+                ),
             )
             runtime = self._runtimes[photostim_path]
             prep_state = runtime.prepared_photostim

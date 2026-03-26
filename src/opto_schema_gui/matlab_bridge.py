@@ -485,6 +485,8 @@ def build_import_command(
     schema_path: str | Path,
     path_config: PathConfig,
     pattern_names: list[str] | None = None,
+    prepare_sequence: bool = False,
+    start_photostim: bool = False,
 ) -> str:
     schema_expr = matlab_string(str(Path(schema_path).resolve()))
     point_size_expr = f"[{path_config.point_size_xy[0]} {path_config.point_size_xy[1]}]"
@@ -492,9 +494,20 @@ def build_import_command(
     if pattern_names:
         quoted = "; ".join(matlab_string(name) for name in pattern_names)
         pattern_names_expr = f"string([{quoted}])"
-    return "\n".join(
+    lines = [
+        build_global_preamble(path_config),
+        f"hPs = {path_config.hsi_variable}.hPhotostim;",
+    ]
+    if prepare_sequence or start_photostim:
+        lines.extend(
+            [
+                "if hPs.active",
+                "    hPs.abort();",
+                "end",
+            ]
+        )
+    lines.extend(
         [
-            build_global_preamble(path_config),
             f"importedPatternNames = opto.scanimage.importSchemaPatterns({path_config.hsi_variable}, {schema_expr}, ...",
             f"    PatternNames={pattern_names_expr}, ...",
             f"    ClearExisting={'true' if path_config.clear_existing else 'false'}, ...",
@@ -511,6 +524,27 @@ def build_import_command(
             "disp(importedPatternNames);",
         ]
     )
+    if prepare_sequence:
+        lines.extend(
+            [
+                "stimCount = numel(hPs.stimRoiGroups);",
+                "hPs.stimulusMode = 'sequence';",
+                "hPs.sequenceSelectedStimuli = 1:stimCount;",
+                "hPs.numSequences = 1;",
+                "disp('Prepared photostim sequence mode');",
+                "disp(string(hPs.stimulusMode));",
+                "disp(hPs.sequenceSelectedStimuli);",
+                "disp(hPs.numSequences);",
+            ]
+        )
+    if start_photostim:
+        lines.extend(
+            [
+                "hPs.start();",
+                "disp('Photostim started');",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def build_global_preamble(path_config: PathConfig) -> str:
