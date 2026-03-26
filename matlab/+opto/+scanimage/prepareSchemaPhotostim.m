@@ -32,8 +32,9 @@ end
 hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);
 hPs.sequenceSelectedStimuli = [];
 
-hPs.stimRoiGroups(end + 1) = makePauseOnlyGroup("BLANK", opts.BlankDuration);
-hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration);
+nBeams = getPhotostimBeamCount(hSI);
+hPs.stimRoiGroups(end + 1) = makePauseOnlyGroup("BLANK", opts.BlankDuration, nBeams);
+hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration, nBeams);
 
 importedPatternNames = strings(0, 1);
 patternNumbers = zeros(0, 1);
@@ -118,49 +119,42 @@ if ismethod(stimField, 'recenterGalvoOntoSlmPattern')
     stimField.recenterGalvoOntoSlmPattern();
 end
 
-nBeams = 1;
-try
-    ss = hPsStimScannerset(hSI);
-    if most.idioms.isValidObj(ss)
-        nBeams = numel(ss.beams);
-    end
-catch
-    nBeams = 1;
-end
-assert(nBeams >= 3, 'Photostim expects at least 3 beams; only %d configured.', nBeams);
+nBeams = getPhotostimBeamCount(hSI);
 beamPowers = zeros(1, nBeams);
 beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
 
 hGroup = scanimage.mroi.RoiGroup(sprintf('P%d', patternNumber));
-hGroup.add(makePauseRoi(opts.PreStimPauseDuration));
+hGroup.add(makePauseRoi(opts.PreStimPauseDuration, nBeams));
 stimRoi = scanimage.mroi.Roi();
 stimRoi.add(0, stimField);
 hGroup.add(stimRoi);
 end
 
 
-function group = makePauseOnlyGroup(name, durationSeconds)
+function group = makePauseOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
-group.add(makePauseRoi(durationSeconds));
+group.add(makePauseRoi(durationSeconds, nBeams));
 end
 
 
-function group = makeParkOnlyGroup(name, durationSeconds)
+function group = makeParkOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
 sfPark = scanimage.mroi.scanfield.fields.StimulusField();
 sfPark.stimfcnhdl = @scanimage.mroi.stimulusfunctions.park;
 sfPark.duration = durationSeconds;
+sfPark.powers = zeros(1, nBeams);
 roi = scanimage.mroi.Roi();
 roi.add(0, sfPark);
 group.add(roi);
 end
 
 
-function roi = makePauseRoi(durationSeconds)
+function roi = makePauseRoi(durationSeconds, nBeams)
 sfPause = scanimage.mroi.scanfield.fields.StimulusField();
 sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
 sfPause.duration = durationSeconds;
+sfPause.powers = zeros(1, nBeams);
 roi = scanimage.mroi.Roi();
 roi.add(0, sfPause);
 end
@@ -214,6 +208,20 @@ if isfield(s, fieldName) && ~isempty(s.(fieldName))
 else
     value = defaultValue;
 end
+end
+
+
+function nBeams = getPhotostimBeamCount(hSI)
+ss = hPsStimScannerset(hSI);
+nBeams = 1;
+try
+    if most.idioms.isValidObj(ss)
+        nBeams = numel(ss.beams);
+    end
+catch
+    nBeams = 1;
+end
+assert(nBeams >= 3, 'Photostim expects at least 3 beams; only %d configured.', nBeams);
 end
 
 
