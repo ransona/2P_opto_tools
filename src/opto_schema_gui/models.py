@@ -29,6 +29,7 @@ class Pattern:
     duration_s: float
     frequency_hz: float
     power_percent: float
+    duty_cycle: float = 0.2
     spiral_width: float = 10.0
     spiral_height: float = 10.0
     notes: str = ""
@@ -39,6 +40,7 @@ class Pattern:
             "name": self.name,
             "duration_s": self.duration_s,
             "frequency_hz": self.frequency_hz,
+            "duty_cycle": self.duty_cycle,
             "power_percent": self.power_percent,
             "spiral_width": self.spiral_width,
             "spiral_height": self.spiral_height,
@@ -93,6 +95,8 @@ class ExperimentProject:
                 errors.append(f"Pattern '{name}' must have duration > 0.")
             if pattern.frequency_hz <= 0:
                 errors.append(f"Pattern '{name}' must have frequency > 0.")
+            if pattern.duty_cycle < 0 or pattern.duty_cycle > 1:
+                errors.append(f"Pattern '{name}' must have duty cycle in [0, 1].")
             if pattern.power_percent < 0:
                 errors.append(f"Pattern '{name}' must have power >= 0.")
             if not pattern.cells:
