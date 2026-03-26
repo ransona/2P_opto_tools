@@ -428,6 +428,43 @@ class TestSlmDialog(QDialog):
         return patterns
 
 
+class PrepPatternsDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Test prep_patterns")
+        self.resize(420, 180)
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.schema_name_edit = QLineEdit("DEFAULT")
+        self.exp_id_edit = QLineEdit("2026-03-25_10_TEST")
+        self.seq_num_spin = QSpinBox()
+        self.seq_num_spin.setRange(1, 1000000)
+        self.seq_num_spin.setValue(1)
+        form.addRow("Schema Name", self.schema_name_edit)
+        form.addRow("Exp ID", self.exp_id_edit)
+        form.addRow("Seq Num", self.seq_num_spin)
+        layout.addLayout(form)
+
+        button_row = QHBoxLayout()
+        self.run_btn = QPushButton("Run")
+        self.cancel_btn = QPushButton("Cancel")
+        button_row.addStretch(1)
+        button_row.addWidget(self.run_btn)
+        button_row.addWidget(self.cancel_btn)
+        layout.addLayout(button_row)
+
+        self.run_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+
+    def values(self) -> tuple[str, str, int]:
+        return (
+            self.schema_name_edit.text().strip(),
+            self.exp_id_edit.text().strip(),
+            self.seq_num_spin.value(),
+        )
+
+
 class ScanImageControlWidget(QWidget):
     def __init__(self, schema_path_provider: Callable[[], Path | None], parent: QWidget | None = None):
         super().__init__(parent)
@@ -459,11 +496,13 @@ class ScanImageControlWidget(QWidget):
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
         self.reload_btn = QPushButton("Reload Configs")
+        self.test_prep_patterns_btn = QPushButton("Test prep_patterns")
         self.start_config_btn.setStyleSheet("color: #15803d;")
         self.stop_config_btn.setStyleSheet("color: #b91c1c;")
         button_column.addWidget(self.start_config_btn)
         button_column.addWidget(self.stop_config_btn)
         button_column.addWidget(self.reload_btn)
+        button_column.addWidget(self.test_prep_patterns_btn)
         button_column.addStretch(1)
         config_layout.addLayout(button_column)
 
@@ -501,6 +540,7 @@ class ScanImageControlWidget(QWidget):
         self.config_combo.currentTextChanged.connect(self._on_config_changed)
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
+        self.test_prep_patterns_btn.clicked.connect(self._open_prep_patterns_dialog)
         self.clear_log_btn.clicked.connect(self.log_text.clear)
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
 
@@ -534,6 +574,25 @@ class ScanImageControlWidget(QWidget):
     def _on_force_simulated_toggled(self, checked: bool) -> None:
         mode = "enabled" if checked else "disabled"
         self.signals.log_message.emit(f"[config] Force Simulated Mode {mode}")
+
+    def _open_prep_patterns_dialog(self) -> None:
+        dialog = PrepPatternsDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        schema_name, exp_id, seq_num = dialog.values()
+        if not schema_name or not exp_id:
+            QMessageBox.warning(self, "Invalid prep_patterns input", "Schema Name and Exp ID are required.")
+            return
+        self.signals.log_message.emit(
+            f"[config] GUI prep_patterns schema_name={schema_name} expID={exp_id} seq_num={seq_num}"
+        )
+        self._handle_prep_patterns_request(
+            request_path_name=self.machine_config.photostim_path if self.machine_config else "",
+            schema_name=schema_name,
+            exp_id=exp_id,
+            seq_num=seq_num,
+            reply_address=None,
+        )
 
     def shutdown(self) -> None:
         for path_name in list(self._runtimes):
@@ -1091,27 +1150,12 @@ class ScanImageControlWidget(QWidget):
 
         try:
             seq_num = int(seq_num_raw)
-            schema_path = self._resolve_schema_path(schema_name, exp_id)
-            project = load_schema(schema_path)
-            runtime = self._runtimes[photostim_path]
-            prep_state = runtime.prepared_photostim
-            if (
-                prep_state.schema_path is None
-                or prep_state.schema_path != schema_path
-                or prep_state.exp_id != exp_id
-                or prep_state.schema_name != schema_name
-            ):
-                prep_state.reset()
-                prep_state.schema_path = schema_path
-                prep_state.schema_name = schema_name
-                prep_state.exp_id = exp_id
-
-            if seq_num not in prep_state.prepared_seq_nums:
-                prep_state.prepared_seq_nums.append(seq_num)
-
-            prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
-                project,
-                prep_state.prepared_seq_nums,
+            self._handle_prep_patterns_request(
+                request_path_name=path_name,
+                schema_name=schema_name,
+                exp_id=exp_id,
+                seq_num=seq_num,
+                reply_address=address,
             )
         except Exception as exc:
             self._send_json_reply(
@@ -1128,57 +1172,6 @@ class ScanImageControlWidget(QWidget):
             )
             return
 
-        def worker() -> None:
-            ok = self._run_action(
-                photostim_path,
-                "json prep_patterns",
-                lambda name: self._import_pattern_subset(
-                    name,
-                    schema_path,
-                    pattern_names,
-                    prepare_sequence=True,
-                    start_photostim=True,
-                ),
-            )
-            runtime = self._runtimes[photostim_path]
-            prep_state = runtime.prepared_photostim
-            status = "ready" if ok else "error"
-            payload = {
-                "action": "prep_patterns",
-                "status": status,
-                "schema_name": schema_name,
-                "expID": exp_id,
-                "seq_num": seq_num,
-                "prepared_seq_nums": list(prep_state.prepared_seq_nums),
-                "prepared_sequence_names": list(prepared_sequence_names),
-                "pattern_names": pattern_names,
-                "stimulus_groups": [],
-            }
-            if ok:
-                prep_state.prepared_sequence_names = list(prepared_sequence_names)
-                prep_state.imported_pattern_names = list(pattern_names)
-                prep_state.pattern_to_schema_index = dict(pattern_to_schema_index)
-                prep_state.pattern_to_stimulus_group = {
-                    pattern_name: index + 3 for index, pattern_name in enumerate(pattern_names)
-                }
-                payload["stimulus_groups"] = [
-                    {
-                        "stimulus_group_num": prep_state.pattern_to_stimulus_group[pattern_name],
-                        "pattern_name": pattern_name,
-                        "pattern_num": prep_state.pattern_to_schema_index[pattern_name],
-                    }
-                    for pattern_name in pattern_names
-                ]
-                self.signals.log_message.emit(
-                    f"[{photostim_path}] prepared {len(pattern_names)} stimulus group(s) for "
-                    f"seq_num(s) {prep_state.prepared_seq_nums}"
-                )
-            if not ok:
-                payload["error"] = "prep_patterns failed"
-            self._send_json_reply(path_name, address, payload)
-
-        threading.Thread(target=worker, daemon=True).start()
-
     def _send_json_reply(self, path_name: str, address: tuple[str, int], payload: dict[str, object]) -> None:
         runtime = self._runtimes.get(path_name)
         if runtime is None or runtime.udp_listener is None:
@@ -1189,6 +1182,107 @@ class ScanImageControlWidget(QWidget):
         line = f"[{path_name} udp {address[0]}:{address[1]}] send json {payload}"
         self.signals.path_udp_log.emit(path_name, line)
         self.signals.log_message.emit(line)
+
+    def _handle_prep_patterns_request(
+        self,
+        request_path_name: str,
+        schema_name: str,
+        exp_id: str,
+        seq_num: int,
+        reply_address: tuple[str, int] | None,
+    ) -> None:
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if not photostim_path:
+            if reply_address is not None:
+                self._send_json_reply(
+                    request_path_name,
+                    reply_address,
+                    {
+                        "action": "prep_patterns",
+                        "status": "error",
+                        "error": "No photostim path configured",
+                    },
+                )
+            else:
+                self.signals.log_message.emit("[config] prep_patterns skipped: no photostim path configured")
+            return
+
+        schema_path = self._resolve_schema_path(schema_name, exp_id)
+        project = load_schema(schema_path)
+        runtime = self._runtimes[photostim_path]
+        prep_state = runtime.prepared_photostim
+        if (
+            prep_state.schema_path is None
+            or prep_state.schema_path != schema_path
+            or prep_state.exp_id != exp_id
+            or prep_state.schema_name != schema_name
+        ):
+            prep_state.reset()
+            prep_state.schema_path = schema_path
+            prep_state.schema_name = schema_name
+            prep_state.exp_id = exp_id
+
+        if seq_num not in prep_state.prepared_seq_nums:
+            prep_state.prepared_seq_nums.append(seq_num)
+
+        prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
+            project,
+            prep_state.prepared_seq_nums,
+        )
+
+        def worker() -> None:
+            ok = self._run_action(
+                photostim_path,
+                "json prep_patterns" if reply_address is not None else "gui prep_patterns",
+                lambda name: self._import_pattern_subset(
+                    name,
+                    schema_path,
+                    pattern_names,
+                    prepare_sequence=True,
+                    start_photostim=True,
+                ),
+            )
+            prep_state_local = self._runtimes[photostim_path].prepared_photostim
+            status = "ready" if ok else "error"
+            payload = {
+                "action": "prep_patterns",
+                "status": status,
+                "schema_name": schema_name,
+                "expID": exp_id,
+                "seq_num": seq_num,
+                "prepared_seq_nums": list(prep_state_local.prepared_seq_nums),
+                "prepared_sequence_names": list(prepared_sequence_names),
+                "pattern_names": pattern_names,
+                "stimulus_groups": [],
+            }
+            if ok:
+                prep_state_local.prepared_sequence_names = list(prepared_sequence_names)
+                prep_state_local.imported_pattern_names = list(pattern_names)
+                prep_state_local.pattern_to_schema_index = dict(pattern_to_schema_index)
+                prep_state_local.pattern_to_stimulus_group = {
+                    pattern_name: index + 3 for index, pattern_name in enumerate(pattern_names)
+                }
+                payload["stimulus_groups"] = [
+                    {
+                        "stimulus_group_num": prep_state_local.pattern_to_stimulus_group[pattern_name],
+                        "pattern_name": pattern_name,
+                        "pattern_num": prep_state_local.pattern_to_schema_index[pattern_name],
+                    }
+                    for pattern_name in pattern_names
+                ]
+                self.signals.log_message.emit(
+                    f"[{photostim_path}] prepared {len(pattern_names)} stimulus group(s) for "
+                    f"seq_num(s) {prep_state_local.prepared_seq_nums}"
+                )
+            if not ok:
+                payload["error"] = "prep_patterns failed"
+
+            if reply_address is not None:
+                self._send_json_reply(request_path_name, reply_address, payload)
+            else:
+                self.signals.log_message.emit(f"[config] gui prep_patterns result={payload}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:
         animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
