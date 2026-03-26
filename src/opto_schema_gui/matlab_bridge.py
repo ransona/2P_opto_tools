@@ -408,6 +408,43 @@ def build_run_script_command(
     return "\n".join(lines)
 
 
+def build_test_photostim_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            f"{hsi}.hPhotostim.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);",
+            "hSf = scanimage.mroi.scanfield.fields.StimulusField();",
+            "hSf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.point;",
+            "hSf.duration = 0.010;",
+            "hSf.repetitions = 1;",
+            "hSf.powers = [5];",
+            "hSf.sizeXY = [0 0];",
+            "hRoiTemplate = scanimage.mroi.Roi();",
+            "hRoiTemplate.add(0, hSf);",
+            "hRoi1 = hRoiTemplate.copy();",
+            "hRoi1.scanfields(1).centerXY = [0.25 0.50];",
+            "hRoi2 = hRoiTemplate.copy();",
+            "hRoi2.scanfields(1).centerXY = [0.75 0.50];",
+            "hGroup1 = scanimage.mroi.RoiGroup();",
+            "hGroup1.add(hRoi1);",
+            "hGroup2 = scanimage.mroi.RoiGroup();",
+            "hGroup2.add(hRoi2);",
+            f"{hsi}.hPhotostim.stimRoiGroups(end + 1) = hGroup1;",
+            f"{hsi}.hPhotostim.stimRoiGroups(end + 1) = hGroup2;",
+            "disp('TEST_PHOTOSTIM_GROUP_COUNT');",
+            f"disp(numel({hsi}.hPhotostim.stimRoiGroups));",
+            "disp('TEST_PHOTOSTIM_PROPERTIES_BEGIN');",
+            f"disp(properties({hsi}.hPhotostim));",
+            "disp('TEST_PHOTOSTIM_PROPERTIES_END');",
+            "disp('TEST_PHOTOSTIM_METHODS_BEGIN');",
+            f"disp(methods({hsi}.hPhotostim));",
+            "disp('TEST_PHOTOSTIM_METHODS_END');",
+        ]
+    )
+
+
 def build_experiment_context(path_config: PathConfig, exp_id: str) -> ExperimentContext:
     animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
     exp_dir = ntpath.join(path_config.local_data_root, animal_id, exp_id, path_config.acquisition_folder)

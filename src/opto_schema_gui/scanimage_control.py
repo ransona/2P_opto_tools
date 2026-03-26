@@ -39,6 +39,7 @@ from .matlab_bridge import (
     build_global_preamble,
     build_import_command,
     build_run_script_command,
+    build_test_photostim_command,
     context_to_matlab_variables,
     list_config_names,
     list_machine_names,
@@ -97,6 +98,7 @@ class PathTabWidgets:
     focus_btn: QPushButton
     acquire_btn: QPushButton
     stop_acq_btn: QPushButton
+    test_slm_btn: QPushButton
     start_listener_btn: QPushButton
     stop_listener_btn: QPushButton
 
@@ -368,6 +370,7 @@ class ScanImageControlWidget(QWidget):
         focus_btn = QPushButton("Focus")
         acquire_btn = QPushButton("Acquire")
         stop_acq_btn = QPushButton("Stop")
+        test_slm_btn = QPushButton("Test SLM")
         start_listener_btn = QPushButton("Start Listener")
         stop_listener_btn = QPushButton("Stop Listener")
         for button in [
@@ -375,6 +378,7 @@ class ScanImageControlWidget(QWidget):
             acquire_btn,
             focus_btn,
             stop_acq_btn,
+            test_slm_btn,
             start_listener_btn,
             stop_listener_btn,
         ]:
@@ -398,6 +402,7 @@ class ScanImageControlWidget(QWidget):
             focus_btn=focus_btn,
             acquire_btn=acquire_btn,
             stop_acq_btn=stop_acq_btn,
+            test_slm_btn=test_slm_btn,
             start_listener_btn=start_listener_btn,
             stop_listener_btn=stop_listener_btn,
         )
@@ -408,6 +413,7 @@ class ScanImageControlWidget(QWidget):
         focus_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "focus", self._focus_path))
         acquire_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "acquire", self._acquire_path_from_ui))
         stop_acq_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop acquisition", self._stop_acquisition))
+        test_slm_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "test slm", self._test_photostim_api))
         start_listener_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "start listener", self._start_listener))
         stop_listener_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop listener", self._stop_listener))
 
@@ -567,6 +573,18 @@ class ScanImageControlWidget(QWidget):
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "ready"
+            self.signals.path_status.emit(path_name, runtime.status)
+            self._emit_lines(path_name, lines)
+
+    def _test_photostim_api(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_test_photostim_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+            runtime.status = "photostim test"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
 
