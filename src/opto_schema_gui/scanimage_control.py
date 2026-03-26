@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -1046,11 +1047,12 @@ class ScanImageControlWidget(QWidget):
     def _append_log(self, message: str) -> None:
         line = f"{self._timestamp()} {message}"
         if "ERROR:" in message:
-            self.log_text.appendHtml(
-                f"<span style='color:#b91c1c;'>{html.escape(line)}</span>"
-            )
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertHtml(f"<span style='color:#b91c1c;'>{html.escape(line)}</span><br>")
+            self.log_text.setTextCursor(cursor)
         else:
-            self.log_text.append(html.escape(line))
+            self.log_text.append(line)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
