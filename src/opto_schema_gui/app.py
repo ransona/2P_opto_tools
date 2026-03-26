@@ -825,18 +825,22 @@ class MainWindow(QMainWindow):
         self.update_save_path_label()
 
     def refresh_lists(self) -> None:
-        current_pattern = self.pattern_list.currentItem().text() if self.pattern_list.currentItem() else ""
-        current_sequence = self.sequence_list.currentItem().text() if self.sequence_list.currentItem() else ""
+        current_pattern = self._current_item_name(self.pattern_list)
+        current_sequence = self._current_item_name(self.sequence_list)
 
         self.pattern_list.blockSignals(True)
         self.sequence_list.blockSignals(True)
         self.pattern_list.clear()
         self.sequence_list.clear()
 
-        for name in self.project.patterns:
-            self.pattern_list.addItem(QListWidgetItem(name))
-        for name in self.project.sequences:
-            self.sequence_list.addItem(QListWidgetItem(name))
+        for index, name in enumerate(self.project.patterns):
+            item = QListWidgetItem(f"{index}: {name}")
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self.pattern_list.addItem(item)
+        for index, name in enumerate(self.project.sequences):
+            item = QListWidgetItem(f"{index}: {name}")
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self.sequence_list.addItem(item)
 
         self.pattern_list.blockSignals(False)
         self.sequence_list.blockSignals(False)
@@ -844,16 +848,12 @@ class MainWindow(QMainWindow):
         self.sequence_editor.refresh_pattern_choices()
 
         if current_pattern:
-            matches = self.pattern_list.findItems(current_pattern, Qt.MatchFlag.MatchExactly)
-            if matches:
-                self.pattern_list.setCurrentItem(matches[0])
+            self._select_item_by_name(self.pattern_list, current_pattern)
         elif self.pattern_list.count():
             self.pattern_list.setCurrentRow(0)
 
         if current_sequence:
-            matches = self.sequence_list.findItems(current_sequence, Qt.MatchFlag.MatchExactly)
-            if matches:
-                self.sequence_list.setCurrentItem(matches[0])
+            self._select_item_by_name(self.sequence_list, current_sequence)
         elif self.sequence_list.count():
             self.sequence_list.setCurrentRow(0)
 
@@ -904,7 +904,7 @@ class MainWindow(QMainWindow):
     def _pattern_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
         if not current:
             return
-        name = current.text()
+        name = self._item_name(current)
         if name in self.project.patterns:
             self.project_tabs.setCurrentIndex(0)
             self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
@@ -913,7 +913,7 @@ class MainWindow(QMainWindow):
     def _sequence_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
         if not current:
             return
-        name = current.text()
+        name = self._item_name(current)
         if name in self.project.sequences:
             self.project_tabs.setCurrentIndex(1)
             self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
@@ -934,9 +934,7 @@ class MainWindow(QMainWindow):
         )
         self.pattern_dirty = True
         self.refresh_lists()
-        matches = self.pattern_list.findItems(name, Qt.MatchFlag.MatchExactly)
-        if matches:
-            self.pattern_list.setCurrentItem(matches[0])
+        self._select_item_by_name(self.pattern_list, name)
         self.main_tabs.setCurrentIndex(1)
         self.project_tabs.setCurrentIndex(0)
         self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
@@ -945,7 +943,7 @@ class MainWindow(QMainWindow):
         current = self.pattern_list.currentItem()
         if not current:
             return
-        name = current.text()
+        name = self._item_name(current)
         pattern = self.project.patterns[name]
         copied = Pattern(
             name=_unique_name(f"{name}_copy", self.project.patterns),
@@ -961,9 +959,7 @@ class MainWindow(QMainWindow):
         self.project.patterns[copied.name] = copied
         self.pattern_dirty = True
         self.refresh_lists()
-        matches = self.pattern_list.findItems(copied.name, Qt.MatchFlag.MatchExactly)
-        if matches:
-            self.pattern_list.setCurrentItem(matches[0])
+        self._select_item_by_name(self.pattern_list, copied.name)
         self.main_tabs.setCurrentIndex(1)
         self.project_tabs.setCurrentIndex(0)
         self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
@@ -972,7 +968,7 @@ class MainWindow(QMainWindow):
         current = self.pattern_list.currentItem()
         if not current:
             return
-        name = current.text()
+        name = self._item_name(current)
         if QMessageBox.question(self, "Delete pattern", f"Delete pattern '{name}'?") != QMessageBox.StandardButton.Yes:
             return
         self.project.patterns.pop(name, None)
@@ -987,9 +983,7 @@ class MainWindow(QMainWindow):
         self.project.sequences[name] = Sequence(name=name)
         self.sequence_dirty = True
         self.refresh_lists()
-        matches = self.sequence_list.findItems(name, Qt.MatchFlag.MatchExactly)
-        if matches:
-            self.sequence_list.setCurrentItem(matches[0])
+        self._select_item_by_name(self.sequence_list, name)
         self.main_tabs.setCurrentIndex(1)
         self.project_tabs.setCurrentIndex(1)
         self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
@@ -998,7 +992,7 @@ class MainWindow(QMainWindow):
         current = self.sequence_list.currentItem()
         if not current:
             return
-        name = current.text()
+        name = self._item_name(current)
         sequence = self.project.sequences[name]
         copied = Sequence(
             name=_unique_name(f"{name}_copy", self.project.sequences),
@@ -1008,9 +1002,7 @@ class MainWindow(QMainWindow):
         self.project.sequences[copied.name] = copied
         self.sequence_dirty = True
         self.refresh_lists()
-        matches = self.sequence_list.findItems(copied.name, Qt.MatchFlag.MatchExactly)
-        if matches:
-            self.sequence_list.setCurrentItem(matches[0])
+        self._select_item_by_name(self.sequence_list, copied.name)
         self.main_tabs.setCurrentIndex(1)
         self.project_tabs.setCurrentIndex(1)
         self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
@@ -1019,12 +1011,28 @@ class MainWindow(QMainWindow):
         current = self.sequence_list.currentItem()
         if not current:
             return
-        name = current.text()
+        name = self._item_name(current)
         if QMessageBox.question(self, "Delete sequence", f"Delete sequence '{name}'?") != QMessageBox.StandardButton.Yes:
             return
         self.project.sequences.pop(name, None)
         self.sequence_dirty = True
         self.refresh_lists()
+
+    def _item_name(self, item: QListWidgetItem | None) -> str:
+        if item is None:
+            return ""
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return value if isinstance(value, str) else item.text()
+
+    def _current_item_name(self, widget: QListWidget) -> str:
+        return self._item_name(widget.currentItem())
+
+    def _select_item_by_name(self, widget: QListWidget, name: str) -> None:
+        for index in range(widget.count()):
+            item = widget.item(index)
+            if self._item_name(item) == name:
+                widget.setCurrentItem(item)
+                return
 
     def new_project(self) -> None:
         if self.pattern_dirty or self.sequence_dirty:
