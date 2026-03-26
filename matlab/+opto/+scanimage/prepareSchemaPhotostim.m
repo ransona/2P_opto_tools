@@ -33,7 +33,7 @@ hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);
 hPs.sequenceSelectedStimuli = [];
 
 nBeams = getPhotostimBeamCount(hSI);
-hPs.stimRoiGroups(end + 1) = makePauseOnlyGroup("BLANK", opts.BlankDuration, nBeams);
+hPs.stimRoiGroups(end + 1) = makeBlankOnlyGroup("BLANK", opts.BlankDuration, nBeams);
 hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration, nBeams);
 
 importedPatternNames = strings(0, 1);
@@ -125,41 +125,30 @@ beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
 
 hGroup = scanimage.mroi.RoiGroup(sprintf('P%d', patternNumber));
-hGroup.add(makePauseRoi(opts.PreStimPauseDuration, nBeams));
 stimRoi = scanimage.mroi.Roi();
 stimRoi.add(0, stimField);
 hGroup.add(stimRoi);
 end
 
 
-function group = makePauseOnlyGroup(name, durationSeconds, nBeams)
+function group = makeBlankOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
-group.add(makePauseRoi(durationSeconds, nBeams));
+group.add(makeParkRoi(durationSeconds, nBeams));
 end
 
 
 function group = makeParkOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
-sfPark = scanimage.mroi.scanfield.fields.StimulusField();
-sfPark.centerXY = [0 0];
-sfPark.sizeXY = [0 0];
-sfPark.stimfcnhdl = @scanimage.mroi.stimulusfunctions.park;
-sfPark.stimparams = {};
-sfPark.duration = durationSeconds;
-sfPark.repetitions = 1;
-sfPark.powers = zeros(1, nBeams);
-roi = scanimage.mroi.Roi();
-roi.add(0, sfPark);
-group.add(roi);
+group.add(makeParkRoi(durationSeconds, nBeams));
 end
 
 
-function roi = makePauseRoi(durationSeconds, nBeams)
+function roi = makeParkRoi(durationSeconds, nBeams)
 sfPause = scanimage.mroi.scanfield.fields.StimulusField();
 sfPause.centerXY = [0 0];
 sfPause.sizeXY = [0 0];
-sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
-sfPause.stimparams = {'poweredPause', false};
+sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.park;
+sfPause.stimparams = {};
 sfPause.duration = durationSeconds;
 sfPause.repetitions = 1;
 sfPause.powers = zeros(1, nBeams);
