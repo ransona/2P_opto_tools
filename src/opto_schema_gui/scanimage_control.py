@@ -221,15 +221,18 @@ class TestSlmDialog(QDialog):
 
         button_row = QHBoxLayout()
         self.generate_btn = QPushButton("Gen New Random Pattern")
+        self.cross_btn = QPushButton("Gen Test Cross")
         self.send_btn = QPushButton("Send To ScanImage")
         self.cancel_btn = QPushButton("Cancel")
         button_row.addWidget(self.generate_btn)
+        button_row.addWidget(self.cross_btn)
         button_row.addStretch(1)
         button_row.addWidget(self.send_btn)
         button_row.addWidget(self.cancel_btn)
         layout.addLayout(button_row)
 
         self.generate_btn.clicked.connect(self._regenerate_patterns)
+        self.cross_btn.clicked.connect(self._generate_cross_patterns)
         self.send_btn.clicked.connect(self._send_if_valid)
         self.cancel_btn.clicked.connect(self.reject)
 
@@ -283,6 +286,80 @@ class TestSlmDialog(QDialog):
                 cells_table.setItem(row, 1, QTableWidgetItem(f"{self._random_value():.4f}"))
                 cells_table.setItem(row, 2, QTableWidgetItem(f"{self._random_value():.4f}"))
                 cells_table.setItem(row, 3, QTableWidgetItem(f"{random.uniform(0.5, 1.5):.4f}"))
+            tab_layout.addWidget(QLabel("SLM Target Points"))
+            tab_layout.addWidget(cells_table, 1)
+            self.pattern_tabs.addTab(tab, f"Pattern {pattern_index + 1}")
+            self._pattern_widgets.append(
+                TestSlmPatternWidgets(
+                    name_edit=name_edit,
+                    overall_power_spin=overall_power_spin,
+                    duration_spin=duration_spin,
+                    spiral_width_spin=spiral_width_spin,
+                    spiral_height_spin=spiral_height_spin,
+                    cells_table=cells_table,
+                )
+            )
+
+    def _generate_cross_patterns(self) -> None:
+        self.pattern_tabs.clear()
+        self._pattern_widgets = []
+        pattern_count = self.pattern_count_spin.value()
+        neuron_count = max(1, self.neuron_count_spin.value())
+        low = self.range_min_spin.value()
+        high = self.range_max_spin.value()
+        if low > high:
+            low, high = high, low
+        center = 0.0
+        left = low
+        right = high
+        down = low
+        up = high
+        base_cross = [
+            (center, center, center),
+            (center, up, center),
+            (center, down, center),
+            (left, center, center),
+            (right, center, center),
+        ]
+        for pattern_index in range(pattern_count):
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            form_box = QGroupBox(f"Pattern {pattern_index + 1}")
+            form = QFormLayout(form_box)
+            name_edit = QLineEdit(f"test_cross_{pattern_index + 1}")
+            overall_power_spin = QDoubleSpinBox()
+            overall_power_spin.setRange(0.0, 100.0)
+            overall_power_spin.setDecimals(4)
+            overall_power_spin.setValue(5.0)
+            duration_spin = QDoubleSpinBox()
+            duration_spin.setRange(0.0001, 9999.0)
+            duration_spin.setDecimals(4)
+            duration_spin.setValue(0.010)
+            spiral_width_spin = QDoubleSpinBox()
+            spiral_width_spin.setRange(0.0, 9999.0)
+            spiral_width_spin.setDecimals(4)
+            spiral_width_spin.setValue(10.0)
+            spiral_height_spin = QDoubleSpinBox()
+            spiral_height_spin.setRange(0.0, 9999.0)
+            spiral_height_spin.setDecimals(4)
+            spiral_height_spin.setValue(10.0)
+            form.addRow("Name", name_edit)
+            form.addRow("Overall Power", overall_power_spin)
+            form.addRow("Duration (s)", duration_spin)
+            form.addRow("Spiral Width", spiral_width_spin)
+            form.addRow("Spiral Height", spiral_height_spin)
+            tab_layout.addWidget(form_box)
+
+            cells_table = QTableWidget(neuron_count, 4)
+            cells_table.setHorizontalHeaderLabels(["X", "Y", "Z", "Relative Power"])
+            cells_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            cells_table.horizontalHeader().setStretchLastSection(True)
+            for row in range(neuron_count):
+                x, y, z = base_cross[row % len(base_cross)]
+                cells_table.setItem(row, 0, QTableWidgetItem(f"{x:.4f}"))
+                cells_table.setItem(row, 1, QTableWidgetItem(f"{y:.4f}"))
+                cells_table.setItem(row, 2, QTableWidgetItem(f"{z:.4f}"))
+                cells_table.setItem(row, 3, QTableWidgetItem("1.0000"))
             tab_layout.addWidget(QLabel("SLM Target Points"))
             tab_layout.addWidget(cells_table, 1)
             self.pattern_tabs.addTab(tab, f"Pattern {pattern_index + 1}")
