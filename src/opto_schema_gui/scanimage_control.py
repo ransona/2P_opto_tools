@@ -528,6 +528,7 @@ class ScanImageControlWidget(QWidget):
         self.config_combo = QComboBox()
         self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
         self.ignore_incomplete_trigger_checkbox = QCheckBox("Ignore incomplete stim seqs")
+        self.ignore_incomplete_trigger_checkbox.setChecked(True)
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
         config_form.addRow("", self.force_simulated_checkbox)
