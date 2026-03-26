@@ -83,10 +83,23 @@ def _load_save_root() -> Path:
     config = configparser.ConfigParser()
     config.read(_config_path())
     raw_root = config.get("paths", "save_root", fallback="./data")
-    save_root = Path(raw_root).expanduser()
-    if not save_root.is_absolute():
-        save_root = (_repo_root() / save_root).resolve()
-    return save_root
+    return _resolve_config_path(raw_root)
+
+
+def _resolve_config_path(raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = (_repo_root() / path).resolve()
+    return path
+
+
+def _load_schema_root() -> Path:
+    config = configparser.ConfigParser()
+    config.read(_config_path())
+    raw_root = config.get("paths", "schema_root", fallback=None)
+    if not raw_root:
+        return _load_save_root()
+    return _resolve_config_path(raw_root)
 
 
 class TimelinePreview(QWidget):
@@ -708,7 +721,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Opto Schema GUI")
         self.project = ExperimentProject()
         self.save_root = _load_save_root()
+        self.schema_root = _load_schema_root()
         self.schema_file_path = ""
+        self.last_schema_load_dir = self.schema_root
         self.pattern_dirty = False
         self.sequence_dirty = False
 
@@ -1056,7 +1071,8 @@ class MainWindow(QMainWindow):
             if choice == QMessageBox.StandardButton.Save:
                 if not self._save_schema_to_default(force=False):
                     return
-        path, _ = QFileDialog.getOpenFileName(self, "Load schema YAML", str(Path.cwd()), "YAML (*.yaml *.yml)")
+        start_dir = self.last_schema_load_dir if self.last_schema_load_dir else self.schema_root
+        path, _ = QFileDialog.getOpenFileName(self, "Load schema YAML", str(start_dir), "YAML (*.yaml *.yml)")
         if not path:
             return
         self.project = load_schema(path)
@@ -1070,6 +1086,7 @@ class MainWindow(QMainWindow):
         self.sequence_editor.clear_form()
         self.pattern_dirty = False
         self.sequence_dirty = False
+        self.last_schema_load_dir = Path(path).resolve().parent
         self.refresh_lists()
 
     def save_schema_dialog(self) -> bool:
