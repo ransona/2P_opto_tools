@@ -669,13 +669,27 @@ class ScanImageControlWidget(QWidget):
         runtime = self._runtimes[path_name]
         with runtime.lock:
             if runtime.session is None:
-                runtime.session = MatlabSession(runtime.path_config)
-                runtime.session.start(startup_command=self._build_launch_startup_command(runtime.path_config))
-                runtime.status = "simulated" if runtime.session.simulated else "ready"
+                session = MatlabSession(runtime.path_config)
+                try:
+                    session.start(startup_command=self._build_launch_startup_command(runtime.path_config))
+                except Exception:
+                    runtime.session = None
+                    raise
+                runtime.session = session
+                if session.simulated:
+                    runtime.status = "simulated"
+                elif session.attached:
+                    runtime.status = "reconnected"
+                else:
+                    runtime.status = "ready"
                 runtime.launched = True
                 self.signals.path_status.emit(path_name, runtime.status)
-                if runtime.session.simulated:
+                if session.simulated:
                     self.signals.log_message.emit(f"[{path_name}] simulated MATLAB session started")
+                elif session.attached:
+                    self.signals.log_message.emit(
+                        f"[{path_name}] reconnected to existing MATLAB session '{runtime.path_config.engine_name}'"
+                    )
                 else:
                     self.signals.log_message.emit(f"[{path_name}] MATLAB session started")
         if runtime.path_config.listener_auto_start:
@@ -704,9 +718,8 @@ class ScanImageControlWidget(QWidget):
             runtime.status = "stopped"
             runtime.launched = False
             runtime.last_context = None
-            runtime.prepared_photostim.reset()
             self.signals.path_status.emit(path_name, runtime.status)
-            self.signals.log_message.emit(f"[{path_name}] MATLAB path stopped")
+            self.signals.log_message.emit(f"[{path_name}] MATLAB path disconnected")
 
     def _focus_path(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)

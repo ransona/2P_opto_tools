@@ -44,6 +44,7 @@ class PathConfig:
     motor_data_variable: str
     startup_timeout_s: float
     command_timeout_s: float
+    engine_name: str
     repo_matlab_path: Path
     focus_command: str
     xy_transform: str
@@ -109,6 +110,7 @@ class MatlabSession:
         self.simulated = False
         self.current_directory = str(config.directory)
         self.started_with_launch = False
+        self.attached = False
 
     def start(self, startup_command: str | None = None) -> None:
         if self.engine is not None or self.simulated:
@@ -125,6 +127,13 @@ class MatlabSession:
                 "Install the MATLAB Engine for Python to run live ScanImage control."
             )
 
+        connected = self._try_connect_existing()
+        if connected:
+            self.attached = True
+            self.started_with_launch = False
+            self._validate_connected_session()
+            return
+
         try:
             flags = " ".join(self.config.matlab_flags).strip()
             self.engine = matlab_engine.start_matlab(flags)
@@ -133,7 +142,9 @@ class MatlabSession:
                 f"Could not start MATLAB Engine for path '{self.config.name}': {exc}"
             ) from exc
 
+        self.attached = False
         self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
+        self._share_engine()
         if startup_command:
             self.eval(startup_command, timeout_s=self.config.startup_timeout_s)
             return
@@ -147,10 +158,8 @@ class MatlabSession:
             self.simulated = False
             return
         if self.engine is not None:
-            try:
-                self.engine.quit()
-            finally:
-                self.engine = None
+            self.engine = None
+            self.attached = False
             return
 
     def eval(self, command: str, timeout_s: float = 30.0) -> list[str]:
@@ -189,6 +198,55 @@ class MatlabSession:
     def _start_simulated(self) -> None:
         self.simulated = True
         self.process = None
+
+    def _try_connect_existing(self) -> bool:
+        assert matlab_engine is not None
+        engine_name = self.config.engine_name
+        try:
+            available = matlab_engine.find_matlab()
+        except Exception:
+            available = ()
+        if engine_name not in available:
+            return False
+        try:
+            self.engine = matlab_engine.connect_matlab(engine_name)
+        except Exception as exc:
+            raise MatlabSessionError(
+                f"Could not reconnect to MATLAB engine '{engine_name}' for path '{self.config.name}': {exc}"
+            ) from exc
+        return True
+
+    def _share_engine(self) -> None:
+        if self.engine is None:
+            return
+        try:
+            self.engine.eval(
+                f"matlab.engine.shareEngine({matlab_string(self.config.engine_name)});",
+                nargout=0,
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            )
+        except BaseException as exc:
+            raise MatlabSessionError(
+                f"MATLAB session for path '{self.config.name}' could not be shared as '{self.config.engine_name}': {exc}"
+            ) from exc
+
+    def _validate_connected_session(self) -> None:
+        lines = self.eval(
+            "\n".join(
+                [
+                    build_global_preamble(self.config),
+                    f"assert(exist({matlab_string(self.config.hsi_variable)}, 'var') == 1, 'Missing {self.config.hsi_variable} in MATLAB workspace.');",
+                    f"assert(exist({matlab_string(self.config.hsictl_variable)}, 'var') == 1, 'Missing {self.config.hsictl_variable} in MATLAB workspace.');",
+                    f"assert(~isempty({self.config.hsi_variable}), '{self.config.hsi_variable} is empty.');",
+                    f"assert(isprop({self.config.hsi_variable}, 'hPhotostim'), '{self.config.hsi_variable} is not a valid ScanImage handle.');",
+                    "disp('MATLAB reconnect validation passed');",
+                ]
+            ),
+            timeout_s=self.config.command_timeout_s,
+        )
+        if not lines:
+            return
 
     def _simulate_eval(self, command: str) -> list[str]:
         outputs: list[str] = []
@@ -351,6 +409,7 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             motor_data_variable=_get_string(section, None, "motor_data_variable", "siMotorData"),
             startup_timeout_s=_get_float(section, None, "startup_timeout_s", 60.0),
             command_timeout_s=_get_float(section, None, "command_timeout_s", 60.0),
+            engine_name=_get_string(section, None, "engine_name", f"opto_{path_name}"),
             repo_matlab_path=(repo_root_path / "matlab").resolve(),
             focus_command=_get_string(section, None, "focus_command", f"{hsi_variable}.startFocus();"),
             xy_transform=_get_string(section, None, "xy_transform", "@(xyz)[xyz(1) xyz(2)]"),
