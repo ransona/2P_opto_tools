@@ -829,7 +829,7 @@ def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: l
             "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
             "disp(insertPosition);",
             "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",
-            "disp(hPs.sequenceSelectedStimuli);",
+            "disp(triggerSequence);",
             "disp('TRIGGER_PHOTOSTIM_NUM_SEQUENCES');",
             "disp(hPs.numSequences);",
             "disp('TRIGGER_PHOTOSTIM_READY');",
