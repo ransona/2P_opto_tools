@@ -337,6 +337,12 @@ class MatlabSession:
             outputs.append(f"Imported {len(pattern_names)} pattern(s)")
             outputs.extend(pattern_names)
             return outputs
+        if "trigger_photostim_sequence" in command_lower:
+            sequence_values = _extract_numeric_vector_assignment(command, "triggerSequence")
+            outputs.append("Simulated trigger photostim sequence")
+            outputs.append(str(sequence_values))
+            outputs.append("TRIGGER_PHOTOSTIM_READY")
+            return outputs
         if script_name == "launch.m":
             outputs.append(f"Simulated launch.m executed in {self.current_directory}")
         elif script_name == "start_script.m":
@@ -757,6 +763,29 @@ def build_inspect_photostim_command(path_config: PathConfig) -> str:
     )
 
 
+def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: list[int]) -> str:
+    hsi = path_config.hsi_variable
+    sequence_expr = "[]" if not sequence_indices else "[" + " ".join(str(int(v)) for v in sequence_indices) + "]"
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            f"triggerSequence = {sequence_expr};",
+            "assert(~isempty(triggerSequence), 'Trigger sequence is empty.');",
+            "assert(max(triggerSequence) <= numel(hPs.stimRoiGroups), 'Trigger sequence references an invalid stimulus group.');",
+            "hPs.stimulusMode = 'sequence';",
+            "hPs.sequenceSelectedStimuli = triggerSequence;",
+            "hPs.numSequences = 1;",
+            "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",
+            "disp(hPs.sequenceSelectedStimuli);",
+            "disp('TRIGGER_PHOTOSTIM_NUM_SEQUENCES');",
+            "disp(hPs.numSequences);",
+            "disp('TRIGGER_PHOTOSTIM_READY');",
+        ]
+    )
+
+
 def build_experiment_context(path_config: PathConfig, exp_id: str) -> ExperimentContext:
     animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
     exp_dir = ntpath.join(path_config.local_data_root, animal_id, exp_id, path_config.acquisition_folder)
@@ -912,6 +941,27 @@ def _extract_schema_path_from_import(command: str) -> str | None:
     if quoted_end < 0:
         return None
     return command[quoted_start + 1 : quoted_end].replace("''", "'")
+
+
+def _extract_numeric_vector_assignment(command: str, var_name: str) -> list[int]:
+    marker = f"{var_name} = ["
+    start = command.find(marker)
+    if start == -1:
+        return []
+    start += len(marker)
+    end = command.find("]", start)
+    if end == -1:
+        return []
+    raw = command[start:end].strip()
+    if not raw:
+        return []
+    values: list[int] = []
+    for token in raw.replace(",", " ").split():
+        try:
+            values.append(int(float(token)))
+        except ValueError:
+            continue
+    return values
 
 
 def _extract_run_script_name(command: str) -> str | None:
