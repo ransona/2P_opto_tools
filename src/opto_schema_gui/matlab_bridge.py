@@ -115,6 +115,8 @@ class MatlabSession:
         self.started_with_launch = False
         self.attached = False
         self.launch_process = None
+        self.sim_sequence: list[int] = []
+        self.sim_sequence_position = 1
 
     def start(self, startup_command: str | None = None) -> None:
         if self.engine is not None or self.simulated:
@@ -197,6 +199,8 @@ class MatlabSession:
     def _start_simulated(self) -> None:
         self.simulated = True
         self.process = None
+        self.sim_sequence = []
+        self.sim_sequence_position = 1
 
     def _try_connect_existing(self) -> bool:
         assert matlab_engine is not None
@@ -322,7 +326,9 @@ class MatlabSession:
             outputs.append("Prepared photostim sequence mode")
             outputs.append("sequence")
             outputs.append("Prepared stimulus group sequence")
-            outputs.append(str(list(range(1, len(pattern_names) + 3))))
+            self.sim_sequence = list(range(1, len(pattern_names) + 3))
+            self.sim_sequence_position = 1
+            outputs.append(str(self.sim_sequence))
             outputs.append("Prepared number of sequences")
             outputs.append("1")
             outputs.append("Simulated photostim mask generation ready")
@@ -339,8 +345,22 @@ class MatlabSession:
             return outputs
         if "trigger_photostim_sequence" in command_lower:
             sequence_values = _extract_numeric_vector_assignment(command, "triggerSequence")
-            outputs.append("Simulated trigger photostim sequence")
-            outputs.append(str(sequence_values))
+            if self.sim_sequence:
+                insert_position = max(1, min(len(self.sim_sequence) + 1, int(self.sim_sequence_position)))
+                self.sim_sequence = (
+                    self.sim_sequence[: insert_position - 1]
+                    + sequence_values
+                    + self.sim_sequence[insert_position - 1 :]
+                )
+            else:
+                insert_position = 1
+                self.sim_sequence = list(sequence_values)
+            outputs.append("TRIGGER_PHOTOSTIM_INSERT_POSITION")
+            outputs.append(str(insert_position))
+            outputs.append("TRIGGER_PHOTOSTIM_SEQUENCE")
+            outputs.append(str(self.sim_sequence))
+            outputs.append("TRIGGER_PHOTOSTIM_NUM_SEQUENCES")
+            outputs.append("1")
             outputs.append("TRIGGER_PHOTOSTIM_READY")
             return outputs
         if script_name == "launch.m":
@@ -765,6 +785,7 @@ def build_inspect_photostim_command(path_config: PathConfig) -> str:
 
 def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: list[int]) -> str:
     hsi = path_config.hsi_variable
+    hsictl = path_config.hsictl_variable
     sequence_expr = "[]" if not sequence_indices else "[" + " ".join(str(int(v)) for v in sequence_indices) + "]"
     return "\n".join(
         [
@@ -778,15 +799,26 @@ def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: l
             "currentPosition = double(hPs.sequencePosition);",
             "if isempty(existingSequence) || ~hPs.active || ~strcmpi(hPs.stimulusMode, 'sequence');",
             "    updatedSequence = triggerSequence;",
-            "    insertPosition = 0;",
+            "    insertPosition = 1;",
             "else;",
-            "    if isempty(currentPosition) || ~isscalar(currentPosition) || ~isfinite(currentPosition); currentPosition = numel(existingSequence); end",
-            "    insertPosition = max(0, min(numel(existingSequence), floor(currentPosition)));",
-            "    updatedSequence = [existingSequence(1:insertPosition) triggerSequence existingSequence(insertPosition+1:end)];",
+            "    if isempty(currentPosition) || ~isscalar(currentPosition) || ~isfinite(currentPosition); currentPosition = numel(existingSequence) + 1; end",
+            "    insertPosition = max(1, min(numel(existingSequence) + 1, floor(currentPosition)));",
+            "    updatedSequence = [existingSequence(1:insertPosition-1) triggerSequence existingSequence(insertPosition:end)];",
             "end",
             "hPs.stimulusMode = 'sequence';",
-            "hPs.sequenceSelectedStimuli = updatedSequence;",
+            f"hasCtl = exist('{hsictl}', 'var') && ~isempty({hsictl}) && isprop({hsictl}, 'hPhotostimControls') && ~isempty({hsictl}.hPhotostimControls);",
+            "if hasCtl;",
+            f"    {hsictl}.hPhotostimControls.etStimSequence.String = num2str(updatedSequence);",
+            f"    {hsictl}.hPhotostimControls.etStimSequenceCallback();",
+            "else;",
+            "    hPs.sequenceSelectedStimuli = updatedSequence;",
+            "end",
             "hPs.numSequences = 1;",
+            "if hasCtl;",
+            f"    {hsictl}.hPhotostimControls.etNumSequences.String = num2str(hPs.numSequences);",
+            f"    {hsictl}.hPhotostimControls.etNumSequencesCallback();",
+            f"    {hsictl}.hPhotostimControls.redraw();",
+            "end",
             "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
             "disp(insertPosition);",
             "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",
