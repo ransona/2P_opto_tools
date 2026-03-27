@@ -1232,12 +1232,12 @@ def build_raw_vdaq_do_test_status_command() -> str:
     return "\n".join(
         [
             "disp('RAW_VDAQ_DO_TEST_ACTIVE');",
-            "if evalin('base', \"exist(''optoPhotostimDebugDoTask'',''var'')\");",
+            "if evalin('base', 'exist(''optoPhotostimDebugDoTask'',''var'')');",
             "    do_task = evalin('base', 'optoPhotostimDebugDoTask');",
             "    if most.idioms.isValidObj(do_task); disp(double(do_task.active)); else; disp(0); end",
             "else; disp(0); end",
             "disp('RAW_VDAQ_DO_TEST_DONE');",
-            "if evalin('base', \"exist(''optoPhotostimDebugDoTask'',''var'')\");",
+            "if evalin('base', 'exist(''optoPhotostimDebugDoTask'',''var'')');",
             "    do_task = evalin('base', 'optoPhotostimDebugDoTask');",
             "    if most.idioms.isValidObj(do_task); disp(double(do_task.isTaskDone())); else; disp(1); end",
             "else; disp(1); end",
