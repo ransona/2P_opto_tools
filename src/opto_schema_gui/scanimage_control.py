@@ -1476,9 +1476,8 @@ class ScanImageControlWidget(QWidget):
             prep_state.schema_name = schema_name
             prep_state.exp_id = exp_id
 
-        if seq_num not in prep_state.prepared_seq_nums:
-            prep_state.prepared_seq_nums.append(seq_num)
-
+        sequence_names = list(project.sequences.keys())
+        prep_state.prepared_seq_nums = list(range(len(sequence_names)))
         prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
             project,
             prep_state.prepared_seq_nums,
@@ -1525,8 +1524,7 @@ class ScanImageControlWidget(QWidget):
                     for pattern_name in pattern_names
                 ]
                 self.signals.log_message.emit(
-                    f"[{photostim_path}] prepared {len(pattern_names)} stimulus group(s) for "
-                    f"seq_num(s) {prep_state_local.prepared_seq_nums}"
+                    f"[{photostim_path}] prepared {len(pattern_names)} stimulus group(s) for all schema sequences"
                 )
             if not ok:
                 payload["error"] = "prep_patterns failed"
