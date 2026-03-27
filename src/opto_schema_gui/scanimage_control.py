@@ -1323,11 +1323,8 @@ class ScanImageControlWidget(QWidget):
 
             schema_name = str(message.get("schema_name", "")).strip()
             exp_id = str(message.get("expID", "")).strip()
-            seq_num_raw = message.get("seq_num")
             seq_nums_raw = message.get("seq_nums")
-            if seq_num_raw is None and isinstance(seq_nums_raw, list) and seq_nums_raw:
-                seq_num_raw = seq_nums_raw[0]
-            if not schema_name or not exp_id or seq_num_raw is None:
+            if not schema_name or not exp_id or not isinstance(seq_nums_raw, list) or not seq_nums_raw:
                 self._send_json_reply(
                     path_name,
                     address,
@@ -1336,14 +1333,14 @@ class ScanImageControlWidget(QWidget):
                         "status": "error",
                         "schema_name": schema_name,
                         "expID": exp_id,
-                        "seq_num": seq_num_raw,
-                        "error": "prep_patterns requires schema_name, expID, and seq_num or seq_nums",
+                        "seq_nums": seq_nums_raw,
+                        "error": "prep_patterns requires schema_name, expID, and seq_nums",
                     },
                 )
                 return
 
             try:
-                seq_num = int(seq_num_raw)
+                seq_num = int(seq_nums_raw[0])
                 self._handle_prep_patterns_request(
                     request_path_name=path_name,
                     schema_name=schema_name,
@@ -1360,7 +1357,7 @@ class ScanImageControlWidget(QWidget):
                         "status": "error",
                         "schema_name": schema_name,
                         "expID": exp_id,
-                        "seq_num": seq_num_raw,
+                        "seq_nums": seq_nums_raw,
                         "error": str(exc),
                     },
                 )
