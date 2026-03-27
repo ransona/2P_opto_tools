@@ -53,6 +53,7 @@ from .matlab_bridge import (
     build_inspect_photostim_command,
     build_prepare_trial_waveform_command,
     build_photostim_sequence_status_command,
+    build_raw_vdaq_do_test_status_command,
     build_run_script_command,
     build_software_trigger_command,
     build_start_trial_waveform_command,
@@ -1955,6 +1956,36 @@ class ScanImageControlWidget(QWidget):
                     done = True
         return active, done
 
+    def _query_raw_vdaq_do_test_status(self, path_name: str) -> tuple[bool, bool]:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_raw_vdaq_do_test_status_command(),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        active = False
+        done = True
+        marker = None
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line in {"RAW_VDAQ_DO_TEST_ACTIVE", "RAW_VDAQ_DO_TEST_DONE", "RAW_VDAQ_DO_TEST_STATUS_READY"}:
+                marker = line
+                continue
+            if marker == "RAW_VDAQ_DO_TEST_ACTIVE":
+                try:
+                    active = bool(int(float(line)))
+                except ValueError:
+                    active = False
+            elif marker == "RAW_VDAQ_DO_TEST_DONE":
+                try:
+                    done = bool(int(float(line)))
+                except ValueError:
+                    done = True
+        return active, done
+
     def _prepare_trial_waveform(self, path_name: str, trigger_times_s: list[float], external_start: bool) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
@@ -2146,7 +2177,7 @@ class ScanImageControlWidget(QWidget):
             start_deadline = time.monotonic() + 30.0
             waveform_started = False
             while not stop_event.is_set() and time.monotonic() < start_deadline:
-                active, done = self._query_trial_waveform_status(path_name)
+                active, done = self._query_raw_vdaq_do_test_status(path_name)
                 if active or not done:
                     waveform_started = True
                     self.signals.log_message.emit(f"[{path_name}] External waveform start detected")
@@ -2160,7 +2191,7 @@ class ScanImageControlWidget(QWidget):
 
             finish_deadline = time.monotonic() + 8.0
             while not stop_event.is_set() and time.monotonic() < finish_deadline:
-                active, done = self._query_trial_waveform_status(path_name)
+                active, done = self._query_raw_vdaq_do_test_status(path_name)
                 if done and not active:
                     break
                 time.sleep(0.02)

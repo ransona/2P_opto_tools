@@ -14,7 +14,9 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
 % Usage:
 %   do_task = opto.scanimage.testVdaqDoTriggeredByDi();
 %
-% After calling, the task is armed and waiting for a rising edge on D2.1.
+% After calling:
+% - if startTrigger is non-empty, the task is armed and waiting for that edge
+% - if startTrigger is empty, the task starts immediately
 % The task handle is also stored in the base workspace as
 %   optoPhotostimDebugDoTask
 
@@ -79,15 +81,19 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
     do_task.sampleMode = 'finite';
     do_task.samplesPerTrigger = numel(outputWaveform);
     do_task.allowRetrigger = false;
-    do_task.startTrigger = startTrigger;
-    do_task.startTriggerEdge = 'rising';
+    if isempty(startTrigger)
+        do_task.startTrigger = '';
+    else
+        do_task.startTrigger = startTrigger;
+        do_task.startTriggerEdge = 'rising';
+    end
 
     assignin('base', taskVarName, do_task);
 
     disp('----------');
     disp('testVdaqDoTriggeredByDi');
     fprintf('Output line: %s\n', outputLine);
-    fprintf('Start trigger: %s\n', startTrigger);
+    fprintf('Start trigger: %s\n', most.idioms.ifthenelse(isempty(startTrigger), '<software start>', startTrigger));
     fprintf('Sample rate (Hz): %.0f\n', sampleRate_Hz);
     fprintf('Pulse width (s): %.6f\n', pulseWidth_s);
     disp('Pulse times (s):');
@@ -98,6 +104,10 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
 
     do_task.start();
 
-    disp('Task armed and waiting for external trigger.');
+    if isempty(startTrigger)
+        disp('Task started immediately.');
+    else
+        disp('Task armed and waiting for external trigger.');
+    end
     fprintf('Task handle saved to base workspace as %s\n', taskVarName);
 end
