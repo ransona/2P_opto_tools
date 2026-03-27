@@ -59,7 +59,6 @@ class PathConfig:
     ignore_frequency: bool
     stimulus_function: str
     power_scale_mode: str
-    trial_waveform_generator_name: str
     trial_waveform_output_port: str
     trial_waveform_photostim_trigger_term: str
     trial_waveform_start_trigger_port: str
@@ -412,8 +411,6 @@ class MatlabSession:
                 [
                     "----------",
                     "Test stim waveform external start",
-                    "Configured waveform generator resource:",
-                    self.config.trial_waveform_generator_name,
                     "Configured waveform output port:",
                     self.config.trial_waveform_output_port,
                     "Configured waveform start trigger port:",
@@ -441,10 +438,6 @@ class MatlabSession:
                 [
                     "----------",
                     "Test stim waveform",
-                    "Configured waveform generator resource:",
-                    self.config.trial_waveform_generator_name,
-                    "Available waveform generators:",
-                    self.config.trial_waveform_generator_name,
                     "Photostim active before test:",
                     "1",
                     "Photostim mode before test:",
@@ -656,9 +649,6 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             ignore_frequency=_get_bool(section, None, "ignore_frequency", True),
             stimulus_function=_get_string(section, None, "stimulus_function", "point"),
             power_scale_mode=_get_string(section, None, "power_scale_mode", "multiply"),
-            trial_waveform_generator_name=_get_string(
-                section, None, "trial_waveform_generator_name", "Photostim Trial Trigger Clock"
-            ),
             trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D1.7"),
             trial_waveform_photostim_trigger_term=_get_string(
                 section, None, "trial_waveform_photostim_trigger_term", "D1.7"
@@ -1189,14 +1179,6 @@ def build_test_stim_waveform_command(
     )
 
 
-def build_test_stim_waveform_external_start_command(path_config: PathConfig) -> str:
-    return build_test_stim_waveform_external_start_command_configurable(
-        path_config,
-        [0.1, 0.2, 0.3, 0.4, 0.5],
-        path_config.trial_waveform_pulse_width_ms / 1000.0,
-    )
-
-
 def build_test_stim_waveform_external_start_command_configurable(
     path_config: PathConfig,
     pulse_times_s: list[float],
@@ -1255,31 +1237,6 @@ def build_raw_vdaq_do_test_status_command() -> str:
             "disp('RAW_VDAQ_DO_TEST_STATUS_READY');",
         ]
     )
-
-
-def _build_trial_waveform_resource_setup(path_config: PathConfig, create_if_missing: bool) -> list[str]:
-    lines = [
-        "rs = dabs.resources.ResourceStore();",
-        f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
-        "if iscell(wg); wg = wg{1}; end",
-    ]
-    if create_if_missing:
-        lines.extend(
-            [
-                "wgCreated = false;",
-                "if ~most.idioms.isValidObj(wg);",
-                f"    wg = dabs.generic.WaveformGenerator({matlab_string(path_config.trial_waveform_generator_name)});",
-                "    wgCreated = true;",
-                "end",
-                "disp('Trial waveform generator created dynamically:');",
-                "disp(double(wgCreated));",
-                "wg.taskType = 'Digital';",
-                f"wg.hControl = {matlab_string(path_config.trial_waveform_output_port)};",
-                "wg.hAIFeedback = '';",
-                "wg.wvfrmFcn = 'PhotostimTrialClock';",
-            ]
-        )
-    return lines
 
 
 def build_experiment_context(path_config: PathConfig, exp_id: str) -> ExperimentContext:

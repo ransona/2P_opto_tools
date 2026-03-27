@@ -584,19 +584,3 @@ defaultValueVolts = 0;
 periodSec = 0.1;              % ignored now, leave large
 startDelay = 0;               % this is your only timing knob
 dutyCycle = 50;
-
-%% dabs.generic.WaveformGenerator (Photostim Trial Trigger Clock)
-taskType = 'Digital';
-hControl = '/vDAQ0/D1.6';
-hAIFeedback = '';
-sampleRate_Hz = 2e6;
-startTriggerPort = '/vDAQ0/D2.1';
-startTriggerEdge = 'rising';
-sampleMode = 'finite';
-allowRetrigger = false;
-wvfrmFcn = 'PhotostimTrialClock';
-amplitude = 1;
-defaultValueVolts = 0;
-periodSec = 0.1;
-startDelay = 0;
-dutyCycle = 50;

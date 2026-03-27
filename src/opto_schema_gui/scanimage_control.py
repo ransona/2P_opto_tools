@@ -59,7 +59,6 @@ from .matlab_bridge import (
     build_start_trial_waveform_command,
     build_stop_trial_waveform_command,
     build_test_stim_waveform_command,
-    build_test_stim_waveform_external_start_command,
     build_test_stim_waveform_external_start_command_configurable,
     build_test_photostim_command,
     build_trial_waveform_status_command,
@@ -652,6 +651,12 @@ class ScanImageControlWidget(QWidget):
         self.save_root, self.schema_root = self._load_path_roots()
         self._build_ui()
         self.reload_discovery()
+
+    @staticmethod
+    def _sequence_position_delta(before_position: int | None, after_position: int | None) -> int:
+        if before_position is None or after_position is None:
+            return 0
+        return max(0, after_position - before_position)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -1329,7 +1334,7 @@ class ScanImageControlWidget(QWidget):
         _, after_position, _, _ = self._query_photostim_sequence_state(path_name)
         before_value = 0 if before_position is None else before_position
         after_value = 0 if after_position is None else after_position
-        delta = max(0, after_value - before_value)
+        delta = self._sequence_position_delta(before_position, after_position)
         self.signals.waveform_test_result.emit(path_name, before_value, after_value, delta)
 
     def _test_stim_waveform_external(self, path_name: str) -> None:
@@ -1343,7 +1348,7 @@ class ScanImageControlWidget(QWidget):
         duration_s: float,
     ) -> None:
         runtime = self._ensure_session(path_name)
-        active_before, position_before, _, completed_before = self._query_photostim_sequence_state(path_name)
+        _, position_before, _, completed_before = self._query_photostim_sequence_state(path_name)
         pulse_count = max(1, int(round(frequency_hz * duration_s)))
         pulse_times_s = [((idx + 1) / frequency_hz) for idx in range(pulse_count)]
         pulse_width_s = duty_cycle / frequency_hz
@@ -1363,7 +1368,6 @@ class ScanImageControlWidget(QWidget):
         )
         self._start_test_waveform_external_monitor(
             path_name,
-            active_before=active_before,
             position_before=position_before,
             completed_before=completed_before,
             expected_duration_s=(max(pulse_times_s) if pulse_times_s else 0.0) + pulse_width_s + 0.1,
@@ -2337,7 +2341,6 @@ class ScanImageControlWidget(QWidget):
     def _start_test_waveform_external_monitor(
         self,
         path_name: str,
-        active_before: bool,
         position_before: int | None,
         completed_before: int | None,
         expected_duration_s: float,
@@ -2372,9 +2375,7 @@ class ScanImageControlWidget(QWidget):
                 time.sleep(0.05)
 
             active_after, position_after, _, completed_after = self._query_photostim_sequence_state(path_name)
-            delivered_count = 0
-            if position_before is not None and position_after is not None:
-                delivered_count = max(0, position_after - position_before)
+            delivered_count = self._sequence_position_delta(position_before, position_after)
             waveform_advanced = False
             if position_before is not None and position_after is not None and position_after > position_before:
                 waveform_advanced = True
@@ -2447,7 +2448,7 @@ class ScanImageControlWidget(QWidget):
         while not stop_event.is_set() and time.monotonic() < finish_deadline:
             time.sleep(0.05)
 
-        mismatch_message = self._finalize_pending_photostim_check(path_name, "Software trigger count check")
+        mismatch_message = self._finalize_pending_photostim_check(path_name, "Waveform trigger count check")
         if (
             mismatch_message is not None
             and self.ignore_incomplete_trigger_checkbox.isChecked()
