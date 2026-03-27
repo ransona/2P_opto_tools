@@ -2387,6 +2387,12 @@ class ScanImageControlWidget(QWidget):
             self.signals.log_message.emit(f"[{path_name}] Photostim sequence position delta: {delivered_count}")
             self.signals.log_message.emit(f"[{path_name}] Waveform external-start advanced photostim: {int(waveform_advanced)}")
             self.signals.log_message.emit(f"[{path_name}] Waveform external-start advanced photostim count: {delivered_count}")
+            self.signals.waveform_test_result.emit(
+                path_name,
+                0 if position_before is None else position_before,
+                0 if position_after is None else position_after,
+                delivered_count,
+            )
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
