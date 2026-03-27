@@ -726,6 +726,7 @@ class MainWindow(QMainWindow):
         self.last_schema_load_dir = self.schema_root
         self.pattern_dirty = False
         self.sequence_dirty = False
+        self._suppress_dirty_updates = False
 
         self.preview = TimelinePreview(self.project)
         self.pattern_editor = PatternEditor(self.project, self.mark_pattern_dirty, self.refresh_lists)
@@ -887,10 +888,14 @@ class MainWindow(QMainWindow):
         return self.project_dir() / "schema.yaml"
 
     def mark_pattern_dirty(self) -> None:
+        if self._suppress_dirty_updates:
+            return
         self.pattern_dirty = True
         self.update_status()
 
     def mark_sequence_dirty(self) -> None:
+        if self._suppress_dirty_updates:
+            return
         self.sequence_dirty = True
         self.update_status()
 
@@ -1042,18 +1047,23 @@ class MainWindow(QMainWindow):
             if choice == QMessageBox.StandardButton.Save:
                 if not self._save_schema_to_default(force=False):
                     return
-        self.project = ExperimentProject()
-        self.schema_file_path = ""
-        self.pattern_editor.project = self.project
-        self.sequence_editor.project = self.project
-        self.preview.project = self.project
-        self.pattern_editor.current_name = ""
-        self.sequence_editor.current_name = ""
-        self.pattern_dirty = False
-        self.sequence_dirty = False
-        self.pattern_editor.clear_form()
-        self.sequence_editor.clear_form()
-        self.refresh_lists()
+        self._suppress_dirty_updates = True
+        try:
+            self.project = ExperimentProject()
+            self.schema_file_path = ""
+            self.pattern_editor.project = self.project
+            self.sequence_editor.project = self.project
+            self.preview.project = self.project
+            self.pattern_editor.current_name = ""
+            self.sequence_editor.current_name = ""
+            self.pattern_dirty = False
+            self.sequence_dirty = False
+            self.pattern_editor.clear_form()
+            self.sequence_editor.clear_form()
+            self.refresh_lists()
+        finally:
+            self._suppress_dirty_updates = False
+        self.clear_dirty()
 
     def load_schema_dialog(self) -> None:
         if self.pattern_dirty or self.sequence_dirty:
@@ -1075,19 +1085,24 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Load schema YAML", str(start_dir), "YAML (*.yaml *.yml)")
         if not path:
             return
-        self.project = load_schema(path)
-        self.pattern_editor.project = self.project
-        self.sequence_editor.project = self.project
-        self.preview.project = self.project
-        self.schema_file_path = path
-        self.pattern_editor.current_name = ""
-        self.sequence_editor.current_name = ""
-        self.pattern_editor.clear_form()
-        self.sequence_editor.clear_form()
-        self.pattern_dirty = False
-        self.sequence_dirty = False
-        self.last_schema_load_dir = Path(path).resolve().parent
-        self.refresh_lists()
+        self._suppress_dirty_updates = True
+        try:
+            self.project = load_schema(path)
+            self.pattern_editor.project = self.project
+            self.sequence_editor.project = self.project
+            self.preview.project = self.project
+            self.schema_file_path = path
+            self.pattern_editor.current_name = ""
+            self.sequence_editor.current_name = ""
+            self.pattern_editor.clear_form()
+            self.sequence_editor.clear_form()
+            self.pattern_dirty = False
+            self.sequence_dirty = False
+            self.last_schema_load_dir = Path(path).resolve().parent
+            self.refresh_lists()
+        finally:
+            self._suppress_dirty_updates = False
+        self.clear_dirty()
 
     def save_schema_dialog(self) -> bool:
         default_path = self.schema_save_path()
@@ -1110,41 +1125,63 @@ class MainWindow(QMainWindow):
             )
             if choice != QMessageBox.StandardButton.Yes:
                 return False
-        if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
-            return False
-        if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
-            return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        save_schema(target, self.project)
-        self.schema_file_path = str(target)
-        self.pattern_dirty = False
-        self.sequence_dirty = False
-        self.update_save_path_label()
-        self.refresh_lists()
+        self._suppress_dirty_updates = True
+        try:
+            if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
+                return False
+            if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
+                return False
+            target.parent.mkdir(parents=True, exist_ok=True)
+            save_schema(target, self.project)
+            self.schema_file_path = str(target)
+            self.pattern_dirty = False
+            self.sequence_dirty = False
+            self.update_save_path_label()
+            self.refresh_lists()
+        finally:
+            self._suppress_dirty_updates = False
+        self.clear_dirty()
         return True
 
     def _save_schema_to_default(self, force: bool = False) -> bool:
         if not force and not (self.pattern_dirty or self.sequence_dirty):
             return True
-        if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
-            return False
-        if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
-            return False
-        path = self.schema_save_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        save_schema(path, self.project)
-        self.schema_file_path = str(path)
-        self.pattern_dirty = False
-        self.sequence_dirty = False
-        self.refresh_lists()
+        self._suppress_dirty_updates = True
+        try:
+            if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
+                return False
+            if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
+                return False
+            path = self.schema_save_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            save_schema(path, self.project)
+            self.schema_file_path = str(path)
+            self.pattern_dirty = False
+            self.sequence_dirty = False
+            self.refresh_lists()
+        finally:
+            self._suppress_dirty_updates = False
+        self.clear_dirty()
         return True
 
     def ensure_schema_path_for_external_use(self) -> Path | None:
-        if self.pattern_dirty or self.sequence_dirty or not self.schema_file_path:
+        if self.pattern_dirty or self.sequence_dirty:
             choice = QMessageBox.question(
                 self,
                 "Save schema",
                 "External ScanImage commands need a saved schema file. Save the schema now?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if choice != QMessageBox.StandardButton.Save:
+                return None
+            if not self.save_schema_dialog():
+                return None
+        elif not self.schema_file_path:
+            choice = QMessageBox.question(
+                self,
+                "Save schema",
+                "This schema has not been saved to disk yet. Save it now for external ScanImage commands?",
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Save,
             )
