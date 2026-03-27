@@ -1852,6 +1852,37 @@ class ScanImageControlWidget(QWidget):
             time.sleep(0.02)
         raise RuntimeError("Leading park did not advance photostim sequence before ready.")
 
+    def _wait_for_expected_photostim_completion(
+        self,
+        path_name: str,
+        ready_position: int | None,
+        ready_completed_sequences: int | None,
+        expected_remaining: int,
+        timeout_s: float = 2.0,
+    ) -> tuple[bool, int | None, int | None]:
+        deadline = time.monotonic() + timeout_s
+        last_active = False
+        last_position: int | None = None
+        last_completed: int | None = None
+        while time.monotonic() < deadline:
+            active, current_position, _, completed_sequences = self._query_photostim_sequence_state(path_name)
+            last_active = active
+            last_position = current_position
+            last_completed = completed_sequences
+            if (
+                ready_completed_sequences is not None
+                and completed_sequences is not None
+                and completed_sequences > ready_completed_sequences
+                and not active
+            ):
+                return active, current_position, completed_sequences
+            if ready_position is not None and current_position is not None:
+                delivered = max(0, current_position - ready_position)
+                if delivered >= expected_remaining:
+                    return active, current_position, completed_sequences
+            time.sleep(0.02)
+        return last_active, last_position, last_completed
+
     def _finalize_pending_photostim_check(self, path_name: str, label: str) -> str | None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
@@ -1860,7 +1891,12 @@ class ScanImageControlWidget(QWidget):
         ready_completed = prep_state.ready_completed_sequences
         if expected_remaining is None or ready_position is None:
             return None
-        active, current_position, _, completed_sequences = self._query_photostim_sequence_state(path_name)
+        active, current_position, completed_sequences = self._wait_for_expected_photostim_completion(
+            path_name,
+            ready_position,
+            ready_completed,
+            expected_remaining,
+        )
         if (
             ready_completed is not None
             and completed_sequences is not None
