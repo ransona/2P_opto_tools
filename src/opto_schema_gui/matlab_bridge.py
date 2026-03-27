@@ -968,18 +968,11 @@ def build_prepare_trial_waveform_command(
         + (path_config.trial_waveform_pulse_width_ms / 1000.0)
         + 0.05
     )
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=True)
     return "\n".join(
         [
             build_global_preamble(path_config),
-            "rs = dabs.resources.ResourceStore();",
-            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
-            "if iscell(wg); wg = wg{1}; end",
-            "if ~most.idioms.isValidObj(wg);",
-            "    wgs = rs.filterByClass('dabs.generic.WaveformGenerator');",
-            "    availableNames = strings(0,1);",
-            "    if ~isempty(wgs); availableNames = string(cellfun(@(x)x.name, wgs, 'UniformOutput', false)); end",
-            f"    error('Configured trial waveform generator resource was not found. Requested: %s. Available waveform generators: %s', {matlab_string(path_config.trial_waveform_generator_name)}, strjoin(cellstr(availableNames), ', '));",
-            "end",
+            *resource_setup,
             f"trialTriggerTimesSec = {trigger_times_expr};",
             f"trialPulseWidthSec = {path_config.trial_waveform_pulse_width_ms / 1000.0!r};",
             f"trialTotalDurationSec = {total_duration_s!r};",
@@ -1007,13 +1000,11 @@ def build_prepare_trial_waveform_command(
 
 
 def build_start_trial_waveform_command(path_config: PathConfig) -> str:
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=True)
     return "\n".join(
         [
             build_global_preamble(path_config),
-            "rs = dabs.resources.ResourceStore();",
-            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
-            "if iscell(wg); wg = wg{1}; end",
-            "if ~most.idioms.isValidObj(wg); error('Configured trial waveform generator resource was not found.'); end",
+            *resource_setup,
             "wg.startTask();",
             "disp('TRIAL_WAVEFORM_STARTED');",
         ]
@@ -1021,13 +1012,11 @@ def build_start_trial_waveform_command(path_config: PathConfig) -> str:
 
 
 def build_arm_trial_waveform_command(path_config: PathConfig) -> str:
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=True)
     return "\n".join(
         [
             build_global_preamble(path_config),
-            "rs = dabs.resources.ResourceStore();",
-            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
-            "if iscell(wg); wg = wg{1}; end",
-            "if ~most.idioms.isValidObj(wg); error('Configured trial waveform generator resource was not found.'); end",
+            *resource_setup,
             "wg.startTask();",
             "disp('TRIAL_WAVEFORM_ARMED');",
         ]
@@ -1035,12 +1024,11 @@ def build_arm_trial_waveform_command(path_config: PathConfig) -> str:
 
 
 def build_trial_waveform_status_command(path_config: PathConfig) -> str:
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=False)
     return "\n".join(
         [
             build_global_preamble(path_config),
-            "rs = dabs.resources.ResourceStore();",
-            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
-            "if iscell(wg); wg = wg{1}; end",
+            *resource_setup,
             "if ~most.idioms.isValidObj(wg); error('Configured trial waveform generator resource was not found.'); end",
             "disp('TRIAL_WAVEFORM_TASK_ACTIVE');",
             "if most.idioms.isValidObj(wg.hTask); disp(double(wg.hTask.active)); else; disp(0); end",
@@ -1052,12 +1040,11 @@ def build_trial_waveform_status_command(path_config: PathConfig) -> str:
 
 
 def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=False)
     return "\n".join(
         [
             build_global_preamble(path_config),
-            "rs = dabs.resources.ResourceStore();",
-            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
-            "if iscell(wg); wg = wg{1}; end",
+            *resource_setup,
             "if most.idioms.isValidObj(wg); wg.stopTask(); end",
             "disp('TRIAL_WAVEFORM_STOPPED');",
         ]
@@ -1066,6 +1053,7 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
 
 def build_test_stim_waveform_command(path_config: PathConfig) -> str:
     hsi = path_config.hsi_variable
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=False)
     return "\n".join(
         [
             build_global_preamble(path_config),
@@ -1083,17 +1071,16 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "disp('dabs.generic.waveforms.digital.PhotostimTrialClock');",
             "disp('Waveform function resolution:');",
             "disp(which('dabs.generic.waveforms.digital.PhotostimTrialClock', '-all'));",
-            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
-            "if iscell(wg); wg = wg{1}; end",
+            *resource_setup,
             "disp('Photostim trigger term before test:');",
             "disp(string(hPs.stimTriggerTerm));",
             "disp('Photostim active before test:');",
             "disp(double(hPs.active));",
             "disp('Photostim mode before test:');",
             "disp(string(hPs.stimulusMode));",
-            "if ~most.idioms.isValidObj(wg)",
-            f"    error('Configured trial waveform generator resource was not found. Requested: %s', {matlab_string(path_config.trial_waveform_generator_name)});",
-            "end",
+            "disp('Configured waveform generator exists:');",
+            "disp(double(most.idioms.isValidObj(wg)));",
+            "if ~most.idioms.isValidObj(wg); disp('Self-contained waveform diagnostic complete'); return; end",
             "assignin('base', 'photostimTrialTriggerTimesSec', 0);",
             f"assignin('base', 'photostimTrialPulseWidthSec', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
             "assignin('base', 'photostimTrialTotalDurationSec', 0.1);",
@@ -1134,6 +1121,31 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "disp('Self-contained waveform diagnostic complete');",
         ]
     )
+
+
+def _build_trial_waveform_resource_setup(path_config: PathConfig, create_if_missing: bool) -> list[str]:
+    lines = [
+        "rs = dabs.resources.ResourceStore();",
+        f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
+        "if iscell(wg); wg = wg{1}; end",
+    ]
+    if create_if_missing:
+        lines.extend(
+            [
+                "wgCreated = false;",
+                "if ~most.idioms.isValidObj(wg);",
+                f"    wg = dabs.generic.WaveformGenerator({matlab_string(path_config.trial_waveform_generator_name)});",
+                "    wgCreated = true;",
+                "end",
+                "disp('Trial waveform generator created dynamically:');",
+                "disp(double(wgCreated));",
+                "wg.taskType = 'Digital';",
+                f"wg.hControl = {matlab_string(path_config.trial_waveform_output_port)};",
+                "wg.hAIFeedback = '';",
+                "wg.wvfrmFcn = 'PhotostimTrialClock';",
+            ]
+        )
+    return lines
 
 
 def build_experiment_context(path_config: PathConfig, exp_id: str) -> ExperimentContext:
