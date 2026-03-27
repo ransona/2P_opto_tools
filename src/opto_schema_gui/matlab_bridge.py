@@ -852,6 +852,8 @@ def build_photostim_sequence_status_command(path_config: PathConfig) -> str:
             "disp(double(hPs.active));",
             "disp('PHOTOSTIM_SEQUENCE_POSITION');",
             "if isempty(hPs.sequencePosition); disp('NaN'); else; disp(double(hPs.sequencePosition)); end",
+            "disp('PHOTOSTIM_COMPLETED_SEQUENCES');",
+            "if isempty(hPs.completedSequences); disp('NaN'); else; disp(double(hPs.completedSequences)); end",
             "disp('PHOTOSTIM_SEQUENCE_SELECTED');",
             "disp(hPs.sequenceSelectedStimuli);",
             "disp('PHOTOSTIM_STATUS_READY');",

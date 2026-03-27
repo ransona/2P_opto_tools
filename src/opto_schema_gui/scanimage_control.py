@@ -86,6 +86,10 @@ class PreparedPhotostimState:
     triggered_stimulus_groups: list[int] = field(default_factory=list)
     last_trigger_insert_position: int | None = None
     expected_sequence_position: int | None = None
+    remaining_expected_triggers: int | None = None
+    ready_sequence_position: int | None = None
+    ready_completed_sequences: int | None = None
+    leading_park_fired: bool = False
 
     def reset(self) -> None:
         self.schema_path = None
@@ -101,6 +105,10 @@ class PreparedPhotostimState:
         self.triggered_stimulus_groups = []
         self.last_trigger_insert_position = None
         self.expected_sequence_position = None
+        self.remaining_expected_triggers = None
+        self.ready_sequence_position = None
+        self.ready_completed_sequences = None
+        self.leading_park_fired = False
 
 
 @dataclass
@@ -1618,7 +1626,7 @@ class ScanImageControlWidget(QWidget):
 
         sequence_name = sequence_names[seq_num]
         sequence = project.sequences[sequence_name]
-        expanded_groups: list[int] = []
+        expanded_groups: list[int] = [2]
         trigger_times_s: list[float] = []
         stimulus_pattern_numbers: list[int] = []
         pattern_names = list(project.patterns.keys())
@@ -1667,12 +1675,16 @@ class ScanImageControlWidget(QWidget):
             )
             runtime.prepared_photostim.expected_sequence_position = None
             runtime.prepared_photostim.last_trigger_insert_position = None
+            runtime.prepared_photostim.remaining_expected_triggers = None
+            runtime.prepared_photostim.ready_sequence_position = None
+            runtime.prepared_photostim.ready_completed_sequences = None
+            runtime.prepared_photostim.leading_park_fired = False
             runtime.status = "photostim aborted"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
         self._cancel_software_trigger(path_name)
 
-    def _query_photostim_sequence_state(self, path_name: str) -> tuple[bool, int | None, list[int]]:
+    def _query_photostim_sequence_state(self, path_name: str) -> tuple[bool, int | None, list[int], int | None]:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
@@ -1683,12 +1695,13 @@ class ScanImageControlWidget(QWidget):
         active = False
         position: int | None = None
         sequence: list[int] = []
+        completed_sequences: int | None = None
         marker = None
         for raw_line in lines:
             line = raw_line.strip()
             if not line:
                 continue
-            if line in {"PHOTOSTIM_ACTIVE", "PHOTOSTIM_SEQUENCE_POSITION", "PHOTOSTIM_SEQUENCE_SELECTED", "PHOTOSTIM_STATUS_READY"}:
+            if line in {"PHOTOSTIM_ACTIVE", "PHOTOSTIM_SEQUENCE_POSITION", "PHOTOSTIM_COMPLETED_SEQUENCES", "PHOTOSTIM_SEQUENCE_SELECTED", "PHOTOSTIM_STATUS_READY"}:
                 marker = line
                 continue
             if marker == "PHOTOSTIM_ACTIVE":
@@ -1701,12 +1714,17 @@ class ScanImageControlWidget(QWidget):
                     position = int(float(line))
                 except ValueError:
                     position = None
+            elif marker == "PHOTOSTIM_COMPLETED_SEQUENCES":
+                try:
+                    completed_sequences = int(float(line))
+                except ValueError:
+                    completed_sequences = None
             elif marker == "PHOTOSTIM_SEQUENCE_SELECTED":
                 try:
                     sequence.extend(int(float(part)) for part in line.split())
                 except ValueError:
                     pass
-        return active, position, sequence
+        return active, position, sequence, completed_sequences
 
     def _fire_software_trigger(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)
@@ -1775,7 +1793,7 @@ class ScanImageControlWidget(QWidget):
                 except Exception as exc:
                     self.signals.log_message.emit(f"[{path_name}] ERROR: software trigger failed: {exc}")
                     return
-            mismatch_message = self._report_photostim_delivery_check(path_name, "Software trigger count check")
+            mismatch_message = self._finalize_pending_photostim_check(path_name, "Software trigger count check")
             if self._debug_category_enabled.get("software_trigger_times", True):
                 self.signals.log_message.emit(f"[{path_name}] software trigger schedule completed")
             runtime.software_trigger_stop = None
@@ -1813,12 +1831,67 @@ class ScanImageControlWidget(QWidget):
                     return None
         return None
 
+    def _wait_for_leading_park_advance(
+        self,
+        path_name: str,
+        baseline_position: int | None,
+        baseline_completed_sequences: int | None,
+        timeout_s: float = 2.0,
+    ) -> tuple[int | None, int | None]:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            active, current_position, _, completed_sequences = self._query_photostim_sequence_state(path_name)
+            if baseline_completed_sequences is not None and completed_sequences is not None:
+                if completed_sequences > baseline_completed_sequences:
+                    return current_position, completed_sequences
+            if baseline_position is not None and current_position is not None and current_position != baseline_position:
+                return current_position, completed_sequences
+            if not active:
+                return current_position, completed_sequences
+            time.sleep(0.02)
+        raise RuntimeError("Leading park did not advance photostim sequence before ready.")
+
+    def _finalize_pending_photostim_check(self, path_name: str, label: str) -> str | None:
+        runtime = self._ensure_session(path_name)
+        prep_state = runtime.prepared_photostim
+        expected_remaining = prep_state.remaining_expected_triggers
+        ready_position = prep_state.ready_sequence_position
+        ready_completed = prep_state.ready_completed_sequences
+        if expected_remaining is None or ready_position is None:
+            return None
+        active, current_position, _, completed_sequences = self._query_photostim_sequence_state(path_name)
+        if (
+            ready_completed is not None
+            and completed_sequences is not None
+            and completed_sequences > ready_completed
+            and not active
+        ):
+            delivered_triggers = expected_remaining
+        elif current_position is not None:
+            delivered_triggers = max(0, current_position - ready_position)
+            delivered_triggers = min(delivered_triggers, expected_remaining)
+        else:
+            return None
+        if self._debug_category_enabled.get("software_trigger_count", True):
+            self.signals.log_message.emit(
+                f"[{path_name}] {label}: {delivered_triggers} stimuli delivered, {expected_remaining} expected"
+            )
+        prep_state.remaining_expected_triggers = None
+        prep_state.ready_sequence_position = None
+        prep_state.ready_completed_sequences = None
+        prep_state.leading_park_fired = False
+        prep_state.expected_sequence_position = None
+        prep_state.last_trigger_insert_position = None
+        if delivered_triggers != expected_remaining:
+            return f"{delivered_triggers} stimuli delivered, {expected_remaining} expected"
+        return None
+
     def _trigger_photo_stim_checked(self, path_name: str, sequence_indices: list[int]) -> None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
-        _, current_position, _ = self._query_photostim_sequence_state(path_name)
+        _, current_position, _, _ = self._query_photostim_sequence_state(path_name)
         if not self.software_trigger_checkbox.isChecked():
-            mismatch_message = self._report_photostim_delivery_check(path_name, "Previous photostim sequence check")
+            mismatch_message = self._finalize_pending_photostim_check(path_name, "Previous photostim sequence check")
             if mismatch_message is not None:
                 if self.ignore_incomplete_trigger_checkbox.isChecked():
                     raise RuntimeError(mismatch_message)
@@ -1827,30 +1900,20 @@ class ScanImageControlWidget(QWidget):
         insert_position = self._parse_trigger_insert_position(lines)
         if insert_position is None:
             insert_position = current_position if current_position is not None else 1
+        _, position_before_park, _, completed_before_park = self._query_photostim_sequence_state(path_name)
+        self._fire_software_trigger(path_name)
+        ready_position, ready_completed = self._wait_for_leading_park_advance(
+            path_name,
+            position_before_park,
+            completed_before_park,
+        )
         prep_state.last_trigger_insert_position = insert_position
         prep_state.expected_sequence_position = insert_position + len(sequence_indices)
-
-    def _report_photostim_delivery_check(self, path_name: str, label: str) -> str | None:
-        runtime = self._ensure_session(path_name)
-        prep_state = runtime.prepared_photostim
-        expected_position = prep_state.expected_sequence_position
-        insert_position = prep_state.last_trigger_insert_position
-        if expected_position is None or insert_position is None:
-            return None
-        _, current_position, _ = self._query_photostim_sequence_state(path_name)
-        if current_position is None:
-            return None
-        expected_stimuli = max(0, expected_position - insert_position)
-        delivered_stimuli = max(0, current_position - insert_position)
-        if self._debug_category_enabled.get("software_trigger_count", True):
-            self.signals.log_message.emit(
-                f"[{path_name}] {label}: {delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
-            )
-        prep_state.expected_sequence_position = None
-        prep_state.last_trigger_insert_position = None
-        if delivered_stimuli != expected_stimuli:
-            return f"{delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
-        return None
+        prep_state.remaining_expected_triggers = max(0, len(sequence_indices) - 1)
+        prep_state.ready_sequence_position = ready_position
+        prep_state.ready_completed_sequences = ready_completed if ready_completed is not None else completed_before_park
+        prep_state.leading_park_fired = True
+        self.signals.log_message.emit(f"[{path_name}] leading park fired; trial sequence armed")
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:
         animal_id = exp_id[14:] if len(exp_id) >= 15 else ""

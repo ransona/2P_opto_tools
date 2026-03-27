@@ -135,6 +135,8 @@ beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
 
 hGroup = scanimage.mroi.RoiGroup(sprintf('P%d', patternNumber));
+pauseRoi = makePauseRoi(centerRef, sizeRef, opts.PreStimPauseDuration, nBeams);
+hGroup.add(pauseRoi);
 stimRoi = scanimage.mroi.Roi();
 stimRoi.add(0, stimField);
 hGroup.add(stimRoi);
@@ -150,6 +152,20 @@ end
 function group = makeParkOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
 group.add(makeParkRoi(durationSeconds, nBeams));
+end
+
+
+function roi = makePauseRoi(centerXY, sizeXY, durationSeconds, nBeams)
+sfPause = scanimage.mroi.scanfield.fields.StimulusField();
+sfPause.centerXY = centerXY;
+sfPause.sizeXY = sizeXY;
+sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
+sfPause.stimparams = {'poweredPause', false};
+sfPause.duration = durationSeconds;
+sfPause.repetitions = 1;
+sfPause.powers = zeros(1, nBeams);
+roi = scanimage.mroi.Roi();
+roi.add(0, sfPause);
 end
 
 
