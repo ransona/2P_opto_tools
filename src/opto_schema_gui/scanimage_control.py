@@ -820,7 +820,7 @@ class ScanImageControlWidget(QWidget):
 
         def worker() -> None:
             for path_name in available_paths:
-                self._run_action(path_name, "launch path", self._launch_path)
+                self._run_action(path_name, f"Launching path: {path_name}", self._launch_path)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -886,7 +886,7 @@ class ScanImageControlWidget(QWidget):
         self._path_tabs[path_name] = widgets
         self.path_tabs.addTab(tab, path_name)
 
-        launch_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "launch path", self._launch_path))
+        launch_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, f"Launching path: {name}", self._launch_path))
         focus_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "focus", self._focus_path))
         acquire_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "acquire", self._acquire_path_from_ui))
         stop_acq_btn.clicked.connect(lambda _, name=path_name: self._spawn_action(name, "stop acquisition", self._stop_acquisition))
@@ -919,7 +919,7 @@ class ScanImageControlWidget(QWidget):
             assert self.machine_config is not None
             order = self.machine_config.launch_order
             for index, path_name in enumerate(order):
-                if not self._run_action(path_name, "launch path", self._launch_path):
+                if not self._run_action(path_name, f"Launching path: {path_name}", self._launch_path):
                     break
                 if index < len(order) - 1 and self.machine_config.launch_delay_s > 0:
                     delay = self.machine_config.launch_delay_s
@@ -1459,6 +1459,8 @@ class ScanImageControlWidget(QWidget):
             return
 
         schema_path = self._resolve_schema_path(schema_name, exp_id)
+        self.signals.log_message.emit("--------------------")
+        self.signals.log_message.emit("Pre-building all stimulus groups for experiment")
         self.signals.log_message.emit(f"Loading schema: {schema_path}")
         project = load_schema(schema_path)
         runtime = self._runtimes[photostim_path]
@@ -1485,7 +1487,7 @@ class ScanImageControlWidget(QWidget):
         def worker() -> None:
             ok = self._run_action(
                 photostim_path,
-                "json prep_patterns" if reply_address is not None else "gui prep_patterns",
+                "Pre-building all stimulus groups for experiment",
                 lambda name: self._import_pattern_subset(
                     name,
                     schema_path,

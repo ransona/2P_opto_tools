@@ -323,14 +323,8 @@ class MatlabSession:
             outputs.append("Reserved stimulus groups: 1=BLANK, 2=PARK")
             for pattern_name, pattern_number in zip(pattern_names, pattern_numbers):
                 outputs.append(f"Prepared P{pattern_number} from pattern '{pattern_name}' as stimulus group {pattern_number + 2}")
-            outputs.append("Prepared photostim sequence mode")
-            outputs.append("sequence")
-            outputs.append("Prepared stimulus group sequence")
             self.sim_sequence = list(range(1, len(pattern_names) + 3))
             self.sim_sequence_position = 1
-            outputs.append(str(self.sim_sequence))
-            outputs.append("Prepared number of sequences")
-            outputs.append("1")
             outputs.append("Simulated photostim mask generation ready")
             return outputs
         if "importschemapatterns" in command_lower:

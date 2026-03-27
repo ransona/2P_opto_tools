@@ -71,10 +71,6 @@ hPs.stimulusMode = 'sequence';
 hPs.sequenceSelectedStimuli = 1:numel(hPs.stimRoiGroups);
 hPs.numSequences = 1;
 
-disp('Prepared photostim sequence mode');
-disp(string(hPs.stimulusMode));
-disp(hPs.sequenceSelectedStimuli);
-disp(hPs.numSequences);
 disp('Starting photostim mask generation');
 hPs.start();
 disp('Photostim mask generation ready');
