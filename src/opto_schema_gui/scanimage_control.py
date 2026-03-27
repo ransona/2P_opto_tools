@@ -1325,7 +1325,7 @@ class ScanImageControlWidget(QWidget):
             runtime.status = "stim waveform test"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
-        time.sleep((max(pulse_times_s) if pulse_times_s else 0.0) + pulse_width_s + 1.0)
+        time.sleep((max(pulse_times_s) if pulse_times_s else 0.0) + pulse_width_s + 2.0)
         _, after_position, _, _ = self._query_photostim_sequence_state(path_name)
         before_value = 0 if before_position is None else before_position
         after_value = 0 if after_position is None else after_position
@@ -2367,7 +2367,7 @@ class ScanImageControlWidget(QWidget):
                 )
                 return
 
-            finish_wait = time.monotonic() + max(2.0, expected_duration_s + 1.0)
+            finish_wait = time.monotonic() + max(2.0, expected_duration_s + 2.0)
             while not stop_event.is_set() and time.monotonic() < finish_wait:
                 time.sleep(0.05)
 
