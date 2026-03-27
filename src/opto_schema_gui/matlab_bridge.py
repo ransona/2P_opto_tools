@@ -461,6 +461,10 @@ def matlab_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def matlab_double_quoted_string(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
 def matlab_literal(value: Any) -> str:
     if isinstance(value, str):
         return matlab_string(value)
@@ -644,8 +648,8 @@ def build_import_command(
     point_size_expr = f"[{path_config.point_size_xy[0]} {path_config.point_size_xy[1]}]"
     pattern_names_expr = "strings(0, 1)"
     if pattern_names:
-        quoted = "; ".join(matlab_string(name) for name in pattern_names)
-        pattern_names_expr = f"string([{quoted}])"
+        quoted = "; ".join(matlab_double_quoted_string(name) for name in pattern_names)
+        pattern_names_expr = f"[{quoted}]"
     if prepare_sequence or start_photostim:
         lines = [
             build_global_preamble(path_config),
