@@ -1688,12 +1688,7 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         active, current_position, _ = self._query_photostim_sequence_state(path_name)
         expected_position = prep_state.expected_sequence_position
-        if (
-            expected_position is not None
-            and active
-            and current_position is not None
-            and current_position < expected_position
-        ):
+        if expected_position is not None and current_position is not None:
             insert_position = prep_state.last_trigger_insert_position
             expected_stimuli = None
             delivered_stimuli = None
@@ -1701,16 +1696,20 @@ class ScanImageControlWidget(QWidget):
                 expected_stimuli = max(0, expected_position - insert_position)
                 delivered_stimuli = max(0, current_position - insert_position)
             if expected_stimuli is not None and delivered_stimuli is not None:
-                message = (
-                    "Previous photostim sequence does not appear complete: "
+                check_message = (
+                    f"[{path_name}] Previous photostim sequence check: "
                     f"{delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
                 )
-            else:
-                message = "Previous photostim sequence does not appear complete."
-            if self.ignore_incomplete_trigger_checkbox.isChecked():
-                self.signals.log_message.emit(f"[{path_name}] WARNING: {message}")
-            else:
-                raise RuntimeError(message)
+                self.signals.log_message.emit(check_message)
+                if delivered_stimuli != expected_stimuli:
+                    mismatch_message = (
+                        "Previous photostim sequence does not match expected delivery: "
+                        f"{delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
+                    )
+                    if self.ignore_incomplete_trigger_checkbox.isChecked():
+                        self.signals.log_message.emit(f"[{path_name}] WARNING: {mismatch_message}")
+                    else:
+                        raise RuntimeError(mismatch_message)
         lines = self._apply_trigger_sequence(path_name, sequence_indices)
         insert_position = self._parse_trigger_insert_position(lines)
         if insert_position is None:
