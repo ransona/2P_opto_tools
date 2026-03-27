@@ -521,12 +521,14 @@ class StimWaveformTestDialog(QDialog):
         stimulate_callback: Callable[[float, float, float], None],
         result_signal: pyqtSignal,
         action_label: str = "Stimulate",
+        require_sequence_capacity: bool = True,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._path_name = path_name
         self._preview_callback = preview_callback
         self._stimulate_callback = stimulate_callback
+        self._require_sequence_capacity = require_sequence_capacity
         self.setWindowTitle("Test Stim Waveform")
         self.resize(460, 260)
         layout = QVBoxLayout(self)
@@ -558,8 +560,9 @@ class StimWaveformTestDialog(QDialog):
         self.advanced_count_label = QLabel("-")
         info_form.addRow("Pulses Generated", self.generated_count_label)
         info_form.addRow("Pulse Width (ms)", self.pulse_width_label)
-        info_form.addRow("Remaining Seq Entries", self.remaining_entries_label)
-        info_form.addRow("Enough Entries", self.enough_entries_label)
+        if require_sequence_capacity:
+            info_form.addRow("Remaining Seq Entries", self.remaining_entries_label)
+            info_form.addRow("Enough Entries", self.enough_entries_label)
         info_form.addRow("Seq Advanced", self.advanced_count_label)
         layout.addLayout(info_form)
 
@@ -592,16 +595,21 @@ class StimWaveformTestDialog(QDialog):
         remaining_entries = 0
         if position is not None:
             remaining_entries = max(0, len(sequence) - position + 1)
-        enough = active and remaining_entries >= requested_pulses
+        enough = active and (remaining_entries >= requested_pulses if self._require_sequence_capacity else True)
         self.generated_count_label.setText(str(requested_pulses))
         self.pulse_width_label.setText(f"{pulse_width_ms:.3f}")
-        self.remaining_entries_label.setText(str(remaining_entries))
-        self.enough_entries_label.setText("Yes" if enough else "No")
+        if self._require_sequence_capacity:
+            self.remaining_entries_label.setText(str(remaining_entries))
+            self.enough_entries_label.setText("Yes" if enough else "No")
         self.stimulate_btn.setEnabled(enough)
 
     def _stimulate(self) -> None:
         if not self.stimulate_btn.isEnabled():
-            QMessageBox.warning(self, "Not ready", "Not enough remaining stimulus groups after the current position.")
+            QMessageBox.warning(
+                self,
+                "Not ready",
+                "Photostim is not active or there are not enough remaining stimulus groups after the current position.",
+            )
             return
         self.advanced_count_label.setText("Running...")
         self._stimulate_callback(self.freq_spin.value(), self.duty_spin.value(), self.duration_spin.value())
@@ -1244,6 +1252,7 @@ class ScanImageControlWidget(QWidget):
             ),
             self.signals.waveform_test_result,
             "Stimulate",
+            True,
             self,
         )
         dialog.exec()
@@ -1263,6 +1272,7 @@ class ScanImageControlWidget(QWidget):
             ),
             self.signals.waveform_test_result,
             "Arm External",
+            False,
             self,
         )
         dialog.exec()
@@ -1355,6 +1365,7 @@ class ScanImageControlWidget(QWidget):
             active_before=active_before,
             position_before=position_before,
             completed_before=completed_before,
+            expected_duration_s=(max(pulse_times_s) if pulse_times_s else 0.0) + pulse_width_s + 0.1,
         )
 
     def _import_patterns(self, path_name: str, schema_path: Path) -> None:
@@ -2328,6 +2339,7 @@ class ScanImageControlWidget(QWidget):
         active_before: bool,
         position_before: int | None,
         completed_before: int | None,
+        expected_duration_s: float,
     ) -> None:
         runtime = self._runtimes[path_name]
         stop_event = threading.Event()
@@ -2346,9 +2358,15 @@ class ScanImageControlWidget(QWidget):
                 self.signals.log_message.emit(
                     f"[{path_name}] ERROR: External waveform start was not detected on {runtime.path_config.trial_waveform_start_trigger_port}"
                 )
+                self.signals.waveform_test_result.emit(
+                    path_name,
+                    0 if position_before is None else position_before,
+                    0 if position_before is None else position_before,
+                    0,
+                )
                 return
 
-            finish_deadline = time.monotonic() + 8.0
+            finish_deadline = time.monotonic() + max(2.0, expected_duration_s + 1.0)
             while not stop_event.is_set() and time.monotonic() < finish_deadline:
                 active, done = self._query_raw_vdaq_do_test_status(path_name)
                 if done and not active:
