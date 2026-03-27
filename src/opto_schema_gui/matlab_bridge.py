@@ -394,6 +394,40 @@ class MatlabSession:
         if "trial_waveform_stopped" in command_lower:
             outputs.append("TRIAL_WAVEFORM_STOPPED")
             return outputs
+        if "test stim waveform" in command_lower and "waveform advanced photostim" in command_lower:
+            outputs.extend(
+                [
+                    "----------",
+                    "Test stim waveform",
+                    "Configured waveform generator resource:",
+                    self.config.trial_waveform_generator_name,
+                    "Available waveform generators:",
+                    self.config.trial_waveform_generator_name,
+                    "Photostim active before test:",
+                    "1",
+                    "Photostim mode before test:",
+                    "sequence",
+                    "Photostim trigger term before test:",
+                    self.config.trial_waveform_output_port.split("/")[-1],
+                    "Photostim sequence position before test:",
+                    str(self.sim_sequence_position),
+                    "Photostim completed sequences before test:",
+                    "0",
+                    "Photostim selected sequence before test:",
+                    str(self.sim_sequence),
+                    "Waveform test task started",
+                    "Photostim sequence position after waveform test:",
+                    str(self.sim_sequence_position + 1),
+                    "Photostim completed sequences after waveform test:",
+                    "0",
+                    "Waveform advanced photostim:",
+                    "1",
+                    "Software trigger advanced photostim:",
+                    "1",
+                ]
+            )
+            self.sim_sequence_position += 2
+            return outputs
         if "hps.triggerstim()" in command_lower:
             self.sim_sequence_position += 1
             outputs.append("SOFTWARE_TRIGGER_FIRED")
@@ -1026,6 +1060,87 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
             "if iscell(wg); wg = wg{1}; end",
             "if most.idioms.isValidObj(wg); wg.stopTask(); end",
             "disp('TRIAL_WAVEFORM_STOPPED');",
+        ]
+    )
+
+
+def build_test_stim_waveform_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "disp('----------');",
+            "disp('Test stim waveform');",
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "rs = dabs.resources.ResourceStore();",
+            "wgs = rs.filterByClass('dabs.generic.WaveformGenerator');",
+            "disp('Configured waveform generator resource:');",
+            f"disp({matlab_string(path_config.trial_waveform_generator_name)});",
+            "disp('Available waveform generators:');",
+            "if isempty(wgs); disp('<none>'); else; disp(string(cellfun(@(x)x.name, wgs, 'UniformOutput', false))); end",
+            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
+            "if iscell(wg); wg = wg{1}; end",
+            "disp('Photostim active before test:');",
+            "disp(double(hPs.active));",
+            "disp('Photostim mode before test:');",
+            "disp(string(hPs.stimulusMode));",
+            "disp('Photostim trigger term before test:');",
+            "disp(string(hPs.stimTriggerTerm));",
+            "disp('Photostim sequence position before test:');",
+            "if isempty(hPs.sequencePosition); disp('NaN'); else; disp(double(hPs.sequencePosition)); end",
+            "disp('Photostim completed sequences before test:');",
+            "if isempty(hPs.completedSequences); disp('NaN'); else; disp(double(hPs.completedSequences)); end",
+            "disp('Photostim selected sequence before test:');",
+            "disp(hPs.sequenceSelectedStimuli);",
+            "assert(most.idioms.isValidObj(wg), 'Configured trial waveform generator resource was not found.');",
+            "baselinePosition = [];",
+            "baselineCompleted = [];",
+            "if ~isempty(hPs.sequencePosition); baselinePosition = double(hPs.sequencePosition); end",
+            "if ~isempty(hPs.completedSequences); baselineCompleted = double(hPs.completedSequences); end",
+            "assignin('base', 'photostimTrialTriggerTimesSec', 0);",
+            f"assignin('base', 'photostimTrialPulseWidthSec', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
+            "assignin('base', 'photostimTrialTotalDurationSec', 0.1);",
+            "wg.stopTask();",
+            f"wg.sampleRate_Hz = {path_config.trial_waveform_sample_rate_hz!r};",
+            "wg.sampleMode = 'finite';",
+            "wg.allowRetrigger = false;",
+            "wg.amplitude = 1;",
+            "wg.defaultValueVolts = 0;",
+            "wg.periodSec = 0.1;",
+            "wg.startDelay = 0;",
+            "wg.dutyCycle = 50;",
+            "wg.startTriggerPort = '';",
+            "wg.refreshWvfmParams();",
+            "wg.startTask();",
+            "disp('Waveform test task started');",
+            "t0 = tic;",
+            "while most.idioms.isValidObj(wg.hTask) && ~wg.hTask.isTaskDone() && toc(t0) < 1.0; pause(0.01); end",
+            "pause(0.1);",
+            "disp('Photostim sequence position after waveform test:');",
+            "if isempty(hPs.sequencePosition); disp('NaN'); else; disp(double(hPs.sequencePosition)); end",
+            "disp('Photostim completed sequences after waveform test:');",
+            "if isempty(hPs.completedSequences); disp('NaN'); else; disp(double(hPs.completedSequences)); end",
+            "waveformAdvanced = false;",
+            "if ~isempty(baselineCompleted) && ~isempty(hPs.completedSequences) && double(hPs.completedSequences) > baselineCompleted; waveformAdvanced = true; end",
+            "if ~waveformAdvanced && ~isempty(baselinePosition) && ~isempty(hPs.sequencePosition) && double(hPs.sequencePosition) ~= baselinePosition; waveformAdvanced = true; end",
+            "disp('Waveform advanced photostim:');",
+            "disp(double(waveformAdvanced));",
+            "if hPs.active;",
+            "    baselinePosition2 = [];",
+            "    baselineCompleted2 = [];",
+            "    if ~isempty(hPs.sequencePosition); baselinePosition2 = double(hPs.sequencePosition); end",
+            "    if ~isempty(hPs.completedSequences); baselineCompleted2 = double(hPs.completedSequences); end",
+            "    hPs.triggerStim();",
+            "    pause(0.1);",
+            "    softwareAdvanced = false;",
+            "    if ~isempty(baselineCompleted2) && ~isempty(hPs.completedSequences) && double(hPs.completedSequences) > baselineCompleted2; softwareAdvanced = true; end",
+            "    if ~softwareAdvanced && ~isempty(baselinePosition2) && ~isempty(hPs.sequencePosition) && double(hPs.sequencePosition) ~= baselinePosition2; softwareAdvanced = true; end",
+            "    disp('Software trigger advanced photostim:');",
+            "    disp(double(softwareAdvanced));",
+            "else;",
+            "    disp('Software trigger control skipped because photostim is inactive');",
+            "end",
         ]
     )
 

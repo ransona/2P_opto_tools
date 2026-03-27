@@ -57,6 +57,7 @@ from .matlab_bridge import (
     build_software_trigger_command,
     build_start_trial_waveform_command,
     build_stop_trial_waveform_command,
+    build_test_stim_waveform_command,
     build_test_photostim_command,
     build_trial_waveform_status_command,
     build_trigger_photostim_command,
@@ -548,6 +549,7 @@ class ScanImageControlWidget(QWidget):
         self.stop_config_btn = QPushButton("Stop Config")
         self.reload_btn = QPushButton("Reload Configs")
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
+        self.test_stim_waveform_btn = QPushButton("Test stim waveform")
         self.start_config_btn.setStyleSheet("color: #15803d;")
         self.stop_config_btn.setStyleSheet("color: #b91c1c;")
         button_column.addWidget(self.clear_all_logs_btn)
@@ -555,6 +557,7 @@ class ScanImageControlWidget(QWidget):
         button_column.addWidget(self.stop_config_btn)
         button_column.addWidget(self.reload_btn)
         button_column.addWidget(self.test_prep_patterns_btn)
+        button_column.addWidget(self.test_stim_waveform_btn)
         button_column.addStretch(1)
         config_layout.addLayout(button_column)
 
@@ -620,6 +623,7 @@ class ScanImageControlWidget(QWidget):
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
+        self.test_stim_waveform_btn.clicked.connect(self._run_test_stim_waveform)
         self.clear_log_btn.clicked.connect(self.log_text.clear)
         self.clear_all_logs_btn.clicked.connect(self._clear_all_logs)
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
@@ -1100,6 +1104,13 @@ class ScanImageControlWidget(QWidget):
         )
         dialog.exec()
 
+    def _run_test_stim_waveform(self) -> None:
+        if self.machine_config is None or not self.machine_config.photostim_path:
+            self.signals.log_message.emit("Test stim waveform skipped: no photostim path configured")
+            return
+        path_name = self.machine_config.photostim_path
+        self._spawn_action(path_name, "test stim waveform", self._test_stim_waveform)
+
     def _test_photostim_api(self, path_name: str, patterns: list[dict[str, object]] | None = None) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
@@ -1121,6 +1132,18 @@ class ScanImageControlWidget(QWidget):
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "photostim inspect"
+            self.signals.path_status.emit(path_name, runtime.status)
+            self._emit_lines(path_name, lines)
+
+    def _test_stim_waveform(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_test_stim_waveform_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+            runtime.status = "stim waveform test"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
 
