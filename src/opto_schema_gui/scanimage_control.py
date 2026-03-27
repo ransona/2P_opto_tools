@@ -151,6 +151,9 @@ class PathTabWidgets:
     tab: QWidget
     status_label: QLabel
     listener_label: QLabel
+    external_trial_trigger_label: QLabel | None
+    photostim_trigger_input_label: QLabel | None
+    photostim_trigger_output_label: QLabel | None
     udp_text: QPlainTextEdit
     launch_btn: QPushButton
     focus_btn: QPushButton
@@ -857,6 +860,16 @@ class ScanImageControlWidget(QWidget):
         listener_label.setWordWrap(True)
         info_form.addRow("Status", status_label)
         info_form.addRow("UDP listener", listener_label)
+        external_trial_trigger_label: QLabel | None = None
+        photostim_trigger_input_label: QLabel | None = None
+        photostim_trigger_output_label: QLabel | None = None
+        if self.machine_config is not None and path_name == self.machine_config.photostim_path:
+            external_trial_trigger_label = QLabel(runtime.path_config.trial_waveform_start_trigger_port)
+            photostim_trigger_input_label = QLabel(runtime.path_config.trial_waveform_photostim_trigger_term)
+            photostim_trigger_output_label = QLabel(runtime.path_config.trial_waveform_output_port)
+            info_form.addRow("External trial trigger input", external_trial_trigger_label)
+            info_form.addRow("Photostim trigger input", photostim_trigger_input_label)
+            info_form.addRow("Photostim trigger output", photostim_trigger_output_label)
         layout.addWidget(info_box)
 
         buttons_box = QGroupBox("Actions")
@@ -894,6 +907,9 @@ class ScanImageControlWidget(QWidget):
             tab=tab,
             status_label=status_label,
             listener_label=listener_label,
+            external_trial_trigger_label=external_trial_trigger_label,
+            photostim_trigger_input_label=photostim_trigger_input_label,
+            photostim_trigger_output_label=photostim_trigger_output_label,
             udp_text=udp_text,
             launch_btn=launch_btn,
             focus_btn=focus_btn,
