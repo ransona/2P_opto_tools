@@ -197,11 +197,16 @@ class MatlabSession:
             raise MatlabSessionError(
                 f"Timed out waiting for MATLAB path '{self.config.name}' while executing command."
             )
-        if error_holder:
-            raise MatlabSessionError(
-                f"MATLAB command failed in path '{self.config.name}':\n{error_holder[0]}"
-            )
         text = output_buffer.getvalue()
+        if error_holder:
+            detail = str(error_holder[0])
+            if text.strip():
+                raise MatlabSessionError(
+                    f"MATLAB command failed in path '{self.config.name}'.\nOutput before error:\n{text}\nError:\n{detail}"
+                )
+            raise MatlabSessionError(
+                f"MATLAB command failed in path '{self.config.name}':\n{detail}"
+            )
         return [line for line in text.splitlines() if line.strip()]
 
     def _start_simulated(self) -> None:

@@ -34,7 +34,9 @@ hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);
 hPs.sequenceSelectedStimuli = [];
 
 nBeams = getPhotostimBeamCount(hSI);
+disp('Preparing reserved stimulus group: BLANK');
 hPs.stimRoiGroups(end + 1) = makeBlankOnlyGroup("BLANK", opts.BlankDuration, nBeams);
+disp('Preparing reserved stimulus group: PARK');
 hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration, nBeams);
 
 importedPatternNames = strings(0, 1);
