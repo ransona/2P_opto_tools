@@ -2219,6 +2219,13 @@ class ScanImageControlWidget(QWidget):
                 f"[{path_name}] Photostim completed sequences after external waveform test: "
                 + ("NaN" if completed_after is None else str(completed_after))
             )
+            self.signals.log_message.emit(
+                f"[{path_name}] Photostim sequence position summary: "
+                + ("NaN" if position_before is None else str(position_before))
+                + " -> "
+                + ("NaN" if position_after is None else str(position_after))
+            )
+            self.signals.log_message.emit(f"[{path_name}] Photostim sequence position delta: {delivered_count}")
             self.signals.log_message.emit(f"[{path_name}] Waveform external-start advanced photostim: {int(waveform_advanced)}")
             self.signals.log_message.emit(f"[{path_name}] Waveform external-start advanced photostim count: {delivered_count}")
 
