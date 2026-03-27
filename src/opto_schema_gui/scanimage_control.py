@@ -1755,10 +1755,7 @@ class ScanImageControlWidget(QWidget):
                     f"[{path_name}] software trigger times: "
                     + ", ".join(f"{t:.4f}s" for t in trigger_times_s)
                 )
-            if self._debug_category_enabled.get("stimuli", True):
-                self.signals.log_message.emit(
-                    f"[{path_name}] Stimuli: {''.join(str(n) for n in stimulus_pattern_numbers)}"
-                )
+            emitted_stimuli: list[str] = []
             for index, trigger_time_s in enumerate(trigger_times_s, start=1):
                 while True:
                     if stop_event.is_set():
@@ -1771,6 +1768,9 @@ class ScanImageControlWidget(QWidget):
                     time.sleep(min(remaining, 0.05))
                 try:
                     self._fire_software_trigger(path_name)
+                    if self._debug_category_enabled.get("stimuli", True) and index <= len(stimulus_pattern_numbers):
+                        emitted_stimuli.append(str(stimulus_pattern_numbers[index - 1]))
+                        self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
                     if self._debug_category_enabled.get("software_trigger_times", True):
                         self.signals.log_message.emit(
                             f"[{path_name}] software trigger fired {index}/{len(trigger_times_s)} at t={trigger_time_s:.4f}s"
