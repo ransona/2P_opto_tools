@@ -27,6 +27,9 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
     addParameter(p, 'pulseTimes_s', [0.1 0.2 0.3 0.4 0.5]);
     addParameter(p, 'pulseWidth_s', 10e-3);
     addParameter(p, 'taskName', 'Opto Photostim DO Debug');
+    addParameter(p, 'taskVarName', 'optoPhotostimDebugDoTask');
+    addParameter(p, 'startTriggerEdge', 'rising');
+    addParameter(p, 'autoStart', true);
     parse(p, varargin{:});
 
     outputLine = char(string(p.Results.outputLine));
@@ -35,6 +38,9 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
     pulseTimes_s = double(p.Results.pulseTimes_s(:));
     pulseWidth_s = double(p.Results.pulseWidth_s);
     taskName = char(string(p.Results.taskName));
+    taskVarName = char(string(p.Results.taskVarName));
+    startTriggerEdge = char(string(p.Results.startTriggerEdge));
+    autoStart = logical(p.Results.autoStart);
 
     assert(isfinite(sampleRate_Hz) && sampleRate_Hz > 0, 'sampleRate_Hz must be positive.');
     assert(all(isfinite(pulseTimes_s)) && all(pulseTimes_s >= 0), 'pulseTimes_s must be non-negative.');
@@ -58,7 +64,6 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
         outputWaveform(startIdx:endIdx) = 1;
     end
 
-    taskVarName = 'optoPhotostimDebugDoTask';
     if evalin('base', sprintf("exist('%s','var')", taskVarName))
         oldTask = evalin('base', taskVarName);
         if most.idioms.isValidObj(oldTask)
@@ -85,7 +90,7 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
         do_task.startTrigger = '';
     else
         do_task.startTrigger = startTrigger;
-        do_task.startTriggerEdge = 'rising';
+        do_task.startTriggerEdge = startTriggerEdge;
     end
 
     assignin('base', taskVarName, do_task);
@@ -102,9 +107,13 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
     fprintf('Total samples: %d\n', totalSamples);
     fprintf('High samples: %d\n', nnz(outputWaveform));
 
-    do_task.start();
+    if autoStart
+        do_task.start();
+    end
 
-    if isempty(startTrigger)
+    if ~autoStart
+        disp('Task prepared but not started.');
+    elseif isempty(startTrigger)
         disp('Task started immediately.');
     else
         disp('Task armed and waiting for external trigger.');

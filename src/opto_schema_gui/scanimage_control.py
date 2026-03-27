@@ -2429,37 +2429,42 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         started = not wait_for_start
         start_deadline = time.monotonic() + 60.0
-        while not stop_event.is_set():
-            active, done = self._query_trial_waveform_status(path_name)
-            if wait_for_start and not started:
+        if wait_for_start:
+            while not stop_event.is_set() and time.monotonic() < start_deadline:
+                active, done = self._query_trial_waveform_status(path_name)
                 if active or not done:
                     started = True
-                elif time.monotonic() >= start_deadline:
-                    self.signals.log_message.emit(
-                        f"[{path_name}] ERROR: waveform external start was not detected for sequence '{sequence_name}'"
-                    )
-                    return
-            elif started and done and not active:
-                mismatch_message = self._finalize_pending_photostim_check(path_name, "Software trigger count check")
-                if (
-                    mismatch_message is not None
-                    and self.ignore_incomplete_trigger_checkbox.isChecked()
-                    and request_path_name is not None
-                    and reply_address is not None
-                ):
-                    payload = {
-                        "action": "trigger_photo_stim",
-                        "status": "error",
-                        "phase": "completion_check",
-                        "schema_name": schema_name,
-                        "expID": exp_id,
-                        "seq_num": seq_num,
-                        "sequence_name": sequence_name,
-                        "error": mismatch_message,
-                    }
-                    self._send_json_reply(request_path_name, reply_address, payload)
+                    break
+                time.sleep(0.02)
+            if not started:
+                self.signals.log_message.emit(
+                    f"[{path_name}] ERROR: waveform external start was not detected for sequence '{sequence_name}'"
+                )
                 return
-            time.sleep(0.02)
+
+        finish_wait_s = max(2.0, float(prep_state.waveform_expected_done_time_s or 0.0) + 2.0)
+        finish_deadline = time.monotonic() + finish_wait_s
+        while not stop_event.is_set() and time.monotonic() < finish_deadline:
+            time.sleep(0.05)
+
+        mismatch_message = self._finalize_pending_photostim_check(path_name, "Software trigger count check")
+        if (
+            mismatch_message is not None
+            and self.ignore_incomplete_trigger_checkbox.isChecked()
+            and request_path_name is not None
+            and reply_address is not None
+        ):
+            payload = {
+                "action": "trigger_photo_stim",
+                "status": "error",
+                "phase": "completion_check",
+                "schema_name": schema_name,
+                "expID": exp_id,
+                "seq_num": seq_num,
+                "sequence_name": sequence_name,
+                "error": mismatch_message,
+            }
+            self._send_json_reply(request_path_name, reply_address, payload)
 
     def _parse_trigger_insert_position(self, lines: list[str]) -> int | None:
         for index, raw_line in enumerate(lines):
