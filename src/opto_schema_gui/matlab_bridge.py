@@ -400,6 +400,35 @@ class MatlabSession:
         if "trial_waveform_stopped" in command_lower:
             outputs.append("TRIAL_WAVEFORM_STOPPED")
             return outputs
+        if "test stim waveform external start" in command_lower:
+            outputs.extend(
+                [
+                    "----------",
+                    "Test stim waveform external start",
+                    "Configured waveform generator resource:",
+                    self.config.trial_waveform_generator_name,
+                    "Configured waveform output port:",
+                    self.config.trial_waveform_output_port,
+                    "Configured waveform start trigger port:",
+                    self.config.trial_waveform_start_trigger_port,
+                    "Configured photostim trigger term:",
+                    self.config.trial_waveform_photostim_trigger_term,
+                    "Photostim active before test:",
+                    "1",
+                    "Photostim sequence position before test:",
+                    str(self.sim_sequence_position),
+                    "Photostim completed sequences before test:",
+                    "0",
+                    "Waveform task pulse width sec:",
+                    str(self.config.trial_waveform_pulse_width_ms / 1000.0),
+                    "Waveform task total duration sec:",
+                    "5.1",
+                    "Waveform external-start trigger times sec:",
+                    "[0 1 2 3 4]",
+                    "TRIAL_WAVEFORM_READY_FOR_EXTERNAL_START",
+                ]
+            )
+            return outputs
         if "test stim waveform" in command_lower:
             outputs.extend(
                 [
@@ -1246,6 +1275,61 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "    disp(0);",
             "end",
             "disp('Self-contained waveform diagnostic complete');",
+        ]
+    )
+
+
+def build_test_stim_waveform_external_start_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=True)
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "disp('----------');",
+            "disp('Test stim waveform external start');",
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            *resource_setup,
+            "disp('Configured waveform generator resource:');",
+            f"disp({matlab_string(path_config.trial_waveform_generator_name)});",
+            "disp('Configured waveform output port:');",
+            f"disp({matlab_string(path_config.trial_waveform_output_port)});",
+            "disp('Configured waveform start trigger port:');",
+            f"disp({matlab_string(path_config.trial_waveform_start_trigger_port)});",
+            "disp('Configured photostim trigger term:');",
+            f"disp({matlab_string(path_config.trial_waveform_photostim_trigger_term)});",
+            "disp('Photostim active before test:');",
+            "disp(double(hPs.active));",
+            "disp('Photostim sequence position before test:');",
+            "if isempty(hPs.sequencePosition); disp('NaN'); else; disp(double(hPs.sequencePosition)); end",
+            "disp('Photostim completed sequences before test:');",
+            "if isempty(hPs.completedSequences); disp('NaN'); else; disp(double(hPs.completedSequences)); end",
+            "trialTriggerTimesSec = [0 1 2 3 4];",
+            f"trialPulseWidthSec = {path_config.trial_waveform_pulse_width_ms / 1000.0!r};",
+            "trialTotalDurationSec = 5.1;",
+            "assignin('base', 'photostimTrialTriggerTimesSec', trialTriggerTimesSec(:).');",
+            "assignin('base', 'photostimTrialPulseWidthSec', trialPulseWidthSec);",
+            "assignin('base', 'photostimTrialTotalDurationSec', trialTotalDurationSec);",
+            "if most.idioms.isValidObj(wg.hTask) && wg.hTask.active; wg.hTask.stop(); end",
+            f"wg.sampleRate_Hz = {path_config.trial_waveform_sample_rate_hz!r};",
+            "wg.sampleMode = 'finite';",
+            "wg.allowRetrigger = false;",
+            "wg.amplitude = 1;",
+            "wg.periodSec = trialTotalDurationSec;",
+            "wg.startDelay = 0;",
+            "wg.dutyCycle = 50;",
+            f"wg.startTriggerEdge = {matlab_string(path_config.trial_waveform_start_trigger_edge)};",
+            f"wg.startTriggerPort = {matlab_string(path_config.trial_waveform_start_trigger_port)};",
+            "wg.refreshWvfmParams();",
+            "wg.updateWaveform();",
+            "disp('Waveform task pulse width sec:');",
+            "disp(trialPulseWidthSec);",
+            "disp('Waveform task total duration sec:');",
+            "disp(trialTotalDurationSec);",
+            "disp('Waveform external-start trigger times sec:');",
+            "disp(trialTriggerTimesSec);",
+            "wg.startTask();",
+            "disp('TRIAL_WAVEFORM_READY_FOR_EXTERNAL_START');",
         ]
     )
 

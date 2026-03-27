@@ -58,6 +58,7 @@ from .matlab_bridge import (
     build_start_trial_waveform_command,
     build_stop_trial_waveform_command,
     build_test_stim_waveform_command,
+    build_test_stim_waveform_external_start_command,
     build_test_photostim_command,
     build_trial_waveform_status_command,
     build_trigger_photostim_command,
@@ -553,6 +554,7 @@ class ScanImageControlWidget(QWidget):
         self.reload_btn = QPushButton("Reload Configs")
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
         self.test_stim_waveform_btn = QPushButton("Test stim waveform")
+        self.test_stim_waveform_external_btn = QPushButton("Test stim waveform ext")
         self.start_config_btn.setStyleSheet("color: #15803d;")
         self.stop_config_btn.setStyleSheet("color: #b91c1c;")
         button_column.addWidget(self.clear_all_logs_btn)
@@ -561,6 +563,7 @@ class ScanImageControlWidget(QWidget):
         button_column.addWidget(self.reload_btn)
         button_column.addWidget(self.test_prep_patterns_btn)
         button_column.addWidget(self.test_stim_waveform_btn)
+        button_column.addWidget(self.test_stim_waveform_external_btn)
         button_column.addStretch(1)
         config_layout.addLayout(button_column)
 
@@ -628,6 +631,7 @@ class ScanImageControlWidget(QWidget):
         self.stop_config_btn.clicked.connect(self.stop_config)
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
         self.test_stim_waveform_btn.clicked.connect(self._run_test_stim_waveform)
+        self.test_stim_waveform_external_btn.clicked.connect(self._run_test_stim_waveform_external)
         self.clear_log_btn.clicked.connect(self.log_text.clear)
         self.clear_all_logs_btn.clicked.connect(self._clear_all_logs)
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
@@ -1128,6 +1132,17 @@ class ScanImageControlWidget(QWidget):
         path_name = self.machine_config.photostim_path
         self._spawn_action(path_name, "test stim waveform", self._test_stim_waveform)
 
+    def _run_test_stim_waveform_external(self) -> None:
+        if self.machine_config is None or not self.machine_config.photostim_path:
+            self.signals.log_message.emit("Test stim waveform ext skipped: no photostim path configured")
+            return
+        path_name = self.machine_config.photostim_path
+        self._spawn_action(
+            path_name,
+            "test stim waveform external start",
+            self._test_stim_waveform_external,
+        )
+
     def _test_photostim_api(self, path_name: str, patterns: list[dict[str, object]] | None = None) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
@@ -1163,6 +1178,28 @@ class ScanImageControlWidget(QWidget):
             runtime.status = "stim waveform test"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
+
+    def _test_stim_waveform_external(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        active_before, position_before, _, completed_before = self._query_photostim_sequence_state(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_test_stim_waveform_external_start_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+            runtime.status = "stim waveform ext test"
+            self.signals.path_status.emit(path_name, runtime.status)
+            self._emit_lines(path_name, lines)
+        self.signals.log_message.emit(
+            f"[{path_name}] Pulse external trial trigger input {runtime.path_config.trial_waveform_start_trigger_port} now"
+        )
+        self._start_test_waveform_external_monitor(
+            path_name,
+            active_before=active_before,
+            position_before=position_before,
+            completed_before=completed_before,
+        )
 
     def _import_patterns(self, path_name: str, schema_path: Path) -> None:
         self._import_pattern_subset(path_name, schema_path, None)
@@ -2093,6 +2130,68 @@ class ScanImageControlWidget(QWidget):
 
         thread = threading.Thread(target=worker, daemon=True)
         runtime.waveform_monitor_thread = thread
+        thread.start()
+
+    def _start_test_waveform_external_monitor(
+        self,
+        path_name: str,
+        active_before: bool,
+        position_before: int | None,
+        completed_before: int | None,
+    ) -> None:
+        runtime = self._runtimes[path_name]
+        stop_event = threading.Event()
+
+        def worker() -> None:
+            start_deadline = time.monotonic() + 30.0
+            waveform_started = False
+            while not stop_event.is_set() and time.monotonic() < start_deadline:
+                active, done = self._query_trial_waveform_status(path_name)
+                if active or not done:
+                    waveform_started = True
+                    self.signals.log_message.emit(f"[{path_name}] External waveform start detected")
+                    break
+                time.sleep(0.02)
+            if not waveform_started:
+                self.signals.log_message.emit(
+                    f"[{path_name}] ERROR: External waveform start was not detected on {runtime.path_config.trial_waveform_start_trigger_port}"
+                )
+                return
+
+            finish_deadline = time.monotonic() + 8.0
+            while not stop_event.is_set() and time.monotonic() < finish_deadline:
+                active, done = self._query_trial_waveform_status(path_name)
+                if done and not active:
+                    break
+                time.sleep(0.02)
+
+            active_after, position_after, _, completed_after = self._query_photostim_sequence_state(path_name)
+            delivered_count = 0
+            if position_before is not None and position_after is not None:
+                delivered_count = max(0, position_after - position_before)
+            waveform_advanced = False
+            if position_before is not None and position_after is not None and position_after > position_before:
+                waveform_advanced = True
+            if (
+                not waveform_advanced
+                and completed_before is not None
+                and completed_after is not None
+                and completed_after > completed_before
+            ):
+                waveform_advanced = True
+            self.signals.log_message.emit(f"[{path_name}] Photostim active after external waveform test: {int(active_after)}")
+            self.signals.log_message.emit(
+                f"[{path_name}] Photostim sequence position after external waveform test: "
+                + ("NaN" if position_after is None else str(position_after))
+            )
+            self.signals.log_message.emit(
+                f"[{path_name}] Photostim completed sequences after external waveform test: "
+                + ("NaN" if completed_after is None else str(completed_after))
+            )
+            self.signals.log_message.emit(f"[{path_name}] Waveform external-start advanced photostim: {int(waveform_advanced)}")
+            self.signals.log_message.emit(f"[{path_name}] Waveform external-start advanced photostim count: {delivered_count}")
+
+        thread = threading.Thread(target=worker, daemon=True)
         thread.start()
 
     def _monitor_waveform_completion(
