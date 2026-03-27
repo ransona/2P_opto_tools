@@ -91,7 +91,16 @@ assert(isfield(pattern, 'cells') && ~isempty(pattern.cells), 'Pattern P%d contai
 pointsUm = zeros(numel(pattern.cells), 4);
 for i = 1:numel(pattern.cells)
     c = pattern.cells(i);
-    pointsUm(i,:) = [double(c.x) double(c.y) double(c.z) double(c.power_scale)];
+    cellLabel = getfieldwithdefault(c, 'label', sprintf('cell%d', i)); %#ok<GFLD>
+    try
+        x = getScalarField(c, 'x');
+        y = getScalarField(c, 'y');
+        z = getScalarField(c, 'z');
+        powerScale = getScalarField(c, 'power_scale', 1);
+    catch ME
+        error('Pattern P%d cell "%s" is invalid: %s', patternNumber, string(cellLabel), ME.message);
+    end
+    pointsUm(i,:) = [x y z powerScale];
 end
 
 weights = pointsUm(:,4);
@@ -231,6 +240,32 @@ if isfield(s, fieldName) && ~isempty(s.(fieldName))
 else
     value = defaultValue;
 end
+end
+
+
+function value = getScalarField(s, fieldName, defaultValue)
+if nargin < 3
+    hasDefault = false;
+    defaultValue = [];
+else
+    hasDefault = true;
+end
+if ~isfield(s, fieldName) || isempty(s.(fieldName))
+    if hasDefault
+        value = double(defaultValue);
+        return;
+    end
+    error('Missing required field "%s".', fieldName);
+end
+raw = s.(fieldName);
+if ischar(raw) || isstring(raw)
+    raw = str2double(string(raw));
+end
+raw = double(raw);
+if numel(raw) ~= 1 || ~isfinite(raw)
+    error('Field "%s" must be a finite scalar.', fieldName);
+end
+value = raw;
 end
 
 

@@ -1382,7 +1382,13 @@ class ScanImageControlWidget(QWidget):
             schema_name = str(message.get("schema_name", "")).strip()
             exp_id = str(message.get("expID", "")).strip()
             seq_nums_raw = message.get("seq_nums")
-            if not schema_name or not exp_id or not isinstance(seq_nums_raw, list) or not seq_nums_raw:
+            if isinstance(seq_nums_raw, list):
+                seq_nums = seq_nums_raw
+            elif seq_nums_raw is None:
+                seq_nums = []
+            else:
+                seq_nums = [seq_nums_raw]
+            if not schema_name or not exp_id or not seq_nums:
                 self._send_json_reply(
                     path_name,
                     address,
@@ -1398,7 +1404,7 @@ class ScanImageControlWidget(QWidget):
                 return
 
             try:
-                seq_num = int(seq_nums_raw[0])
+                seq_num = int(seq_nums[0])
                 self._handle_prep_patterns_request(
                     request_path_name=path_name,
                     schema_name=schema_name,
