@@ -2159,29 +2159,32 @@ class ScanImageControlWidget(QWidget):
         ready_completed_sequences: int | None,
         expected_remaining: int,
         timeout_s: float = 2.0,
-    ) -> tuple[bool, int | None, int | None]:
+    ) -> tuple[bool, int | None, int | None, int]:
         deadline = time.monotonic() + timeout_s
         last_active = False
         last_position: int | None = None
         last_completed: int | None = None
+        max_delivered = 0
         while time.monotonic() < deadline:
             active, current_position, _, completed_sequences = self._query_photostim_sequence_state(path_name)
             last_active = active
             last_position = current_position
             last_completed = completed_sequences
+            if ready_position is not None and current_position is not None:
+                delivered = max(0, current_position - ready_position)
+                if delivered > max_delivered:
+                    max_delivered = delivered
             if (
                 ready_completed_sequences is not None
                 and completed_sequences is not None
                 and completed_sequences > ready_completed_sequences
                 and not active
             ):
-                return active, current_position, completed_sequences
-            if ready_position is not None and current_position is not None:
-                delivered = max(0, current_position - ready_position)
-                if delivered >= expected_remaining:
-                    return active, current_position, completed_sequences
+                return active, current_position, completed_sequences, expected_remaining
+            if max_delivered >= expected_remaining:
+                return active, current_position, completed_sequences, max_delivered
             time.sleep(0.02)
-        return last_active, last_position, last_completed
+        return last_active, last_position, last_completed, max_delivered
 
     def _finalize_pending_photostim_check(self, path_name: str, label: str) -> str | None:
         runtime = self._ensure_session(path_name)
@@ -2191,11 +2194,15 @@ class ScanImageControlWidget(QWidget):
         ready_completed = prep_state.ready_completed_sequences
         if expected_remaining is None or ready_position is None:
             return None
-        active, current_position, completed_sequences = self._wait_for_expected_photostim_completion(
+        timeout_s = 2.0
+        if prep_state.waveform_expected_done_time_s is not None:
+            timeout_s = max(timeout_s, float(prep_state.waveform_expected_done_time_s) + 1.0)
+        active, current_position, completed_sequences, max_delivered = self._wait_for_expected_photostim_completion(
             path_name,
             ready_position,
             ready_completed,
             expected_remaining,
+            timeout_s=timeout_s,
         )
         if (
             ready_completed is not None
@@ -2204,11 +2211,8 @@ class ScanImageControlWidget(QWidget):
             and not active
         ):
             delivered_triggers = expected_remaining
-        elif current_position is not None:
-            delivered_triggers = max(0, current_position - ready_position)
-            delivered_triggers = min(delivered_triggers, expected_remaining)
         else:
-            return None
+            delivered_triggers = min(max_delivered, expected_remaining)
         if self._debug_category_enabled.get("software_trigger_count", True):
             self.signals.log_message.emit(
                 f"[{path_name}] {label}: {delivered_triggers} stimuli delivered, {expected_remaining} expected"
@@ -2219,6 +2223,7 @@ class ScanImageControlWidget(QWidget):
         prep_state.leading_park_fired = False
         prep_state.expected_sequence_position = None
         prep_state.last_trigger_insert_position = None
+        prep_state.waveform_expected_done_time_s = None
         if delivered_triggers != expected_remaining:
             return f"{delivered_triggers} stimuli delivered, {expected_remaining} expected"
         return None
