@@ -1048,16 +1048,16 @@ def build_prepare_trial_waveform_command(
             f"trialTriggerTimesSec = {trigger_times_expr};",
             f"trialPulseWidthSec = {path_config.trial_waveform_pulse_width_ms / 1000.0!r};",
             f"trialTotalDurationSec = {total_duration_s!r};",
-            "do_task = opto.scanimage.testVdaqDoTriggeredByDi(",
-            f"    'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, ...",
-            f"    'startTrigger', {start_trigger_expr}, ...",
-            f"    'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, ...",
-            "    'pulseTimes_s', trialTriggerTimesSec, ...",
-            "    'pulseWidth_s', trialPulseWidthSec, ...",
-            "    'taskName', 'Opto Photostim Trial DO', ...",
-            "    'taskVarName', 'optoPhotostimTrialDoTask', ...",
-            f"    'startTriggerEdge', {matlab_string(path_config.trial_waveform_start_trigger_edge)}, ...",
-            "    'autoStart', false);",
+            "do_task = opto.scanimage.testVdaqDoTriggeredByDi("
+            + f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
+            + f"'startTrigger', {start_trigger_expr}, "
+            + f"'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, "
+            + "'pulseTimes_s', trialTriggerTimesSec, "
+            + "'pulseWidth_s', trialPulseWidthSec, "
+            + "'taskName', 'Opto Photostim Trial DO', "
+            + "'taskVarName', 'optoPhotostimTrialDoTask', "
+            + f"'startTriggerEdge', {matlab_string(path_config.trial_waveform_start_trigger_edge)}, "
+            + "'autoStart', false);",
             "disp('TRIAL_WAVEFORM_READY');",
             "disp(trialTriggerTimesSec);",
             "disp(trialTotalDurationSec);",
