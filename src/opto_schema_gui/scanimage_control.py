@@ -51,11 +51,16 @@ from .matlab_bridge import (
     build_global_preamble,
     build_import_command,
     build_inspect_photostim_command,
+    build_prepare_trial_waveform_command,
     build_photostim_sequence_status_command,
     build_run_script_command,
     build_software_trigger_command,
+    build_start_trial_waveform_command,
+    build_stop_trial_waveform_command,
     build_test_photostim_command,
+    build_trial_waveform_status_command,
     build_trigger_photostim_command,
+    build_arm_trial_waveform_command,
     context_to_matlab_variables,
     get_machine_default_config_name,
     list_config_names,
@@ -91,6 +96,7 @@ class PreparedPhotostimState:
     ready_sequence_position: int | None = None
     ready_completed_sequences: int | None = None
     leading_park_fired: bool = False
+    waveform_expected_done_time_s: float | None = None
 
     def reset(self) -> None:
         self.schema_path = None
@@ -110,6 +116,7 @@ class PreparedPhotostimState:
         self.ready_sequence_position = None
         self.ready_completed_sequences = None
         self.leading_park_fired = False
+        self.waveform_expected_done_time_s = None
 
 
 @dataclass
@@ -124,6 +131,8 @@ class PathRuntime:
     lock: threading.Lock = field(default_factory=threading.Lock)
     software_trigger_stop: threading.Event | None = None
     software_trigger_thread: threading.Thread | None = None
+    waveform_monitor_stop: threading.Event | None = None
+    waveform_monitor_thread: threading.Thread | None = None
 
 
 @dataclass
@@ -556,12 +565,15 @@ class ScanImageControlWidget(QWidget):
         self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
         self.ignore_incomplete_trigger_checkbox = QCheckBox("Send mismatch errors upstream")
         self.ignore_incomplete_trigger_checkbox.setChecked(True)
-        self.software_trigger_checkbox = QCheckBox("Software trigger stim seqs")
+        self.trigger_mode_combo = QComboBox()
+        self.trigger_mode_combo.addItem("Per-stim software (test)", "software")
+        self.trigger_mode_combo.addItem("Waveform software-start", "waveform_software")
+        self.trigger_mode_combo.addItem("Waveform external-trigger", "waveform_external")
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
         config_form.addRow("", self.force_simulated_checkbox)
         config_form.addRow("", self.ignore_incomplete_trigger_checkbox)
-        config_form.addRow("", self.software_trigger_checkbox)
+        config_form.addRow("Trigger mode", self.trigger_mode_combo)
         config_layout.addWidget(config_form_container, 1)
         layout.addWidget(config_box)
 
@@ -648,6 +660,10 @@ class ScanImageControlWidget(QWidget):
     def _on_force_simulated_toggled(self, checked: bool) -> None:
         mode = "enabled" if checked else "disabled"
         self.signals.log_message.emit(f"[config] Force Simulated Mode {mode}")
+
+    def _current_trigger_mode(self) -> str:
+        data = self.trigger_mode_combo.currentData()
+        return str(data) if data is not None else "software"
 
     def _open_photostim_test_dialog(self) -> None:
         dialog = PhotostimTestDialog(self)
@@ -1003,6 +1019,8 @@ class ScanImageControlWidget(QWidget):
 
     def _stop_path(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
+        self._cancel_software_trigger(path_name)
+        self._cancel_waveform_monitor(path_name)
         self._stop_listener(path_name)
         with runtime.lock:
             if runtime.session is not None:
@@ -1577,7 +1595,7 @@ class ScanImageControlWidget(QWidget):
             ok = self._run_action(
                 photostim_path,
                 "json trigger_photo_stim" if reply_address is not None else "gui trigger_photo_stim",
-                lambda name: self._trigger_photo_stim_checked(name, expanded_groups),
+                lambda name: self._trigger_photo_stim_checked(name, expanded_groups, trigger_times_s),
             )
             prep_state_local = self._runtimes[photostim_path].prepared_photostim
             status = "ready" if ok else "error"
@@ -1604,12 +1622,33 @@ class ScanImageControlWidget(QWidget):
                 self._send_json_reply(request_path_name, reply_address, payload)
             else:
                 self.signals.log_message.emit(f"[config] gui trigger_photo_stim result={payload}")
-            if ok and self.software_trigger_checkbox.isChecked():
+            trigger_mode = self._current_trigger_mode()
+            if ok and trigger_mode == "software":
                 self._start_software_trigger_schedule(
                     photostim_path,
                     sequence_name,
                     trigger_times_s,
                     stimulus_pattern_numbers=stimulus_pattern_numbers,
+                    request_path_name=request_path_name if reply_address is not None else None,
+                    reply_address=reply_address,
+                    schema_name=schema_name,
+                    exp_id=exp_id,
+                    seq_num=seq_num,
+                )
+            elif ok and trigger_mode == "waveform_software":
+                self._start_waveform_software_playback(
+                    photostim_path,
+                    sequence_name,
+                    request_path_name=request_path_name if reply_address is not None else None,
+                    reply_address=reply_address,
+                    schema_name=schema_name,
+                    exp_id=exp_id,
+                    seq_num=seq_num,
+                )
+            elif ok and trigger_mode == "waveform_external":
+                self._start_waveform_external_monitor(
+                    photostim_path,
+                    sequence_name,
                     request_path_name=request_path_name if reply_address is not None else None,
                     reply_address=reply_address,
                     schema_name=schema_name,
@@ -1728,6 +1767,14 @@ class ScanImageControlWidget(QWidget):
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
         self._cancel_software_trigger(path_name)
+        self._cancel_waveform_monitor(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_stop_trial_waveform_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        self._emit_lines(path_name, lines)
 
     def _query_photostim_sequence_state(self, path_name: str) -> tuple[bool, int | None, list[int], int | None]:
         runtime = self._ensure_session(path_name)
@@ -1787,6 +1834,70 @@ class ScanImageControlWidget(QWidget):
             runtime.software_trigger_stop.set()
         runtime.software_trigger_stop = None
         runtime.software_trigger_thread = None
+
+    def _cancel_waveform_monitor(self, path_name: str) -> None:
+        runtime = self._runtimes[path_name]
+        if runtime.waveform_monitor_stop is not None:
+            runtime.waveform_monitor_stop.set()
+        runtime.waveform_monitor_stop = None
+        runtime.waveform_monitor_thread = None
+
+    def _query_trial_waveform_status(self, path_name: str) -> tuple[bool, bool]:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_trial_waveform_status_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        active = False
+        done = True
+        marker = None
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line in {"TRIAL_WAVEFORM_TASK_ACTIVE", "TRIAL_WAVEFORM_TASK_DONE", "TRIAL_WAVEFORM_STATUS_READY"}:
+                marker = line
+                continue
+            if marker == "TRIAL_WAVEFORM_TASK_ACTIVE":
+                try:
+                    active = bool(int(float(line)))
+                except ValueError:
+                    active = False
+            elif marker == "TRIAL_WAVEFORM_TASK_DONE":
+                try:
+                    done = bool(int(float(line)))
+                except ValueError:
+                    done = True
+        return active, done
+
+    def _prepare_trial_waveform(self, path_name: str, trigger_times_s: list[float], external_start: bool) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_prepare_trial_waveform_command(runtime.path_config, trigger_times_s, external_start),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+            if external_start:
+                lines.extend(
+                    runtime.session.eval(
+                        build_arm_trial_waveform_command(runtime.path_config),
+                        timeout_s=runtime.path_config.command_timeout_s,
+                    )
+                )
+        self._emit_lines(path_name, lines)
+
+    def _start_trial_waveform(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_start_trial_waveform_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        self._emit_lines(path_name, lines)
 
     def _start_software_trigger_schedule(
         self,
@@ -1864,6 +1975,127 @@ class ScanImageControlWidget(QWidget):
         thread = threading.Thread(target=worker, daemon=True)
         runtime.software_trigger_thread = thread
         thread.start()
+
+    def _start_waveform_software_playback(
+        self,
+        path_name: str,
+        sequence_name: str,
+        request_path_name: str | None = None,
+        reply_address: tuple[str, int] | None = None,
+        schema_name: str | None = None,
+        exp_id: str | None = None,
+        seq_num: int | None = None,
+    ) -> None:
+        self._cancel_waveform_monitor(path_name)
+        runtime = self._runtimes[path_name]
+        stop_event = threading.Event()
+        runtime.waveform_monitor_stop = stop_event
+
+        def worker() -> None:
+            try:
+                self._start_trial_waveform(path_name)
+                self._monitor_waveform_completion(
+                    path_name,
+                    sequence_name,
+                    stop_event,
+                    request_path_name=request_path_name,
+                    reply_address=reply_address,
+                    schema_name=schema_name,
+                    exp_id=exp_id,
+                    seq_num=seq_num,
+                    wait_for_start=False,
+                )
+            finally:
+                runtime.waveform_monitor_stop = None
+                runtime.waveform_monitor_thread = None
+
+        thread = threading.Thread(target=worker, daemon=True)
+        runtime.waveform_monitor_thread = thread
+        thread.start()
+
+    def _start_waveform_external_monitor(
+        self,
+        path_name: str,
+        sequence_name: str,
+        request_path_name: str | None = None,
+        reply_address: tuple[str, int] | None = None,
+        schema_name: str | None = None,
+        exp_id: str | None = None,
+        seq_num: int | None = None,
+    ) -> None:
+        self._cancel_waveform_monitor(path_name)
+        runtime = self._runtimes[path_name]
+        stop_event = threading.Event()
+        runtime.waveform_monitor_stop = stop_event
+
+        def worker() -> None:
+            try:
+                self._monitor_waveform_completion(
+                    path_name,
+                    sequence_name,
+                    stop_event,
+                    request_path_name=request_path_name,
+                    reply_address=reply_address,
+                    schema_name=schema_name,
+                    exp_id=exp_id,
+                    seq_num=seq_num,
+                    wait_for_start=True,
+                )
+            finally:
+                runtime.waveform_monitor_stop = None
+                runtime.waveform_monitor_thread = None
+
+        thread = threading.Thread(target=worker, daemon=True)
+        runtime.waveform_monitor_thread = thread
+        thread.start()
+
+    def _monitor_waveform_completion(
+        self,
+        path_name: str,
+        sequence_name: str,
+        stop_event: threading.Event,
+        request_path_name: str | None = None,
+        reply_address: tuple[str, int] | None = None,
+        schema_name: str | None = None,
+        exp_id: str | None = None,
+        seq_num: int | None = None,
+        wait_for_start: bool = False,
+    ) -> None:
+        runtime = self._runtimes[path_name]
+        prep_state = runtime.prepared_photostim
+        started = not wait_for_start
+        start_deadline = time.monotonic() + 60.0
+        while not stop_event.is_set():
+            active, done = self._query_trial_waveform_status(path_name)
+            if wait_for_start and not started:
+                if active or not done:
+                    started = True
+                elif time.monotonic() >= start_deadline:
+                    self.signals.log_message.emit(
+                        f"[{path_name}] ERROR: waveform external start was not detected for sequence '{sequence_name}'"
+                    )
+                    return
+            elif started and done and not active:
+                mismatch_message = self._finalize_pending_photostim_check(path_name, "Software trigger count check")
+                if (
+                    mismatch_message is not None
+                    and self.ignore_incomplete_trigger_checkbox.isChecked()
+                    and request_path_name is not None
+                    and reply_address is not None
+                ):
+                    payload = {
+                        "action": "trigger_photo_stim",
+                        "status": "error",
+                        "phase": "completion_check",
+                        "schema_name": schema_name,
+                        "expID": exp_id,
+                        "seq_num": seq_num,
+                        "sequence_name": sequence_name,
+                        "error": mismatch_message,
+                    }
+                    self._send_json_reply(request_path_name, reply_address, payload)
+                return
+            time.sleep(0.02)
 
     def _parse_trigger_insert_position(self, lines: list[str]) -> int | None:
         for index, raw_line in enumerate(lines):
@@ -1967,11 +2199,16 @@ class ScanImageControlWidget(QWidget):
             return f"{delivered_triggers} stimuli delivered, {expected_remaining} expected"
         return None
 
-    def _trigger_photo_stim_checked(self, path_name: str, sequence_indices: list[int]) -> None:
+    def _trigger_photo_stim_checked(
+        self,
+        path_name: str,
+        sequence_indices: list[int],
+        trigger_times_s: list[float],
+    ) -> None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
         _, current_position, _, _ = self._query_photostim_sequence_state(path_name)
-        if not self.software_trigger_checkbox.isChecked():
+        if self._current_trigger_mode() != "software":
             mismatch_message = self._finalize_pending_photostim_check(path_name, "Previous photostim sequence check")
             if mismatch_message is not None:
                 if self.ignore_incomplete_trigger_checkbox.isChecked():
@@ -1994,6 +2231,12 @@ class ScanImageControlWidget(QWidget):
         prep_state.ready_sequence_position = ready_position
         prep_state.ready_completed_sequences = ready_completed if ready_completed is not None else completed_before_park
         prep_state.leading_park_fired = True
+        prep_state.waveform_expected_done_time_s = max(trigger_times_s) if trigger_times_s else 0.0
+        trigger_mode = self._current_trigger_mode()
+        if trigger_mode == "waveform_software":
+            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=False)
+        elif trigger_mode == "waveform_external":
+            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=True)
         self.signals.log_message.emit(f"[{path_name}] leading park fired; trial sequence armed")
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:

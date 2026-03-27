@@ -59,6 +59,12 @@ class PathConfig:
     ignore_frequency: bool
     stimulus_function: str
     power_scale_mode: str
+    trial_waveform_generator_name: str
+    trial_waveform_output_port: str
+    trial_waveform_start_trigger_port: str
+    trial_waveform_start_trigger_edge: str
+    trial_waveform_sample_rate_hz: float
+    trial_waveform_pulse_width_ms: float
 
     @property
     def launch_script(self) -> Path:
@@ -369,6 +375,25 @@ class MatlabSession:
             outputs.append("1")
             outputs.append("TRIGGER_PHOTOSTIM_READY")
             return outputs
+        if "photostimtrialtriggertimessec" in command_lower and "trial_waveform_ready" in command_lower:
+            outputs.append("TRIAL_WAVEFORM_READY")
+            return outputs
+        if "trial_waveform_armed" in command_lower:
+            outputs.append("TRIAL_WAVEFORM_ARMED")
+            return outputs
+        if "trial_waveform_started" in command_lower:
+            outputs.append("TRIAL_WAVEFORM_STARTED")
+            return outputs
+        if "trial_waveform_task_active" in command_lower:
+            outputs.append("TRIAL_WAVEFORM_TASK_ACTIVE")
+            outputs.append("0")
+            outputs.append("TRIAL_WAVEFORM_TASK_DONE")
+            outputs.append("1")
+            outputs.append("TRIAL_WAVEFORM_STATUS_READY")
+            return outputs
+        if "trial_waveform_stopped" in command_lower:
+            outputs.append("TRIAL_WAVEFORM_STOPPED")
+            return outputs
         if "hps.triggerstim()" in command_lower:
             self.sim_sequence_position += 1
             outputs.append("SOFTWARE_TRIGGER_FIRED")
@@ -526,6 +551,18 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             ignore_frequency=_get_bool(section, None, "ignore_frequency", True),
             stimulus_function=_get_string(section, None, "stimulus_function", "point"),
             power_scale_mode=_get_string(section, None, "power_scale_mode", "multiply"),
+            trial_waveform_generator_name=_get_string(
+                section, None, "trial_waveform_generator_name", "Photostim Trial Trigger Clock"
+            ),
+            trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D3.6"),
+            trial_waveform_start_trigger_port=_get_string(
+                section, None, "trial_waveform_start_trigger_port", "/vDAQ0/D0.6"
+            ),
+            trial_waveform_start_trigger_edge=_get_string(
+                section, None, "trial_waveform_start_trigger_edge", "rising"
+            ),
+            trial_waveform_sample_rate_hz=_get_float(section, None, "trial_waveform_sample_rate_hz", 2_000_000.0),
+            trial_waveform_pulse_width_ms=_get_float(section, None, "trial_waveform_pulse_width_ms", 10.0),
         )
         _validate_path_scripts(paths[path_name])
 
@@ -572,6 +609,7 @@ def build_import_command(
             "    PreStimPauseDuration=0.001, ...",
             "    BlankDuration=0.001, ...",
             "    ParkDuration=0.001, ...",
+            f"    TriggerTerm={matlab_string(path_config.trial_waveform_output_port)}, ...",
             "    MinCenterDistanceUm=15, ...",
             "    Revolutions=5);",
             "disp('Prepared schema photostim patterns:');",
@@ -878,6 +916,111 @@ def build_software_trigger_command(path_config: PathConfig) -> str:
             "hPs = " + hsi + ".hPhotostim;",
             "hPs.triggerStim();",
             "disp('SOFTWARE_TRIGGER_FIRED');",
+        ]
+    )
+
+
+def build_prepare_trial_waveform_command(
+    path_config: PathConfig,
+    trigger_times_s: list[float],
+    external_start: bool,
+) -> str:
+    trigger_times_expr = "[]" if not trigger_times_s else "[" + " ".join(repr(float(v)) for v in trigger_times_s) + "]"
+    start_trigger_port_expr = (
+        matlab_string(path_config.trial_waveform_start_trigger_port) if external_start else "''"
+    )
+    total_duration_s = (
+        (max(trigger_times_s) if trigger_times_s else 0.0)
+        + (path_config.trial_waveform_pulse_width_ms / 1000.0)
+        + 0.05
+    )
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "rs = dabs.resources.ResourceStore();",
+            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
+            "if iscell(wg); wg = wg{1}; end",
+            "assert(most.idioms.isValidObj(wg), 'Configured trial waveform generator resource was not found.');",
+            f"trialTriggerTimesSec = {trigger_times_expr};",
+            f"trialPulseWidthSec = {path_config.trial_waveform_pulse_width_ms / 1000.0!r};",
+            f"trialTotalDurationSec = {total_duration_s!r};",
+            "assignin('base', 'photostimTrialTriggerTimesSec', trialTriggerTimesSec(:).');",
+            "assignin('base', 'photostimTrialPulseWidthSec', trialPulseWidthSec);",
+            "assignin('base', 'photostimTrialTotalDurationSec', trialTotalDurationSec);",
+            "wg.stopTask();",
+            f"wg.sampleRate_Hz = {path_config.trial_waveform_sample_rate_hz!r};",
+            "wg.sampleMode = 'finite';",
+            "wg.allowRetrigger = false;",
+            "wg.amplitude = 1;",
+            "wg.defaultValueVolts = 0;",
+            "wg.periodSec = max(trialTotalDurationSec, 0.1);",
+            "wg.startDelay = 0;",
+            "wg.dutyCycle = 50;",
+            f"wg.startTriggerEdge = {matlab_string(path_config.trial_waveform_start_trigger_edge)};",
+            f"wg.startTriggerPort = {start_trigger_port_expr};",
+            "wg.refreshWvfmParams();",
+            "wg.updateWaveform();",
+            "disp('TRIAL_WAVEFORM_READY');",
+            "disp(trialTriggerTimesSec);",
+            "disp(trialTotalDurationSec);",
+        ]
+    )
+
+
+def build_start_trial_waveform_command(path_config: PathConfig) -> str:
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "rs = dabs.resources.ResourceStore();",
+            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
+            "if iscell(wg); wg = wg{1}; end",
+            "assert(most.idioms.isValidObj(wg), 'Configured trial waveform generator resource was not found.');",
+            "wg.startTask();",
+            "disp('TRIAL_WAVEFORM_STARTED');",
+        ]
+    )
+
+
+def build_arm_trial_waveform_command(path_config: PathConfig) -> str:
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "rs = dabs.resources.ResourceStore();",
+            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
+            "if iscell(wg); wg = wg{1}; end",
+            "assert(most.idioms.isValidObj(wg), 'Configured trial waveform generator resource was not found.');",
+            "wg.startTask();",
+            "disp('TRIAL_WAVEFORM_ARMED');",
+        ]
+    )
+
+
+def build_trial_waveform_status_command(path_config: PathConfig) -> str:
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "rs = dabs.resources.ResourceStore();",
+            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
+            "if iscell(wg); wg = wg{1}; end",
+            "assert(most.idioms.isValidObj(wg), 'Configured trial waveform generator resource was not found.');",
+            "disp('TRIAL_WAVEFORM_TASK_ACTIVE');",
+            "if most.idioms.isValidObj(wg.hTask); disp(double(wg.hTask.active)); else; disp(0); end",
+            "disp('TRIAL_WAVEFORM_TASK_DONE');",
+            "if most.idioms.isValidObj(wg.hTask); disp(double(wg.hTask.isTaskDone())); else; disp(1); end",
+            "disp('TRIAL_WAVEFORM_STATUS_READY');",
+        ]
+    )
+
+
+def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "rs = dabs.resources.ResourceStore();",
+            f"wg = rs.filterByName({matlab_string(path_config.trial_waveform_generator_name)});",
+            "if iscell(wg); wg = wg{1}; end",
+            "if most.idioms.isValidObj(wg); wg.stopTask(); end",
+            "disp('TRIAL_WAVEFORM_STOPPED');",
         ]
     )
 

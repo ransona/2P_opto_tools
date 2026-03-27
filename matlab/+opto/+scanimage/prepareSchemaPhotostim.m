@@ -7,6 +7,7 @@ arguments
     opts.PreStimPauseDuration (1,1) double = 0.001
     opts.BlankDuration (1,1) double = 0.001
     opts.ParkDuration (1,1) double = 0.001
+    opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
 end
@@ -70,6 +71,9 @@ end
 hPs.stimulusMode = 'sequence';
 hPs.sequenceSelectedStimuli = 1:numel(hPs.stimRoiGroups);
 hPs.numSequences = 1;
+if strlength(opts.TriggerTerm) > 0
+    hPs.stimTriggerTerm = char(opts.TriggerTerm);
+end
 
 disp('Starting photostim mask generation');
 hPs.start();
