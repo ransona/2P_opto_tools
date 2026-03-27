@@ -1649,7 +1649,8 @@ class ScanImageControlWidget(QWidget):
             end_time_s = max(end_time_s, step.start_s + pattern.duration_s)
 
         expanded_groups.append(2)
-        trigger_times_s.append(end_time_s)
+        last_real_trigger_time_s = trigger_times_s[-1] if trigger_times_s else 0.0
+        trigger_times_s.append(max(end_time_s, last_real_trigger_time_s) + 0.5)
         return sequence_name, expanded_groups, trigger_times_s, stimulus_pattern_numbers
 
     def _apply_trigger_sequence(self, path_name: str, sequence_indices: list[int]) -> None:
