@@ -142,6 +142,7 @@ class MatlabSession:
             self.attached = True
             self.started_with_launch = False
             self._validate_connected_session()
+            self._set_working_directory()
             return
 
         self.attached = False
@@ -257,7 +258,7 @@ class MatlabSession:
         startup = self._build_startup_command(startup_command)
         matlab_cmd.extend(["-r", startup])
         try:
-            self.launch_process = subprocess.Popen(matlab_cmd)
+            self.launch_process = subprocess.Popen(matlab_cmd, cwd=str(self.config.directory))
         except Exception as exc:
             raise MatlabSessionError(
                 f"Could not launch MATLAB process for path '{self.config.name}': {exc}"
@@ -275,6 +276,7 @@ class MatlabSession:
                 try:
                     self.engine = matlab_engine.connect_matlab(self.config.engine_name)
                     self._validate_connected_session()
+                    self._set_working_directory()
                     return
                 except Exception as exc:
                     last_error = exc
@@ -296,6 +298,16 @@ class MatlabSession:
             + body
             + "; catch ME; disp(getReport(ME,'extended')); end"
         )
+
+    def _set_working_directory(self) -> None:
+        if self.simulated:
+            self.current_directory = str(self.config.directory)
+            return
+        if self.engine is None:
+            return
+        target_dir = str(self.config.directory)
+        self.eval(f"cd({matlab_string(target_dir)})", timeout_s=self.config.command_timeout_s)
+        self.current_directory = target_dir
 
     def _simulate_eval(self, command: str) -> list[str]:
         outputs: list[str] = []
