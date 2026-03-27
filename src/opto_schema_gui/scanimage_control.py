@@ -531,7 +531,6 @@ class ScanImageControlWidget(QWidget):
         config_layout = QHBoxLayout(config_box)
         button_column = QVBoxLayout()
         button_column.setSpacing(6)
-        self.clear_log_btn = QPushButton("Clear Debug Output")
         self.clear_all_logs_btn = QPushButton("All")
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
@@ -539,7 +538,6 @@ class ScanImageControlWidget(QWidget):
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
         self.start_config_btn.setStyleSheet("color: #15803d;")
         self.stop_config_btn.setStyleSheet("color: #b91c1c;")
-        button_column.addWidget(self.clear_log_btn)
         button_column.addWidget(self.clear_all_logs_btn)
         button_column.addWidget(self.start_config_btn)
         button_column.addWidget(self.stop_config_btn)
@@ -579,6 +577,7 @@ class ScanImageControlWidget(QWidget):
         self.show_trigger_times_debug_checkbox = QCheckBox("Software trigger times")
         self.show_trigger_count_debug_checkbox = QCheckBox("Software trigger count check")
         self.show_stimuli_debug_checkbox = QCheckBox("Stimuli")
+        self.clear_log_btn = QPushButton("Clear Debug Output")
         for checkbox in (
             self.show_general_debug_checkbox,
             self.show_udp_debug_checkbox,
@@ -589,6 +588,7 @@ class ScanImageControlWidget(QWidget):
             checkbox.setChecked(True)
             checkbox.toggled.connect(self._refresh_debug_log)
             filter_layout.addWidget(checkbox)
+        filter_layout.addWidget(self.clear_log_btn)
         filter_layout.addStretch(1)
         log_layout.addWidget(filter_box)
         output_container = QWidget()
