@@ -587,7 +587,7 @@ dutyCycle = 50;
 
 %% dabs.generic.WaveformGenerator (Photostim Trial Trigger Clock)
 taskType = 'Digital';
-hControl = '/vDAQ0/D3.1';
+hControl = '/vDAQ0/D1.6';
 hAIFeedback = '';
 sampleRate_Hz = 2e6;
 startTriggerPort = '/vDAQ0/D2.1';
