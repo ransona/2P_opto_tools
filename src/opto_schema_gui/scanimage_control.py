@@ -505,6 +505,13 @@ class ScanImageControlWidget(QWidget):
         self._current_config_name = ""
         self._last_exp_id = ""
         self._debug_history: list[tuple[str, str, bool]] = []
+        self._debug_category_enabled: dict[str, bool] = {
+            "general": True,
+            "udp": True,
+            "software_trigger_times": True,
+            "software_trigger_count": True,
+            "stimuli": True,
+        }
         self.save_root, self.schema_root = self._load_path_roots()
         self._build_ui()
         self.reload_discovery()
@@ -561,11 +568,13 @@ class ScanImageControlWidget(QWidget):
         self.show_udp_debug_checkbox = QCheckBox("UDP commands")
         self.show_trigger_times_debug_checkbox = QCheckBox("Software trigger times")
         self.show_trigger_count_debug_checkbox = QCheckBox("Software trigger count check")
+        self.show_stimuli_debug_checkbox = QCheckBox("Stimuli")
         for checkbox in (
             self.show_general_debug_checkbox,
             self.show_udp_debug_checkbox,
             self.show_trigger_times_debug_checkbox,
             self.show_trigger_count_debug_checkbox,
+            self.show_stimuli_debug_checkbox,
         ):
             checkbox.setChecked(True)
             checkbox.toggled.connect(self._refresh_debug_log)
@@ -1103,6 +1112,8 @@ class ScanImageControlWidget(QWidget):
 
     def _categorize_debug_message(self, message: str) -> str:
         lower = message.lower()
+        if lower.startswith("[") and "stimuli:" in lower:
+            return "stimuli"
         if "software trigger count check" in lower:
             return "software_trigger_count"
         if "software trigger" in lower:
@@ -1112,12 +1123,21 @@ class ScanImageControlWidget(QWidget):
         return "general"
 
     def _should_show_debug_category(self, category: str) -> bool:
+        self._debug_category_enabled = {
+            "general": self.show_general_debug_checkbox.isChecked(),
+            "udp": self.show_udp_debug_checkbox.isChecked(),
+            "software_trigger_times": self.show_trigger_times_debug_checkbox.isChecked(),
+            "software_trigger_count": self.show_trigger_count_debug_checkbox.isChecked(),
+            "stimuli": self.show_stimuli_debug_checkbox.isChecked(),
+        }
         if category == "udp":
             return self.show_udp_debug_checkbox.isChecked()
         if category == "software_trigger_times":
             return self.show_trigger_times_debug_checkbox.isChecked()
         if category == "software_trigger_count":
             return self.show_trigger_count_debug_checkbox.isChecked()
+        if category == "stimuli":
+            return self.show_stimuli_debug_checkbox.isChecked()
         return self.show_general_debug_checkbox.isChecked()
 
     def _refresh_debug_log(self) -> None:
@@ -1497,7 +1517,7 @@ class ScanImageControlWidget(QWidget):
         if not prep_state.pattern_to_stimulus_group:
             raise ValueError("No prepared stimulus group mapping is available. Run prep_patterns first.")
 
-        sequence_name, expanded_groups, trigger_times_s = self._expand_trigger_sequence(
+        sequence_name, expanded_groups, trigger_times_s, stimulus_pattern_numbers = self._expand_trigger_sequence(
             project,
             seq_num,
             prep_state.pattern_to_stimulus_group,
@@ -1539,6 +1559,7 @@ class ScanImageControlWidget(QWidget):
                     photostim_path,
                     sequence_name,
                     trigger_times_s,
+                    stimulus_pattern_numbers=stimulus_pattern_numbers,
                     request_path_name=request_path_name if reply_address is not None else None,
                     reply_address=reply_address,
                     schema_name=schema_name,
@@ -1591,7 +1612,7 @@ class ScanImageControlWidget(QWidget):
         project,
         seq_num: int,
         pattern_to_stimulus_group: dict[str, int],
-    ) -> tuple[str, list[int], list[float]]:
+    ) -> tuple[str, list[int], list[float], list[int]]:
         sequence_names = list(project.sequences.keys())
         if not sequence_names:
             raise ValueError("Schema does not contain any sequences")
@@ -1602,6 +1623,8 @@ class ScanImageControlWidget(QWidget):
         sequence = project.sequences[sequence_name]
         expanded_groups: list[int] = []
         trigger_times_s: list[float] = []
+        stimulus_pattern_numbers: list[int] = []
+        pattern_names = list(project.patterns.keys())
         end_time_s = 0.0
         for step in sequence.steps:
             if step.pattern not in project.patterns:
@@ -1616,11 +1639,13 @@ class ScanImageControlWidget(QWidget):
             period_s = 1.0 / pattern.frequency_hz
             expanded_groups.extend([pattern_to_stimulus_group[step.pattern]] * repeat_count)
             trigger_times_s.extend(step.start_s + period_s * index for index in range(repeat_count))
+            pattern_number = pattern_names.index(step.pattern) + 1
+            stimulus_pattern_numbers.extend([pattern_number] * repeat_count)
             end_time_s = max(end_time_s, step.start_s + pattern.duration_s)
 
         expanded_groups.append(2)
         trigger_times_s.append(end_time_s)
-        return sequence_name, expanded_groups, trigger_times_s
+        return sequence_name, expanded_groups, trigger_times_s, stimulus_pattern_numbers
 
     def _apply_trigger_sequence(self, path_name: str, sequence_indices: list[int]) -> None:
         runtime = self._ensure_session(path_name)
@@ -1708,6 +1733,7 @@ class ScanImageControlWidget(QWidget):
         path_name: str,
         sequence_name: str,
         trigger_times_s: list[float],
+        stimulus_pattern_numbers: list[int],
         request_path_name: str | None = None,
         reply_address: tuple[str, int] | None = None,
         schema_name: str | None = None,
@@ -1721,17 +1747,23 @@ class ScanImageControlWidget(QWidget):
 
         def worker() -> None:
             start_time = time.monotonic()
-            self.signals.log_message.emit(
-                f"[{path_name}] software trigger schedule started for sequence '{sequence_name}' with {len(trigger_times_s)} trigger(s)"
-            )
-            self.signals.log_message.emit(
-                f"[{path_name}] software trigger times: "
-                + ", ".join(f"{t:.4f}s" for t in trigger_times_s)
-            )
+            if self._debug_category_enabled.get("software_trigger_times", True):
+                self.signals.log_message.emit(
+                    f"[{path_name}] software trigger schedule started for sequence '{sequence_name}' with {len(trigger_times_s)} trigger(s)"
+                )
+                self.signals.log_message.emit(
+                    f"[{path_name}] software trigger times: "
+                    + ", ".join(f"{t:.4f}s" for t in trigger_times_s)
+                )
+            if self._debug_category_enabled.get("stimuli", True):
+                self.signals.log_message.emit(
+                    f"[{path_name}] Stimuli: {''.join(str(n) for n in stimulus_pattern_numbers)}"
+                )
             for index, trigger_time_s in enumerate(trigger_times_s, start=1):
                 while True:
                     if stop_event.is_set():
-                        self.signals.log_message.emit(f"[{path_name}] software trigger schedule cancelled")
+                        if self._debug_category_enabled.get("software_trigger_times", True):
+                            self.signals.log_message.emit(f"[{path_name}] software trigger schedule cancelled")
                         return
                     remaining = start_time + trigger_time_s - time.monotonic()
                     if remaining <= 0:
@@ -1739,14 +1771,16 @@ class ScanImageControlWidget(QWidget):
                     time.sleep(min(remaining, 0.05))
                 try:
                     self._fire_software_trigger(path_name)
-                    self.signals.log_message.emit(
-                        f"[{path_name}] software trigger fired {index}/{len(trigger_times_s)} at t={trigger_time_s:.4f}s"
-                    )
+                    if self._debug_category_enabled.get("software_trigger_times", True):
+                        self.signals.log_message.emit(
+                            f"[{path_name}] software trigger fired {index}/{len(trigger_times_s)} at t={trigger_time_s:.4f}s"
+                        )
                 except Exception as exc:
                     self.signals.log_message.emit(f"[{path_name}] ERROR: software trigger failed: {exc}")
                     return
             mismatch_message = self._report_photostim_delivery_check(path_name, "Software trigger count check")
-            self.signals.log_message.emit(f"[{path_name}] software trigger schedule completed")
+            if self._debug_category_enabled.get("software_trigger_times", True):
+                self.signals.log_message.emit(f"[{path_name}] software trigger schedule completed")
             runtime.software_trigger_stop = None
             runtime.software_trigger_thread = None
             if (
@@ -1811,9 +1845,10 @@ class ScanImageControlWidget(QWidget):
             return None
         expected_stimuli = max(0, expected_position - insert_position)
         delivered_stimuli = max(0, current_position - insert_position)
-        self.signals.log_message.emit(
-            f"[{path_name}] {label}: {delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
-        )
+        if self._debug_category_enabled.get("software_trigger_count", True):
+            self.signals.log_message.emit(
+                f"[{path_name}] {label}: {delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
+            )
         prep_state.expected_sequence_position = None
         prep_state.last_trigger_insert_position = None
         if delivered_stimuli != expected_stimuli:
