@@ -60,6 +60,7 @@ from .matlab_bridge import (
     build_stop_trial_waveform_command,
     build_test_stim_waveform_command,
     build_test_stim_waveform_external_start_command,
+    build_test_stim_waveform_external_start_command_configurable,
     build_test_photostim_command,
     build_trial_waveform_status_command,
     build_trigger_photostim_command,
@@ -519,6 +520,7 @@ class StimWaveformTestDialog(QDialog):
         preview_callback: Callable[[], tuple[bool, int | None, list[int]]],
         stimulate_callback: Callable[[float, float, float], None],
         result_signal: pyqtSignal,
+        action_label: str = "Stimulate",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -563,7 +565,7 @@ class StimWaveformTestDialog(QDialog):
 
         button_row = QHBoxLayout()
         self.refresh_btn = QPushButton("Refresh")
-        self.stimulate_btn = QPushButton("Stimulate")
+        self.stimulate_btn = QPushButton(action_label)
         self.cancel_btn = QPushButton("Cancel")
         button_row.addStretch(1)
         button_row.addWidget(self.refresh_btn)
@@ -1241,6 +1243,7 @@ class ScanImageControlWidget(QWidget):
                 lambda name: self._test_stim_waveform_configured(name, frequency_hz, duty_cycle, duration_s),
             ),
             self.signals.waveform_test_result,
+            "Stimulate",
             self,
         )
         dialog.exec()
@@ -1250,11 +1253,19 @@ class ScanImageControlWidget(QWidget):
             self.signals.log_message.emit("Test stim waveform ext skipped: no photostim path configured")
             return
         path_name = self.machine_config.photostim_path
-        self._spawn_action(
+        dialog = StimWaveformTestDialog(
             path_name,
-            "test stim waveform external start",
-            self._test_stim_waveform_external,
+            lambda: self._get_waveform_test_preview(path_name),
+            lambda frequency_hz, duty_cycle, duration_s: self._spawn_action(
+                path_name,
+                "test stim waveform external start",
+                lambda name: self._test_stim_waveform_external_configured(name, frequency_hz, duty_cycle, duration_s),
+            ),
+            self.signals.waveform_test_result,
+            "Arm External",
+            self,
         )
+        dialog.exec()
 
     def _test_photostim_api(self, path_name: str, patterns: list[dict[str, object]] | None = None) -> None:
         runtime = self._ensure_session(path_name)
@@ -1311,12 +1322,26 @@ class ScanImageControlWidget(QWidget):
         self.signals.waveform_test_result.emit(path_name, before_value, after_value, delta)
 
     def _test_stim_waveform_external(self, path_name: str) -> None:
+        self._test_stim_waveform_external_configured(path_name, 10.0, 0.1, 0.5)
+
+    def _test_stim_waveform_external_configured(
+        self,
+        path_name: str,
+        frequency_hz: float,
+        duty_cycle: float,
+        duration_s: float,
+    ) -> None:
         runtime = self._ensure_session(path_name)
         active_before, position_before, _, completed_before = self._query_photostim_sequence_state(path_name)
+        pulse_count = max(1, int(round(frequency_hz * duration_s)))
+        pulse_times_s = [((idx + 1) / frequency_hz) for idx in range(pulse_count)]
+        pulse_width_s = duty_cycle / frequency_hz
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                build_test_stim_waveform_external_start_command(runtime.path_config),
+                build_test_stim_waveform_external_start_command_configurable(
+                    runtime.path_config, pulse_times_s, pulse_width_s
+                ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "stim waveform ext test"

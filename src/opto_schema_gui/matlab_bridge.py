@@ -1193,7 +1193,21 @@ def build_test_stim_waveform_command(
 
 
 def build_test_stim_waveform_external_start_command(path_config: PathConfig) -> str:
+    return build_test_stim_waveform_external_start_command_configurable(
+        path_config,
+        [0.1, 0.2, 0.3, 0.4, 0.5],
+        path_config.trial_waveform_pulse_width_ms / 1000.0,
+    )
+
+
+def build_test_stim_waveform_external_start_command_configurable(
+    path_config: PathConfig,
+    pulse_times_s: list[float],
+    pulse_width_s: float,
+) -> str:
     hsi = path_config.hsi_variable
+    pulse_times_expr = "[" + " ".join(repr(float(v)) for v in pulse_times_s) + "]"
+    total_duration_s = (max(pulse_times_s) if pulse_times_s else 0.0) + pulse_width_s + 0.1
     return "\n".join(
         [
             build_global_preamble(path_config),
@@ -1217,12 +1231,12 @@ def build_test_stim_waveform_external_start_command(path_config: PathConfig) -> 
             "if ~isempty(hPs.sequencePosition); sequencePositionBefore = double(hPs.sequencePosition); end",
             "disp(['Photostim sequence position summary before test: ' most.idioms.ifthenelse(isempty(sequencePositionBefore), 'NaN', num2str(sequencePositionBefore))]);",
             "disp('Waveform task pulse width sec:');",
-            f"disp({path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
+            f"disp({pulse_width_s!r});",
             "disp('Waveform task total duration sec:');",
-            "disp(0.61);",
+            f"disp({total_duration_s!r});",
             "disp('Waveform external-start trigger times sec:');",
-            "disp([0.1 0.2 0.3 0.4 0.5]);",
-            f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', {matlab_string(path_config.trial_waveform_start_trigger_port.split('/')[-1])}, 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', [0.1 0.2 0.3 0.4 0.5], 'pulseWidth_s', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
+            f"disp({pulse_times_expr});",
+            f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', {matlab_string(path_config.trial_waveform_start_trigger_port.split('/')[-1])}, 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', {pulse_times_expr}, 'pulseWidth_s', {pulse_width_s!r});",
             "disp('TRIAL_WAVEFORM_READY_FOR_EXTERNAL_START');",
         ]
     )
