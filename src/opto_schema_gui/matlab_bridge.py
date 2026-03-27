@@ -61,6 +61,7 @@ class PathConfig:
     power_scale_mode: str
     trial_waveform_generator_name: str
     trial_waveform_output_port: str
+    trial_waveform_photostim_trigger_term: str
     trial_waveform_start_trigger_port: str
     trial_waveform_start_trigger_edge: str
     trial_waveform_sample_rate_hz: float
@@ -588,7 +589,10 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             trial_waveform_generator_name=_get_string(
                 section, None, "trial_waveform_generator_name", "Photostim Trial Trigger Clock"
             ),
-            trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D3.6"),
+            trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D1.7"),
+            trial_waveform_photostim_trigger_term=_get_string(
+                section, None, "trial_waveform_photostim_trigger_term", "D1.7"
+            ),
             trial_waveform_start_trigger_port=_get_string(
                 section, None, "trial_waveform_start_trigger_port", "/vDAQ0/D0.6"
             ),
@@ -643,7 +647,7 @@ def build_import_command(
             "    PreStimPauseDuration=0.001, ...",
             "    BlankDuration=0.001, ...",
             "    ParkDuration=0.001, ...",
-            f"    TriggerTerm={matlab_string(path_config.trial_waveform_output_port)}, ...",
+            f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
             "    MinCenterDistanceUm=15, ...",
             "    Revolutions=5);",
             "disp('Prepared schema photostim patterns:');",
@@ -1024,7 +1028,7 @@ def build_arm_trial_waveform_command(path_config: PathConfig) -> str:
 
 
 def build_trial_waveform_status_command(path_config: PathConfig) -> str:
-    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=False)
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=True)
     return "\n".join(
         [
             build_global_preamble(path_config),
@@ -1040,7 +1044,7 @@ def build_trial_waveform_status_command(path_config: PathConfig) -> str:
 
 
 def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
-    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=False)
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=True)
     return "\n".join(
         [
             build_global_preamble(path_config),
@@ -1053,7 +1057,7 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
 
 def build_test_stim_waveform_command(path_config: PathConfig) -> str:
     hsi = path_config.hsi_variable
-    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=False)
+    resource_setup = _build_trial_waveform_resource_setup(path_config, create_if_missing=True)
     return "\n".join(
         [
             build_global_preamble(path_config),
@@ -1074,13 +1078,16 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             *resource_setup,
             "disp('Photostim trigger term before test:');",
             "disp(string(hPs.stimTriggerTerm));",
+            "disp('Configured waveform output port:');",
+            f"disp({matlab_string(path_config.trial_waveform_output_port)});",
+            "disp('Configured photostim trigger term:');",
+            f"disp({matlab_string(path_config.trial_waveform_photostim_trigger_term)});",
             "disp('Photostim active before test:');",
             "disp(double(hPs.active));",
             "disp('Photostim mode before test:');",
             "disp(string(hPs.stimulusMode));",
             "disp('Configured waveform generator exists:');",
             "disp(double(most.idioms.isValidObj(wg)));",
-            "if ~most.idioms.isValidObj(wg); disp('Self-contained waveform diagnostic complete'); return; end",
             "assignin('base', 'photostimTrialTriggerTimesSec', 0);",
             f"assignin('base', 'photostimTrialPulseWidthSec', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
             "assignin('base', 'photostimTrialTotalDurationSec', 0.1);",
