@@ -78,6 +78,7 @@ class ScanImageSignals(QObject):
     log_message = pyqtSignal(str)
     path_status = pyqtSignal(str, str)
     path_udp_log = pyqtSignal(str, str)
+    waveform_test_result = pyqtSignal(str, int, int, int)
 
 
 @dataclass
@@ -511,6 +512,105 @@ class PhotostimTestDialog(QDialog):
         )
 
 
+class StimWaveformTestDialog(QDialog):
+    def __init__(
+        self,
+        path_name: str,
+        preview_callback: Callable[[], tuple[bool, int | None, list[int]]],
+        stimulate_callback: Callable[[float, float, float], None],
+        result_signal: pyqtSignal,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._path_name = path_name
+        self._preview_callback = preview_callback
+        self._stimulate_callback = stimulate_callback
+        self.setWindowTitle("Test Stim Waveform")
+        self.resize(460, 260)
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.freq_spin = QDoubleSpinBox()
+        self.freq_spin.setRange(0.1, 1000.0)
+        self.freq_spin.setDecimals(3)
+        self.freq_spin.setValue(10.0)
+        self.duty_spin = QDoubleSpinBox()
+        self.duty_spin.setRange(0.001, 1.0)
+        self.duty_spin.setDecimals(3)
+        self.duty_spin.setSingleStep(0.01)
+        self.duty_spin.setValue(0.1)
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(0.001, 60.0)
+        self.duration_spin.setDecimals(3)
+        self.duration_spin.setValue(0.5)
+        form.addRow("Frequency (Hz)", self.freq_spin)
+        form.addRow("Duty Cycle", self.duty_spin)
+        form.addRow("Duration (s)", self.duration_spin)
+        layout.addLayout(form)
+
+        info_form = QFormLayout()
+        self.generated_count_label = QLabel("-")
+        self.pulse_width_label = QLabel("-")
+        self.remaining_entries_label = QLabel("-")
+        self.enough_entries_label = QLabel("-")
+        self.advanced_count_label = QLabel("-")
+        info_form.addRow("Pulses Generated", self.generated_count_label)
+        info_form.addRow("Pulse Width (ms)", self.pulse_width_label)
+        info_form.addRow("Remaining Seq Entries", self.remaining_entries_label)
+        info_form.addRow("Enough Entries", self.enough_entries_label)
+        info_form.addRow("Seq Advanced", self.advanced_count_label)
+        layout.addLayout(info_form)
+
+        button_row = QHBoxLayout()
+        self.refresh_btn = QPushButton("Refresh")
+        self.stimulate_btn = QPushButton("Stimulate")
+        self.cancel_btn = QPushButton("Cancel")
+        button_row.addStretch(1)
+        button_row.addWidget(self.refresh_btn)
+        button_row.addWidget(self.stimulate_btn)
+        button_row.addWidget(self.cancel_btn)
+        layout.addLayout(button_row)
+
+        self.freq_spin.valueChanged.connect(self._refresh_preview)
+        self.duty_spin.valueChanged.connect(self._refresh_preview)
+        self.duration_spin.valueChanged.connect(self._refresh_preview)
+        self.refresh_btn.clicked.connect(self._refresh_preview)
+        self.stimulate_btn.clicked.connect(self._stimulate)
+        self.cancel_btn.clicked.connect(self.reject)
+        result_signal.connect(self._handle_result)
+        self._refresh_preview()
+
+    def _requested_pulse_count(self) -> int:
+        return max(1, int(round(self.freq_spin.value() * self.duration_spin.value())))
+
+    def _refresh_preview(self) -> None:
+        requested_pulses = self._requested_pulse_count()
+        pulse_width_ms = 1000.0 * self.duty_spin.value() / self.freq_spin.value()
+        active, position, sequence = self._preview_callback()
+        remaining_entries = 0
+        if position is not None:
+            remaining_entries = max(0, len(sequence) - position + 1)
+        enough = active and remaining_entries >= requested_pulses
+        self.generated_count_label.setText(str(requested_pulses))
+        self.pulse_width_label.setText(f"{pulse_width_ms:.3f}")
+        self.remaining_entries_label.setText(str(remaining_entries))
+        self.enough_entries_label.setText("Yes" if enough else "No")
+        self.stimulate_btn.setEnabled(enough)
+
+    def _stimulate(self) -> None:
+        if not self.stimulate_btn.isEnabled():
+            QMessageBox.warning(self, "Not ready", "Not enough remaining stimulus groups after the current position.")
+            return
+        self.advanced_count_label.setText("Running...")
+        self._stimulate_callback(self.freq_spin.value(), self.duty_spin.value(), self.duration_spin.value())
+
+    def _handle_result(self, path_name: str, before_position: int, after_position: int, delta: int) -> None:
+        if path_name != self._path_name:
+            return
+        self.advanced_count_label.setText(str(delta))
+        self._refresh_preview()
+
+
 class ScanImageControlWidget(QWidget):
     def __init__(self, schema_path_provider: Callable[[], Path | None], parent: QWidget | None = None):
         super().__init__(parent)
@@ -520,6 +620,7 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.connect(self._append_log)
         self.signals.path_status.connect(self._set_path_status)
         self.signals.path_udp_log.connect(self._append_path_udp_log)
+        self.signals.waveform_test_result.connect(lambda *_: None)
         self.signals.udp_message.connect(self._handle_udp_message)
         self.machine_config: MachineConfig | None = None
         self._runtimes: dict[str, PathRuntime] = {}
@@ -1131,7 +1232,18 @@ class ScanImageControlWidget(QWidget):
             self.signals.log_message.emit("Test stim waveform skipped: no photostim path configured")
             return
         path_name = self.machine_config.photostim_path
-        self._spawn_action(path_name, "test stim waveform", self._test_stim_waveform)
+        dialog = StimWaveformTestDialog(
+            path_name,
+            lambda: self._get_waveform_test_preview(path_name),
+            lambda frequency_hz, duty_cycle, duration_s: self._spawn_action(
+                path_name,
+                "test stim waveform",
+                lambda name: self._test_stim_waveform_configured(name, frequency_hz, duty_cycle, duration_s),
+            ),
+            self.signals.waveform_test_result,
+            self,
+        )
+        dialog.exec()
 
     def _run_test_stim_waveform_external(self) -> None:
         if self.machine_config is None or not self.machine_config.photostim_path:
@@ -1169,16 +1281,34 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
 
     def _test_stim_waveform(self, path_name: str) -> None:
+        self._test_stim_waveform_configured(path_name, 10.0, 0.1, 0.5)
+
+    def _test_stim_waveform_configured(
+        self,
+        path_name: str,
+        frequency_hz: float,
+        duty_cycle: float,
+        duration_s: float,
+    ) -> None:
         runtime = self._ensure_session(path_name)
+        _, before_position, _, _ = self._query_photostim_sequence_state(path_name)
+        pulse_count = max(1, int(round(frequency_hz * duration_s)))
+        pulse_times_s = [((idx + 1) / frequency_hz) for idx in range(pulse_count)]
+        pulse_width_s = duty_cycle / frequency_hz
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                build_test_stim_waveform_command(runtime.path_config),
+                build_test_stim_waveform_command(runtime.path_config, pulse_times_s, pulse_width_s),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "stim waveform test"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
+        _, after_position, _, _ = self._query_photostim_sequence_state(path_name)
+        before_value = 0 if before_position is None else before_position
+        after_value = 0 if after_position is None else after_position
+        delta = max(0, after_value - before_value)
+        self.signals.waveform_test_result.emit(path_name, before_value, after_value, delta)
 
     def _test_stim_waveform_external(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)
@@ -1901,6 +2031,10 @@ class ScanImageControlWidget(QWidget):
                 except ValueError:
                     pass
         return active, position, sequence, completed_sequences
+
+    def _get_waveform_test_preview(self, path_name: str) -> tuple[bool, int | None, list[int]]:
+        active, position, sequence, _ = self._query_photostim_sequence_state(path_name)
+        return active, position, sequence
 
     def _fire_software_trigger(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)

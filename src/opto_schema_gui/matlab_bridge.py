@@ -1124,8 +1124,14 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
     )
 
 
-def build_test_stim_waveform_command(path_config: PathConfig) -> str:
+def build_test_stim_waveform_command(
+    path_config: PathConfig,
+    pulse_times_s: list[float],
+    pulse_width_s: float,
+) -> str:
     hsi = path_config.hsi_variable
+    pulse_times_expr = "[" + " ".join(repr(float(v)) for v in pulse_times_s) + "]"
+    total_duration_s = (max(pulse_times_s) if pulse_times_s else 0.0) + pulse_width_s + 0.1
     return "\n".join(
         [
             build_global_preamble(path_config),
@@ -1154,9 +1160,15 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "if ~isempty(hPs.sequencePosition); sequencePositionBefore = double(hPs.sequencePosition); end",
             "if ~isempty(hPs.completedSequences); completedSequencesBefore = double(hPs.completedSequences); end",
             "disp(['Photostim sequence position summary before test: ' most.idioms.ifthenelse(isempty(sequencePositionBefore), 'NaN', num2str(sequencePositionBefore))]);",
-            f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', '', 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', [0.1 0.2 0.3 0.4 0.5], 'pulseWidth_s', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
+            "disp('Waveform task pulse width sec:');",
+            f"disp({pulse_width_s!r});",
+            "disp('Waveform task total duration sec:');",
+            f"disp({total_duration_s!r});",
+            "disp('Waveform trigger times sec:');",
+            f"disp({pulse_times_expr});",
+            f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', '', 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', {pulse_times_expr}, 'pulseWidth_s', {pulse_width_s!r});",
             "t0 = tic;",
-            "while most.idioms.isValidObj(do_task) && ~do_task.isTaskDone() && toc(t0) < 2.0; pause(0.01); end",
+            f"while most.idioms.isValidObj(do_task) && ~do_task.isTaskDone() && toc(t0) < {max(2.0, total_duration_s + 1.0)!r}; pause(0.01); end",
             "disp('Raw DoTask active after train:');",
             "if most.idioms.isValidObj(do_task); disp(double(do_task.active)); else; disp(0); end",
             "disp('Raw DoTask done after train:');",
@@ -1173,7 +1185,7 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "if ~isempty(hPs.sequencePosition); sequencePositionAfter = double(hPs.sequencePosition); end",
             "disp(['Photostim sequence position summary after train: ' most.idioms.ifthenelse(isempty(sequencePositionAfter), 'NaN', num2str(sequencePositionAfter))]);",
             "disp(['Photostim sequence position delta: ' most.idioms.ifthenelse(isempty(sequencePositionBefore) || isempty(sequencePositionAfter), 'NaN', num2str(sequencePositionAfter - sequencePositionBefore))]);",
-            "disp('Waveform train advanced photostim count:');",
+            "disp('Stim sequence advanced count:');",
             "disp(deliveredCount);",
             "disp('Self-contained waveform diagnostic complete');",
         ]
