@@ -395,7 +395,7 @@ class MatlabSession:
         if "trial_waveform_stopped" in command_lower:
             outputs.append("TRIAL_WAVEFORM_STOPPED")
             return outputs
-        if "test stim waveform" in command_lower and "waveform advanced photostim" in command_lower:
+        if "test stim waveform" in command_lower:
             outputs.extend(
                 [
                     "----------",
@@ -416,18 +416,20 @@ class MatlabSession:
                     "0",
                     "Photostim selected sequence before test:",
                     str(self.sim_sequence),
+                    "Waveform task pulse width sec:",
+                    str(self.config.trial_waveform_pulse_width_ms / 1000.0),
+                    "Waveform task total duration sec:",
+                    "2.1",
                     "Waveform test task started",
                     "Photostim sequence position after waveform test:",
-                    str(self.sim_sequence_position + 1),
+                    str(self.sim_sequence_position + 3),
                     "Photostim completed sequences after waveform test:",
                     "0",
                     "Waveform advanced photostim:",
                     "1",
-                    "Software trigger advanced photostim:",
-                    "1",
                 ]
             )
-            self.sim_sequence_position += 2
+            self.sim_sequence_position += 3
             return outputs
         if "hps.triggerstim()" in command_lower:
             self.sim_sequence_position += 1
@@ -1093,15 +1095,15 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "disp(hPs.sequenceSelectedStimuli);",
             "disp('Configured waveform generator exists:');",
             "disp(double(most.idioms.isValidObj(wg)));",
-            "assignin('base', 'photostimTrialTriggerTimesSec', 0);",
+            "assignin('base', 'photostimTrialTriggerTimesSec', [0 1 2]);",
             f"assignin('base', 'photostimTrialPulseWidthSec', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
-            "assignin('base', 'photostimTrialTotalDurationSec', 0.1);",
+            "assignin('base', 'photostimTrialTotalDurationSec', 2.1);",
             "if most.idioms.isValidObj(wg.hTask) && wg.hTask.active; wg.hTask.stop(); end",
             f"wg.sampleRate_Hz = {path_config.trial_waveform_sample_rate_hz!r};",
             "wg.sampleMode = 'finite';",
             "wg.allowRetrigger = false;",
             "wg.amplitude = 1;",
-            "wg.periodSec = 0.1;",
+            "wg.periodSec = 2.1;",
             "wg.startDelay = 0;",
             "wg.dutyCycle = 50;",
             "wg.startTriggerPort = '';",
@@ -1153,33 +1155,6 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "else;",
             "    disp('Photostim waveform probe skipped: photostim not active');",
             "    disp('Waveform advanced photostim:');",
-            "    disp(0);",
-            "end",
-            "sequencePositionBefore = [];",
-            "completedSequencesBefore = [];",
-            "if hPs.active;",
-            "    sequencePositionBefore = hPs.sequencePosition;",
-            "    completedSequencesBefore = hPs.completedSequences;",
-            "    hPs.triggerStim();",
-            "    pause(0.2);",
-            "    disp('Photostim sequence position after software trigger test:');",
-            "    if isempty(hPs.sequencePosition); disp('NaN'); else; disp(double(hPs.sequencePosition)); end",
-            "    disp('Photostim completed sequences after software trigger test:');",
-            "    if isempty(hPs.completedSequences); disp('NaN'); else; disp(double(hPs.completedSequences)); end",
-            "    softwareAdvanced = false;",
-            "    if isempty(sequencePositionBefore) || isempty(hPs.sequencePosition);",
-            "        softwareAdvanced = false;",
-            "    else;",
-            "        softwareAdvanced = double(hPs.sequencePosition) > double(sequencePositionBefore);",
-            "    end",
-            "    if ~softwareAdvanced && ~isempty(completedSequencesBefore) && ~isempty(hPs.completedSequences);",
-            "        softwareAdvanced = double(hPs.completedSequences) > double(completedSequencesBefore);",
-            "    end",
-            "    disp('Software trigger advanced photostim:');",
-            "    disp(double(softwareAdvanced));",
-            "else;",
-            "    disp('Photostim software trigger probe skipped: photostim not active');",
-            "    disp('Software trigger advanced photostim:');",
             "    disp(0);",
             "end",
             "disp('Self-contained waveform diagnostic complete');",
