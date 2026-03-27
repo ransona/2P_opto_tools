@@ -419,17 +419,17 @@ class MatlabSession:
                     "Waveform task pulse width sec:",
                     str(self.config.trial_waveform_pulse_width_ms / 1000.0),
                     "Waveform task total duration sec:",
-                    "2.1",
+                    "5.1",
                     "Waveform test task started",
                     "Photostim sequence position after waveform test:",
-                    str(self.sim_sequence_position + 3),
+                    str(self.sim_sequence_position + 5),
                     "Photostim completed sequences after waveform test:",
                     "0",
                     "Waveform advanced photostim:",
                     "1",
                 ]
             )
-            self.sim_sequence_position += 3
+            self.sim_sequence_position += 5
             return outputs
         if "hps.triggerstim()" in command_lower:
             self.sim_sequence_position += 1
@@ -1095,15 +1095,15 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "disp(hPs.sequenceSelectedStimuli);",
             "disp('Configured waveform generator exists:');",
             "disp(double(most.idioms.isValidObj(wg)));",
-            "assignin('base', 'photostimTrialTriggerTimesSec', [0 1 2]);",
+            "assignin('base', 'photostimTrialTriggerTimesSec', [0 1 2 3 4]);",
             f"assignin('base', 'photostimTrialPulseWidthSec', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
-            "assignin('base', 'photostimTrialTotalDurationSec', 2.1);",
+            "assignin('base', 'photostimTrialTotalDurationSec', 5.1);",
             "if most.idioms.isValidObj(wg.hTask) && wg.hTask.active; wg.hTask.stop(); end",
             f"wg.sampleRate_Hz = {path_config.trial_waveform_sample_rate_hz!r};",
             "wg.sampleMode = 'finite';",
             "wg.allowRetrigger = false;",
             "wg.amplitude = 1;",
-            "wg.periodSec = 2.1;",
+            "wg.periodSec = 5.1;",
             "wg.startDelay = 0;",
             "wg.dutyCycle = 50;",
             "wg.startTriggerPort = '';",
