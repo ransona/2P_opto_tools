@@ -572,6 +572,7 @@ class ScanImageControlWidget(QWidget):
         self.trigger_mode_combo.addItem("Per-stim software (test)", "software")
         self.trigger_mode_combo.addItem("Waveform software-start", "waveform_software")
         self.trigger_mode_combo.addItem("Waveform external-trigger", "waveform_external")
+        self.trigger_mode_combo.setCurrentIndex(1)
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
         config_form.addRow("", self.force_simulated_checkbox)
