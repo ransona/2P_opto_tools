@@ -72,7 +72,7 @@ hPs.stimulusMode = 'sequence';
 hPs.sequenceSelectedStimuli = 1:numel(hPs.stimRoiGroups);
 hPs.numSequences = 1;
 if strlength(opts.TriggerTerm) > 0
-    hPs.stimTriggerTerm = char(opts.TriggerTerm);
+    hPs.stimTriggerTerm = normalizePhotostimTriggerTerm(char(opts.TriggerTerm));
 end
 
 disp('Starting photostim mask generation');
@@ -230,6 +230,17 @@ if isfield(s, fieldName) && ~isempty(s.(fieldName))
     value = s.(fieldName);
 else
     value = defaultValue;
+end
+end
+
+
+function triggerTerm = normalizePhotostimTriggerTerm(triggerTerm)
+triggerTerm = strtrim(triggerTerm);
+if startsWith(triggerTerm, '/')
+    parts = regexp(triggerTerm, '/([^/]+)$', 'tokens', 'once');
+    if ~isempty(parts)
+        triggerTerm = parts{1};
+    end
 end
 end
 
