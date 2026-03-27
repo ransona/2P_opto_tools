@@ -7,7 +7,7 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
 % Default behavior:
 % - output on D1.6
 % - start trigger on D2.1
-% - 5 pulses at 1 Hz
+% - 5 pulses at 10 Hz
 % - 10 ms pulse width
 % - 2 MHz sample rate
 %
@@ -24,7 +24,7 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
     addParameter(p, 'outputLine', 'D1.6');
     addParameter(p, 'startTrigger', 'D2.1');
     addParameter(p, 'sampleRate_Hz', 2e6);
-    addParameter(p, 'pulseTimes_s', [0.1 1.1 2.1 3.1 4.1]);
+    addParameter(p, 'pulseTimes_s', [0.1 0.2 0.3 0.4 0.5]);
     addParameter(p, 'pulseWidth_s', 10e-3);
     addParameter(p, 'taskName', 'Opto Photostim DO Debug');
     parse(p, varargin{:});
