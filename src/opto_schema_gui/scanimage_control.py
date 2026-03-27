@@ -504,6 +504,7 @@ class ScanImageControlWidget(QWidget):
         self._current_machine_name = ""
         self._current_config_name = ""
         self._last_exp_id = ""
+        self._debug_history: list[tuple[str, str, bool]] = []
         self.save_root, self.schema_root = self._load_path_roots()
         self._build_ui()
         self.reload_discovery()
@@ -535,7 +536,7 @@ class ScanImageControlWidget(QWidget):
         self.machine_combo = QComboBox()
         self.config_combo = QComboBox()
         self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
-        self.ignore_incomplete_trigger_checkbox = QCheckBox("Ignore incomplete stim seqs")
+        self.ignore_incomplete_trigger_checkbox = QCheckBox("Send mismatch errors upstream")
         self.ignore_incomplete_trigger_checkbox.setChecked(True)
         self.software_trigger_checkbox = QCheckBox("Software trigger stim seqs")
         config_form.addRow("Machine", self.machine_combo)
@@ -553,15 +554,35 @@ class ScanImageControlWidget(QWidget):
         layout.addWidget(self.paths_box, 1)
 
         log_box = QGroupBox("Debug Log")
-        log_layout = QVBoxLayout(log_box)
+        log_layout = QHBoxLayout(log_box)
+        filter_box = QGroupBox("Shown")
+        filter_layout = QVBoxLayout(filter_box)
+        self.show_general_debug_checkbox = QCheckBox("General")
+        self.show_udp_debug_checkbox = QCheckBox("UDP commands")
+        self.show_trigger_times_debug_checkbox = QCheckBox("Software trigger times")
+        self.show_trigger_count_debug_checkbox = QCheckBox("Software trigger count check")
+        for checkbox in (
+            self.show_general_debug_checkbox,
+            self.show_udp_debug_checkbox,
+            self.show_trigger_times_debug_checkbox,
+            self.show_trigger_count_debug_checkbox,
+        ):
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self._refresh_debug_log)
+            filter_layout.addWidget(checkbox)
+        filter_layout.addStretch(1)
+        log_layout.addWidget(filter_box)
+        output_container = QWidget()
+        output_layout = QVBoxLayout(output_container)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.clear_all_logs_btn = QPushButton("All")
-        log_layout.addWidget(self.log_text)
+        output_layout.addWidget(self.log_text)
         clear_row = QHBoxLayout()
         clear_row.addStretch(1)
         clear_row.addWidget(self.clear_all_logs_btn)
-        log_layout.addLayout(clear_row)
+        output_layout.addLayout(clear_row)
+        log_layout.addWidget(output_container, 1)
         layout.addWidget(log_box, 1)
 
         self.reload_btn.clicked.connect(self.reload_discovery)
@@ -575,6 +596,7 @@ class ScanImageControlWidget(QWidget):
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
 
     def _clear_all_logs(self) -> None:
+        self._debug_history.clear()
         self.log_text.clear()
         for widgets in self._path_tabs.values():
             widgets.udp_text.clear()
@@ -1064,13 +1086,52 @@ class ScanImageControlWidget(QWidget):
 
     def _append_log(self, message: str) -> None:
         line = f"{self._timestamp()} {message}"
-        if "ERROR:" in message:
+        category = self._categorize_debug_message(message)
+        is_error = "ERROR:" in message
+        self._debug_history.append((line, category, is_error))
+        if not self._should_show_debug_category(category):
+            return
+        if is_error:
             cursor = self.log_text.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertHtml(f"<span style='color:#b91c1c;'>{html.escape(line)}</span><br>")
             self.log_text.setTextCursor(cursor)
         else:
             self.log_text.append(line)
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _categorize_debug_message(self, message: str) -> str:
+        lower = message.lower()
+        if "software trigger count check" in lower:
+            return "software_trigger_count"
+        if "software trigger" in lower:
+            return "software_trigger_times"
+        if " udp " in lower or lower.startswith("[") and "udp" in lower:
+            return "udp"
+        return "general"
+
+    def _should_show_debug_category(self, category: str) -> bool:
+        if category == "udp":
+            return self.show_udp_debug_checkbox.isChecked()
+        if category == "software_trigger_times":
+            return self.show_trigger_times_debug_checkbox.isChecked()
+        if category == "software_trigger_count":
+            return self.show_trigger_count_debug_checkbox.isChecked()
+        return self.show_general_debug_checkbox.isChecked()
+
+    def _refresh_debug_log(self) -> None:
+        self.log_text.clear()
+        for line, category, is_error in self._debug_history:
+            if not self._should_show_debug_category(category):
+                continue
+            if is_error:
+                cursor = self.log_text.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                cursor.insertHtml(f"<span style='color:#b91c1c;'>{html.escape(line)}</span><br>")
+                self.log_text.setTextCursor(cursor)
+            else:
+                self.log_text.append(line)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -1474,7 +1535,16 @@ class ScanImageControlWidget(QWidget):
             else:
                 self.signals.log_message.emit(f"[config] gui trigger_photo_stim result={payload}")
             if ok and self.software_trigger_checkbox.isChecked():
-                self._start_software_trigger_schedule(photostim_path, sequence_name, trigger_times_s)
+                self._start_software_trigger_schedule(
+                    photostim_path,
+                    sequence_name,
+                    trigger_times_s,
+                    request_path_name=request_path_name if reply_address is not None else None,
+                    reply_address=reply_address,
+                    schema_name=schema_name,
+                    exp_id=exp_id,
+                    seq_num=seq_num,
+                )
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1638,6 +1708,11 @@ class ScanImageControlWidget(QWidget):
         path_name: str,
         sequence_name: str,
         trigger_times_s: list[float],
+        request_path_name: str | None = None,
+        reply_address: tuple[str, int] | None = None,
+        schema_name: str | None = None,
+        exp_id: str | None = None,
+        seq_num: int | None = None,
     ) -> None:
         self._cancel_software_trigger(path_name)
         runtime = self._runtimes[path_name]
@@ -1648,6 +1723,10 @@ class ScanImageControlWidget(QWidget):
             start_time = time.monotonic()
             self.signals.log_message.emit(
                 f"[{path_name}] software trigger schedule started for sequence '{sequence_name}' with {len(trigger_times_s)} trigger(s)"
+            )
+            self.signals.log_message.emit(
+                f"[{path_name}] software trigger times: "
+                + ", ".join(f"{t:.4f}s" for t in trigger_times_s)
             )
             for index, trigger_time_s in enumerate(trigger_times_s, start=1):
                 while True:
@@ -1666,7 +1745,27 @@ class ScanImageControlWidget(QWidget):
                 except Exception as exc:
                     self.signals.log_message.emit(f"[{path_name}] ERROR: software trigger failed: {exc}")
                     return
+            mismatch_message = self._report_photostim_delivery_check(path_name, "Software trigger count check")
             self.signals.log_message.emit(f"[{path_name}] software trigger schedule completed")
+            runtime.software_trigger_stop = None
+            runtime.software_trigger_thread = None
+            if (
+                mismatch_message is not None
+                and self.ignore_incomplete_trigger_checkbox.isChecked()
+                and request_path_name is not None
+                and reply_address is not None
+            ):
+                payload = {
+                    "action": "trigger_photo_stim",
+                    "status": "error",
+                    "phase": "completion_check",
+                    "schema_name": schema_name,
+                    "expID": exp_id,
+                    "seq_num": seq_num,
+                    "sequence_name": sequence_name,
+                    "error": mismatch_message,
+                }
+                self._send_json_reply(request_path_name, reply_address, payload)
 
         thread = threading.Thread(target=worker, daemon=True)
         runtime.software_trigger_thread = thread
@@ -1686,36 +1785,40 @@ class ScanImageControlWidget(QWidget):
     def _trigger_photo_stim_checked(self, path_name: str, sequence_indices: list[int]) -> None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
-        active, current_position, _ = self._query_photostim_sequence_state(path_name)
-        expected_position = prep_state.expected_sequence_position
-        if expected_position is not None and current_position is not None:
-            insert_position = prep_state.last_trigger_insert_position
-            expected_stimuli = None
-            delivered_stimuli = None
-            if insert_position is not None:
-                expected_stimuli = max(0, expected_position - insert_position)
-                delivered_stimuli = max(0, current_position - insert_position)
-            if expected_stimuli is not None and delivered_stimuli is not None:
-                check_message = (
-                    f"[{path_name}] Previous photostim sequence check: "
-                    f"{delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
-                )
-                self.signals.log_message.emit(check_message)
-                if delivered_stimuli != expected_stimuli:
-                    mismatch_message = (
-                        "Previous photostim sequence does not match expected delivery: "
-                        f"{delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
-                    )
-                    if self.ignore_incomplete_trigger_checkbox.isChecked():
-                        self.signals.log_message.emit(f"[{path_name}] WARNING: {mismatch_message}")
-                    else:
-                        raise RuntimeError(mismatch_message)
+        _, current_position, _ = self._query_photostim_sequence_state(path_name)
+        if not self.software_trigger_checkbox.isChecked():
+            mismatch_message = self._report_photostim_delivery_check(path_name, "Previous photostim sequence check")
+            if mismatch_message is not None:
+                if self.ignore_incomplete_trigger_checkbox.isChecked():
+                    raise RuntimeError(mismatch_message)
+                self.signals.log_message.emit(f"[{path_name}] WARNING: {mismatch_message}")
         lines = self._apply_trigger_sequence(path_name, sequence_indices)
         insert_position = self._parse_trigger_insert_position(lines)
         if insert_position is None:
             insert_position = current_position if current_position is not None else 1
         prep_state.last_trigger_insert_position = insert_position
         prep_state.expected_sequence_position = insert_position + len(sequence_indices)
+
+    def _report_photostim_delivery_check(self, path_name: str, label: str) -> str | None:
+        runtime = self._ensure_session(path_name)
+        prep_state = runtime.prepared_photostim
+        expected_position = prep_state.expected_sequence_position
+        insert_position = prep_state.last_trigger_insert_position
+        if expected_position is None or insert_position is None:
+            return None
+        _, current_position, _ = self._query_photostim_sequence_state(path_name)
+        if current_position is None:
+            return None
+        expected_stimuli = max(0, expected_position - insert_position)
+        delivered_stimuli = max(0, current_position - insert_position)
+        self.signals.log_message.emit(
+            f"[{path_name}] {label}: {delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
+        )
+        prep_state.expected_sequence_position = None
+        prep_state.last_trigger_insert_position = None
+        if delivered_stimuli != expected_stimuli:
+            return f"{delivered_stimuli} stimuli delivered, {expected_stimuli} expected"
+        return None
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:
         animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
