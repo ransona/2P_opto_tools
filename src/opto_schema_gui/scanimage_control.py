@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -62,6 +62,7 @@ from .matlab_bridge import (
     list_machine_names,
     load_machine_config,
     matlab_string,
+    matlab_engine,
 )
 
 
@@ -513,6 +514,8 @@ class ScanImageControlWidget(QWidget):
         self._current_config_name = ""
         self._last_exp_id = ""
         self._debug_history: list[tuple[str, str, bool]] = []
+        self._startup_reconnect_prompt_pending = True
+        self._startup_reconnect_prompt_shown = False
         self._debug_category_enabled: dict[str, bool] = {
             "general": True,
             "udp": True,
@@ -770,6 +773,8 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit(
             f"Loaded {machine_name}/{config_name} with paths: {', '.join(machine_config.launch_order)}"
         )
+        if self._startup_reconnect_prompt_pending and not self._startup_reconnect_prompt_shown:
+            QTimer.singleShot(0, self._prompt_startup_reconnect_if_available)
 
     def _rebuild_path_tabs(self) -> None:
         self.path_tabs.clear()
@@ -778,6 +783,46 @@ class ScanImageControlWidget(QWidget):
             return
         for path_name in self.machine_config.launch_order:
             self._add_path_tab(path_name)
+
+    def _find_available_shared_paths(self) -> list[str]:
+        if self.machine_config is None or matlab_engine is None or self.force_simulated_checkbox.isChecked():
+            return []
+        try:
+            available = set(matlab_engine.find_matlab())
+        except Exception:
+            return []
+        found: list[str] = []
+        for path_name in self.machine_config.launch_order:
+            path_config = self.machine_config.paths[path_name]
+            if path_config.engine_name in available:
+                found.append(path_name)
+        return found
+
+    def _prompt_startup_reconnect_if_available(self) -> None:
+        self._startup_reconnect_prompt_pending = False
+        if self._startup_reconnect_prompt_shown or self.machine_config is None or self._has_active_paths():
+            return
+        available_paths = self._find_available_shared_paths()
+        if not available_paths:
+            return
+        self._startup_reconnect_prompt_shown = True
+        joined = ", ".join(available_paths)
+        choice = QMessageBox.question(
+            self,
+            "Reconnect MATLAB",
+            f"Found running MATLAB session(s) for: {joined}.\nConnect to them now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            self.signals.log_message.emit(f"[config] existing MATLAB sessions ignored: {joined}")
+            return
+
+        def worker() -> None:
+            for path_name in available_paths:
+                self._run_action(path_name, "launch path", self._launch_path)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _add_path_tab(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
