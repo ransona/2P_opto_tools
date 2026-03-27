@@ -983,7 +983,7 @@ def build_prepare_trial_waveform_command(
             "assignin('base', 'photostimTrialTriggerTimesSec', trialTriggerTimesSec(:).');",
             "assignin('base', 'photostimTrialPulseWidthSec', trialPulseWidthSec);",
             "assignin('base', 'photostimTrialTotalDurationSec', trialTotalDurationSec);",
-            "wg.stopTask();",
+            "if most.idioms.isValidObj(wg.hTask) && wg.hTask.active; wg.hTask.stop(); end",
             f"wg.sampleRate_Hz = {path_config.trial_waveform_sample_rate_hz!r};",
             "wg.sampleMode = 'finite';",
             "wg.allowRetrigger = false;",
@@ -1048,7 +1048,7 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
         [
             build_global_preamble(path_config),
             *resource_setup,
-            "if most.idioms.isValidObj(wg); wg.stopTask(); end",
+            "if most.idioms.isValidObj(wg) && most.idioms.isValidObj(wg.hTask) && wg.hTask.active; wg.hTask.stop(); end",
             "disp('TRIAL_WAVEFORM_STOPPED');",
         ]
     )
@@ -1096,7 +1096,7 @@ def build_test_stim_waveform_command(path_config: PathConfig) -> str:
             "assignin('base', 'photostimTrialTriggerTimesSec', 0);",
             f"assignin('base', 'photostimTrialPulseWidthSec', {path_config.trial_waveform_pulse_width_ms / 1000.0!r});",
             "assignin('base', 'photostimTrialTotalDurationSec', 0.1);",
-            "wg.stopTask();",
+            "if most.idioms.isValidObj(wg.hTask) && wg.hTask.active; wg.hTask.stop(); end",
             f"wg.sampleRate_Hz = {path_config.trial_waveform_sample_rate_hz!r};",
             "wg.sampleMode = 'finite';",
             "wg.allowRetrigger = false;",
