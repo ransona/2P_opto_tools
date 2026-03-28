@@ -362,20 +362,13 @@ class MatlabSession:
             return outputs
         if "trigger_photostim_sequence" in command_lower:
             sequence_values = _extract_numeric_vector_assignment(command, "triggerSequence")
-            if self.sim_sequence:
-                insert_position = max(1, min(len(self.sim_sequence) + 1, int(self.sim_sequence_position)))
-                self.sim_sequence = (
-                    self.sim_sequence[: insert_position - 1]
-                    + sequence_values
-                    + self.sim_sequence[insert_position - 1 :]
-                )
-            else:
-                insert_position = 1
-                self.sim_sequence = list(sequence_values)
+            insert_position = 1
+            self.sim_sequence = list(sequence_values)
+            self.sim_sequence_position = 1
             outputs.append("TRIGGER_PHOTOSTIM_INSERT_POSITION")
             outputs.append(str(insert_position))
             outputs.append("TRIGGER_PHOTOSTIM_SEQUENCE")
-            outputs.append(str(self.sim_sequence))
+            outputs.append(str(sequence_values))
             outputs.append("TRIGGER_PHOTOSTIM_NUM_SEQUENCES")
             outputs.append("1")
             outputs.append("TRIGGER_PHOTOSTIM_READY")
@@ -931,7 +924,6 @@ def build_inspect_photostim_command(path_config: PathConfig) -> str:
 
 def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: list[int]) -> str:
     hsi = path_config.hsi_variable
-    hsictl = path_config.hsictl_variable
     sequence_expr = "[]" if not sequence_indices else "[" + " ".join(str(int(v)) for v in sequence_indices) + "]"
     return "\n".join(
         [
@@ -941,24 +933,14 @@ def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: l
             f"triggerSequence = {sequence_expr};",
             "assert(~isempty(triggerSequence), 'Trigger sequence is empty.');",
             "assert(max(triggerSequence) <= numel(hPs.stimRoiGroups), 'Trigger sequence references an invalid stimulus group.');",
-            "existingSequence = hPs.sequenceSelectedStimuli(:).';",
-            "currentPosition = double(hPs.sequencePosition);",
-            "if isempty(existingSequence) || ~hPs.active || ~strcmpi(hPs.stimulusMode, 'sequence');",
-            "    updatedSequence = triggerSequence;",
-            "    insertPosition = 1;",
-            "else;",
-            "    if isempty(currentPosition) || ~isscalar(currentPosition) || ~isfinite(currentPosition); currentPosition = numel(existingSequence) + 1; end",
-            "    insertPosition = max(1, min(numel(existingSequence) + 1, floor(currentPosition)));",
-            "    updatedSequence = [existingSequence(1:insertPosition-1) triggerSequence existingSequence(insertPosition:end)];",
+            "if hPs.active;",
+            "    hPs.abort();",
             "end",
-            "if ~hPs.active;",
-            "    hPs.stimulusMode = 'sequence';",
-            "end",
-            "assert(strcmpi(hPs.stimulusMode, 'sequence'), 'Photostim must be in sequence mode before inserting trigger sequences.');",
-            "hPs.sequenceSelectedStimuli = updatedSequence;",
-            "if ~hPs.active;",
-            "    hPs.numSequences = 1;",
-            "end",
+            "hPs.stimulusMode = 'sequence';",
+            "hPs.sequenceSelectedStimuli = triggerSequence;",
+            "hPs.numSequences = 1;",
+            "insertPosition = 1;",
+            "hPs.start();",
             "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
             "disp(insertPosition);",
             "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",
