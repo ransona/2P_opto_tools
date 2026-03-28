@@ -364,7 +364,7 @@ class MatlabSession:
             sequence_values = _extract_numeric_vector_assignment(command, "triggerSequence")
             insert_position = 1
             self.sim_sequence = list(sequence_values)
-            self.sim_sequence_position = 1
+            self.sim_sequence_position = 2 if len(self.sim_sequence) > 1 else 1
             outputs.append("TRIGGER_PHOTOSTIM_INSERT_POSITION")
             outputs.append(str(insert_position))
             outputs.append("TRIGGER_PHOTOSTIM_SEQUENCE")
@@ -937,11 +937,14 @@ def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: l
             "if hPs.active;",
             "    hPs.abort();",
             "end",
+            "oldStimImmediately = logical(hPs.stimImmediately);",
             "hPs.stimulusMode = 'sequence';",
             "hPs.sequenceSelectedStimuli = triggerSequence;",
             "hPs.numSequences = 1;",
             "insertPosition = 1;",
+            "hPs.stimImmediately = true;",
             "hPs.start();",
+            "hPs.stimImmediately = oldStimImmediately;",
             "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
             "disp(insertPosition);",
             "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",

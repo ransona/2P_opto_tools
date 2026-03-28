@@ -2658,19 +2658,28 @@ class ScanImageControlWidget(QWidget):
         insert_position = self._parse_trigger_insert_position(lines)
         if insert_position is None:
             insert_position = current_position if current_position is not None else 1
-        position_before_park, completed_before_park = self._wait_for_photostim_restart_ready(path_name)
-        active_before_park, _, sequence_before_park, _ = self._query_photostim_sequence_state(path_name)
+        position_after_restart, completed_after_restart = self._wait_for_photostim_restart_ready(path_name)
+        active_after_restart, current_position_after_restart, sequence_after_restart, completed_now = (
+            self._query_photostim_sequence_state(path_name)
+        )
         self.signals.log_message.emit(
             f"[{path_name}] Leading park baseline: "
-            f"{self._format_photostim_state(active_before_park, position_before_park, completed_before_park, sequence_before_park)}"
+            f"{self._format_photostim_state(active_after_restart, current_position_after_restart, completed_now, sequence_after_restart)}"
         )
-        self._fire_software_trigger(path_name)
-        self.signals.log_message.emit(f"[{path_name}] Leading park software trigger fired")
-        ready_position, ready_completed = self._wait_for_leading_park_advance(
-            path_name,
-            position_before_park,
-            completed_before_park,
-        )
+        if completed_now is not None and completed_now > 0:
+            ready_position = current_position_after_restart
+            ready_completed = completed_now
+            self.signals.log_message.emit(f"[{path_name}] Leading park completed during restart")
+        elif current_position_after_restart is not None and current_position_after_restart > 1:
+            ready_position = current_position_after_restart
+            ready_completed = completed_now
+            self.signals.log_message.emit(f"[{path_name}] Leading park advanced during restart")
+        else:
+            ready_position, ready_completed = self._wait_for_leading_park_advance(
+                path_name,
+                1,
+                completed_after_restart if completed_after_restart is not None else 0,
+            )
         time.sleep(0.05)
         prep_state.last_trigger_insert_position = insert_position
         prep_state.expected_sequence_position = insert_position + len(sequence_indices)
