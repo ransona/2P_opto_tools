@@ -5,6 +5,8 @@ import html
 import json
 import random
 import socket
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -16,6 +18,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -692,6 +695,7 @@ class ScanImageControlWidget(QWidget):
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
         self.reload_btn = QPushButton("Reload Configs")
+        self.update_restart_btn = QPushButton("Update And Restart")
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
         self.test_stim_waveform_btn = QPushButton("Test stim waveform")
         self.test_stim_waveform_external_btn = QPushButton("Test stim waveform ext")
@@ -701,6 +705,7 @@ class ScanImageControlWidget(QWidget):
         button_column.addWidget(self.start_config_btn)
         button_column.addWidget(self.stop_config_btn)
         button_column.addWidget(self.reload_btn)
+        button_column.addWidget(self.update_restart_btn)
         button_column.addWidget(self.test_prep_patterns_btn)
         button_column.addWidget(self.test_stim_waveform_btn)
         button_column.addWidget(self.test_stim_waveform_external_btn)
@@ -769,6 +774,7 @@ class ScanImageControlWidget(QWidget):
         self.config_combo.currentTextChanged.connect(self._on_config_changed)
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
+        self.update_restart_btn.clicked.connect(self._update_and_restart)
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
         self.test_stim_waveform_btn.clicked.connect(self._run_test_stim_waveform)
         self.test_stim_waveform_external_btn.clicked.connect(self._run_test_stim_waveform_external)
@@ -863,6 +869,105 @@ class ScanImageControlWidget(QWidget):
                 self._stop_path(path_name)
             except Exception as exc:
                 self.signals.log_message.emit(f"[{path_name}] shutdown warning: {exc}")
+
+    def _run_git_command(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _relaunch_command(self) -> list[str]:
+        if sys.argv and sys.argv[0]:
+            launcher = Path(sys.argv[0])
+            if not launcher.is_absolute():
+                launcher = (self.repo_root / launcher).resolve()
+        else:
+            launcher = self.repo_root / "run_pattern_builder_gui.py"
+        return [sys.executable, str(launcher), *sys.argv[1:]]
+
+    def _log_process_output(self, prefix: str, completed: subprocess.CompletedProcess[str]) -> None:
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+        if stdout:
+            for line in stdout.splitlines():
+                cleaned = line.strip()
+                if cleaned:
+                    self.signals.log_message.emit(f"{prefix} {cleaned}")
+        if stderr:
+            for line in stderr.splitlines():
+                cleaned = line.strip()
+                if cleaned:
+                    self.signals.log_message.emit(f"{prefix} stderr: {cleaned}")
+
+    @staticmethod
+    def _is_ignorable_git_status_entry(entry: str) -> bool:
+        if not entry or len(entry) < 4:
+            return False
+        path = entry[3:]
+        return path.endswith(".pyc") and "__pycache__/" in path
+
+    def _update_and_restart(self) -> None:
+        status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=no"])
+        if status_result.returncode != 0:
+            self._log_process_output("[update]", status_result)
+            QMessageBox.critical(
+                self,
+                "Update failed",
+                "Could not inspect git status. See debug log for details.",
+            )
+            return
+        dirty_entries = [
+            line.strip()
+            for line in status_result.stdout.splitlines()
+            if line.strip() and not self._is_ignorable_git_status_entry(line.strip())
+        ]
+        if dirty_entries:
+            preview = "\n".join(dirty_entries[:10])
+            if len(dirty_entries) > 10:
+                preview = preview + "\n..."
+            self.signals.log_message.emit("[update] blocked: tracked local changes detected")
+            for entry in dirty_entries[:10]:
+                self.signals.log_message.emit(f"[update] dirty {entry}")
+            QMessageBox.warning(
+                self,
+                "Update blocked",
+                "Tracked local changes must be committed or discarded before pulling.\n\n"
+                f"{preview}",
+            )
+            return
+
+        self.signals.log_message.emit("[update] Running git pull --ff-only")
+        pull_result = self._run_git_command(["pull", "--ff-only"])
+        self._log_process_output("[update]", pull_result)
+        if pull_result.returncode != 0:
+            QMessageBox.critical(
+                self,
+                "Update failed",
+                "git pull --ff-only failed. See debug log for details.",
+            )
+            return
+
+        relaunch_cmd = self._relaunch_command()
+        self.signals.log_message.emit(f"[update] Relaunching: {' '.join(relaunch_cmd)}")
+        try:
+            subprocess.Popen(relaunch_cmd, cwd=self.repo_root)
+        except Exception as exc:
+            self.signals.log_message.emit(f"[update] relaunch failed: {exc}")
+            QMessageBox.critical(
+                self,
+                "Restart failed",
+                f"Could not relaunch the application:\n{exc}",
+            )
+            return
+
+        self.signals.log_message.emit("[update] Restarting application")
+        self.shutdown()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _has_active_paths(self) -> bool:
         return any(runtime.session is not None for runtime in self._runtimes.values())
