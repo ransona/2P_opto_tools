@@ -118,6 +118,21 @@ centerRef = [centerUm(1) ./ resX, centerUm(2) ./ resY];
 centerRef = reshape(centerRef, 1, []);
 
 stimDuration = pattern.duty_cycle ./ pattern.frequency_hz;
+repeatCount = max(1, round(pattern.duration_s .* pattern.frequency_hz));
+cycleDuration = pattern.duration_s ./ repeatCount;
+interStimPauseDuration = cycleDuration - opts.PreStimPauseDuration - stimDuration;
+if interStimPauseDuration < -1e-9
+    error( ...
+        'Pattern P%d timing is impossible: duration %.6fs, frequency %.6fHz, duty_cycle %.6f, and pre-stim pause %.6fs exceed the cycle duration %.6fs.', ...
+        patternNumber, ...
+        pattern.duration_s, ...
+        pattern.frequency_hz, ...
+        pattern.duty_cycle, ...
+        opts.PreStimPauseDuration, ...
+        cycleDuration ...
+    );
+end
+interStimPauseDuration = max(0, interStimPauseDuration);
 spiralWidth = getfieldwithdefault(pattern, 'spiral_width', 10); %#ok<GFLD>
 spiralHeight = getfieldwithdefault(pattern, 'spiral_height', 10); %#ok<GFLD>
 sizeRef = [double(spiralWidth) ./ resX, double(spiralHeight) ./ resY];
@@ -146,11 +161,13 @@ beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
 
 hGroup = scanimage.mroi.RoiGroup(sprintf('P%d', patternNumber));
-pauseRoi = makePauseRoi(centerRef, sizeRef, opts.PreStimPauseDuration, nBeams);
-hGroup.add(pauseRoi);
-stimRoi = scanimage.mroi.Roi();
-stimRoi.add(0, stimField);
-hGroup.add(stimRoi);
+for repeatIndex = 1:repeatCount
+    hGroup.add(makePauseRoi(centerRef, sizeRef, opts.PreStimPauseDuration, nBeams));
+    hGroup.add(makeStimRoi(stimField));
+    if interStimPauseDuration > 0
+        hGroup.add(makePauseRoi(centerRef, sizeRef, interStimPauseDuration, nBeams));
+    end
+end
 end
 
 
@@ -177,6 +194,12 @@ sfPause.repetitions = 1;
 sfPause.powers = zeros(1, nBeams);
 roi = scanimage.mroi.Roi();
 roi.add(0, sfPause);
+end
+
+
+function roi = makeStimRoi(stimField)
+roi = scanimage.mroi.Roi();
+roi.add(0, stimField.copy());
 end
 
 

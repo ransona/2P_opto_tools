@@ -1978,13 +1978,10 @@ class ScanImageControlWidget(QWidget):
                     f"Pattern '{step.pattern}' in sequence '{sequence_name}' has not been prepared yet."
                 )
             pattern = project.patterns[step.pattern]
-            repeat_count_float = pattern.duration_s * pattern.frequency_hz
-            repeat_count = max(1, int(round(repeat_count_float)))
-            period_s = 1.0 / pattern.frequency_hz
-            expanded_groups.extend([pattern_to_stimulus_group[step.pattern]] * repeat_count)
-            trigger_times_s.extend(step.start_s + period_s * index for index in range(repeat_count))
+            expanded_groups.append(pattern_to_stimulus_group[step.pattern])
+            trigger_times_s.append(step.start_s)
             pattern_number = pattern_names.index(step.pattern) + 1
-            stimulus_pattern_numbers.extend([pattern_number] * repeat_count)
+            stimulus_pattern_numbers.append(pattern_number)
             end_time_s = max(end_time_s, step.start_s + pattern.duration_s)
 
         expanded_groups.append(2)
