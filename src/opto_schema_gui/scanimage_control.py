@@ -476,7 +476,7 @@ class PhotostimTestDialog(QDialog):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Test Photostim")
-        self.resize(460, 190)
+        self.resize(460, 220)
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
@@ -487,8 +487,12 @@ class PhotostimTestDialog(QDialog):
         self.seq_num_spin.setValue(0)
         form.addRow("Schema Name", self.schema_name_edit)
         form.addRow("Exp ID", self.exp_id_edit)
-        form.addRow("Seq Num (0-based)", self.seq_num_spin)
+        form.addRow("Trigger Seq Num (0-based)", self.seq_num_spin)
         layout.addLayout(form)
+
+        note = QLabel("Run Prep pre-builds all schema sequences. Seq Num is only used by Run Trigger.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
 
         button_row = QHBoxLayout()
         self.run_prep_btn = QPushButton("Run Prep")
@@ -658,6 +662,25 @@ class ScanImageControlWidget(QWidget):
             return 0
         return max(0, after_position - before_position)
 
+    def _format_photostim_state(
+        self,
+        active: bool,
+        position: int | None,
+        completed_sequences: int | None,
+        sequence: list[int] | None = None,
+    ) -> str:
+        parts = [
+            f"active={int(active)}",
+            f"sequencePosition={'NaN' if position is None else position}",
+            f"completedSequences={'NaN' if completed_sequences is None else completed_sequences}",
+        ]
+        if sequence is not None:
+            preview = " ".join(str(v) for v in sequence[:12])
+            if len(sequence) > 12:
+                preview = preview + " ..."
+            parts.append(f"sequenceHead=[{preview}]")
+        return ", ".join(parts)
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
@@ -717,7 +740,7 @@ class ScanImageControlWidget(QWidget):
         self.show_general_debug_checkbox = QCheckBox("General")
         self.show_udp_debug_checkbox = QCheckBox("UDP commands")
         self.show_trigger_times_debug_checkbox = QCheckBox("Software trigger times")
-        self.show_trigger_count_debug_checkbox = QCheckBox("Software trigger count check")
+        self.show_trigger_count_debug_checkbox = QCheckBox("Trigger count check")
         self.show_stimuli_debug_checkbox = QCheckBox("Stimuli")
         self.clear_log_btn = QPushButton("Clear Debug Output")
         for checkbox in (
@@ -2480,20 +2503,65 @@ class ScanImageControlWidget(QWidget):
         path_name: str,
         baseline_position: int | None,
         baseline_completed_sequences: int | None,
-        timeout_s: float = 2.0,
+        timeout_s: float = 5.0,
     ) -> tuple[int | None, int | None]:
         deadline = time.monotonic() + timeout_s
+        last_active = False
+        last_position: int | None = None
+        last_completed: int | None = None
+        last_sequence: list[int] = []
         while time.monotonic() < deadline:
-            active, current_position, _, completed_sequences = self._query_photostim_sequence_state(path_name)
+            active, current_position, sequence, completed_sequences = self._query_photostim_sequence_state(path_name)
+            last_active = active
+            last_position = current_position
+            last_completed = completed_sequences
+            last_sequence = sequence
             if baseline_completed_sequences is not None and completed_sequences is not None:
                 if completed_sequences > baseline_completed_sequences:
+                    self.signals.log_message.emit(
+                        f"[{path_name}] Leading park advance detected: "
+                        f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
+                    )
                     return current_position, completed_sequences
             if baseline_position is not None and current_position is not None and current_position != baseline_position:
-                return current_position, completed_sequences
-            if not active:
+                self.signals.log_message.emit(
+                    f"[{path_name}] Leading park advance detected: "
+                    f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
+                )
                 return current_position, completed_sequences
             time.sleep(0.02)
-        raise RuntimeError("Leading park did not advance photostim sequence before ready.")
+        raise RuntimeError(
+            "Leading park did not advance photostim sequence before ready. "
+            + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
+        )
+
+    def _wait_for_photostim_restart_ready(
+        self,
+        path_name: str,
+        timeout_s: float = 5.0,
+    ) -> tuple[int | None, int | None]:
+        deadline = time.monotonic() + timeout_s
+        last_active = False
+        last_position: int | None = None
+        last_completed: int | None = None
+        last_sequence: list[int] = []
+        while time.monotonic() < deadline:
+            active, current_position, sequence, completed_sequences = self._query_photostim_sequence_state(path_name)
+            last_active = active
+            last_position = current_position
+            last_completed = completed_sequences
+            last_sequence = sequence
+            if active and current_position is not None:
+                self.signals.log_message.emit(
+                    f"[{path_name}] Photostim restart ready: "
+                    f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
+                )
+                return current_position, completed_sequences
+            time.sleep(0.02)
+        raise RuntimeError(
+            "Photostim did not reach a ready state after restart. "
+            + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
+        )
 
     def _wait_for_expected_photostim_completion(
         self,
@@ -2590,8 +2658,14 @@ class ScanImageControlWidget(QWidget):
         insert_position = self._parse_trigger_insert_position(lines)
         if insert_position is None:
             insert_position = current_position if current_position is not None else 1
-        _, position_before_park, _, completed_before_park = self._query_photostim_sequence_state(path_name)
+        position_before_park, completed_before_park = self._wait_for_photostim_restart_ready(path_name)
+        active_before_park, _, sequence_before_park, _ = self._query_photostim_sequence_state(path_name)
+        self.signals.log_message.emit(
+            f"[{path_name}] Leading park baseline: "
+            f"{self._format_photostim_state(active_before_park, position_before_park, completed_before_park, sequence_before_park)}"
+        )
         self._fire_software_trigger(path_name)
+        self.signals.log_message.emit(f"[{path_name}] Leading park software trigger fired")
         ready_position, ready_completed = self._wait_for_leading_park_advance(
             path_name,
             position_before_park,
