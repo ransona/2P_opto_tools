@@ -925,6 +925,7 @@ def build_inspect_photostim_command(path_config: PathConfig) -> str:
 def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: list[int]) -> str:
     hsi = path_config.hsi_variable
     sequence_expr = "[]" if not sequence_indices else "[" + " ".join(str(int(v)) for v in sequence_indices) + "]"
+
     return "\n".join(
         [
             build_global_preamble(path_config),
