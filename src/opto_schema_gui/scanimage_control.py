@@ -2597,6 +2597,7 @@ class ScanImageControlWidget(QWidget):
             position_before_park,
             completed_before_park,
         )
+        time.sleep(0.05)
         prep_state.last_trigger_insert_position = insert_position
         prep_state.expected_sequence_position = insert_position + len(sequence_indices)
         prep_state.remaining_expected_triggers = max(0, len(sequence_indices) - 1)
