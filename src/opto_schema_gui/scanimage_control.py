@@ -2812,7 +2812,7 @@ class ScanImageControlWidget(QWidget):
         path_name: str,
         baseline_position: int | None,
         baseline_completed_sequences: int | None,
-        timeout_s: float = 5.0,
+        timeout_s: float = 20.0,
     ) -> tuple[int | None, int | None]:
         deadline = time.monotonic() + timeout_s
         last_active = False
