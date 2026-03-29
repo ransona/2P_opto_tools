@@ -688,30 +688,29 @@ def build_import_command(
 ) -> str:
     schema_expr = matlab_string(str(Path(schema_path).resolve()))
     point_size_expr = f"[{path_config.point_size_xy[0]} {path_config.point_size_xy[1]}]"
-    pattern_names_expr = "strings(0, 1)"
-    if pattern_names:
-        quoted = "; ".join(matlab_double_quoted_string(name) for name in pattern_names)
-        pattern_names_expr = f"[{quoted}]"
     if prepare_sequence or start_photostim:
         lines = [
             build_global_preamble(path_config),
             f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, {schema_expr}, ...",
-            f"    PatternNames={pattern_names_expr}, ...",
             "    PreStimPauseDuration=0.001, ...",
             "    BlankDuration=0.001, ...",
             "    ParkDuration=0.001, ...",
             f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
             "    MinCenterDistanceUm=15, ...",
             "    Revolutions=5);",
-            "disp('Prepared schema photostim patterns:');",
+            "disp('Prepared schema photostim patterns used by sequence groups:');",
             "disp(importedPatternNames);",
             "disp(importedPatternNumbers);",
         ]
         return '\n'.join(lines)
     lines = [
-        build_global_preamble(path_config),
-        f"hPs = {path_config.hsi_variable}.hPhotostim;",
-    ]
+            build_global_preamble(path_config),
+            f"hPs = {path_config.hsi_variable}.hPhotostim;",
+        ]
+    pattern_names_expr = "strings(0, 1)"
+    if pattern_names:
+        quoted = "; ".join(matlab_double_quoted_string(name) for name in pattern_names)
+        pattern_names_expr = f"[{quoted}]"
     lines.extend(
         [
             f"importedPatternNames = opto.scanimage.importSchemaPatterns({path_config.hsi_variable}, {schema_expr}, ...",
@@ -922,38 +921,44 @@ def build_inspect_photostim_command(path_config: PathConfig) -> str:
     )
 
 
-def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: list[int]) -> str:
+def build_trigger_photostim_command(
+    path_config: PathConfig,
+    stimulus_group_idx: int,
+    software_trigger: bool,
+) -> str:
     hsi = path_config.hsi_variable
-    sequence_expr = "[]" if not sequence_indices else "[" + " ".join(str(int(v)) for v in sequence_indices) + "]"
+    trigger_term = matlab_string(path_config.trial_waveform_photostim_trigger_term)
 
-    return "\n".join(
+    lines = [
+        build_global_preamble(path_config),
+        f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+        "hPs = " + hsi + ".hPhotostim;",
+        f"stimGroupIdx = {int(stimulus_group_idx)};",
+        "assert(stimGroupIdx >= 1 && stimGroupIdx <= numel(hPs.stimRoiGroups), 'Trigger group references an invalid stimulus group.');",
+        "assert(hPs.active, 'Photostim must already be active. Run prep_patterns first.');",
+        "hPs.stimulusMode = 'onDemand';",
+        f"hPs.stimTriggerTerm = {trigger_term};",
+        f"hPs.stimImmediately = {'true' if software_trigger else 'false'};",
+        "disp('TRIGGER_PHOTOSTIM_GROUP');",
+        "disp(stimGroupIdx);",
+        "disp('TRIGGER_PHOTOSTIM_MODE');",
+        "disp(string(hPs.stimulusMode));",
+        "disp('TRIGGER_PHOTOSTIM_STIM_IMMEDIATELY');",
+        "disp(double(hPs.stimImmediately));",
+        "hPs.onDemandStimNow(stimGroupIdx, false);",
+    ]
+    if software_trigger:
+        lines.extend(
+            [
+                "disp('SOFTWARE_TRIGGER_FIRED');",
+            ]
+        )
+    lines.extend(
         [
-            build_global_preamble(path_config),
-            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
-            "hPs = " + hsi + ".hPhotostim;",
-            f"triggerSequence = {sequence_expr};",
-            "assert(~isempty(triggerSequence), 'Trigger sequence is empty.');",
-            "assert(max(triggerSequence) <= numel(hPs.stimRoiGroups), 'Trigger sequence references an invalid stimulus group.');",
-            "if hPs.active;",
-            "    hPs.abort();",
-            "end",
-            "oldStimImmediately = logical(hPs.stimImmediately);",
-            "hPs.stimulusMode = 'sequence';",
-            "hPs.sequenceSelectedStimuli = triggerSequence;",
-            "hPs.numSequences = 1;",
-            "insertPosition = 1;",
-            "hPs.stimImmediately = false;",
-            "hPs.start();",
-            "hPs.stimImmediately = oldStimImmediately;",
-            "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
-            "disp(insertPosition);",
-            "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",
-            "disp(triggerSequence);",
-            "disp('TRIGGER_PHOTOSTIM_NUM_SEQUENCES');",
-            "disp(hPs.numSequences);",
             "disp('TRIGGER_PHOTOSTIM_READY');",
         ]
     )
+    return "\n".join(lines)
 
 
 def build_photostim_sequence_status_command(path_config: PathConfig) -> str:

@@ -94,7 +94,7 @@ class PreparedPhotostimState:
     prepared_sequence_names: list[str] = field(default_factory=list)
     imported_pattern_names: list[str] = field(default_factory=list)
     pattern_to_schema_index: dict[str, int] = field(default_factory=dict)
-    pattern_to_stimulus_group: dict[str, int] = field(default_factory=dict)
+    sequence_to_stimulus_group: dict[str, int] = field(default_factory=dict)
     triggered_seq_num: int | None = None
     triggered_sequence_name: str = ""
     triggered_stimulus_groups: list[int] = field(default_factory=list)
@@ -114,7 +114,7 @@ class PreparedPhotostimState:
         self.prepared_sequence_names = []
         self.imported_pattern_names = []
         self.pattern_to_schema_index = {}
-        self.pattern_to_stimulus_group = {}
+        self.sequence_to_stimulus_group = {}
         self.triggered_seq_num = None
         self.triggered_sequence_name = ""
         self.triggered_stimulus_groups = []
@@ -723,9 +723,8 @@ class ScanImageControlWidget(QWidget):
         self.ignore_incomplete_trigger_checkbox = QCheckBox("Send mismatch errors upstream")
         self.ignore_incomplete_trigger_checkbox.setChecked(True)
         self.trigger_mode_combo = QComboBox()
-        self.trigger_mode_combo.addItem("Per-stim software (test)", "software")
-        self.trigger_mode_combo.addItem("Waveform software-start", "waveform_software")
-        self.trigger_mode_combo.addItem("Waveform external-trigger", "waveform_external")
+        self.trigger_mode_combo.addItem("Software trigger (debug)", "software")
+        self.trigger_mode_combo.addItem("Hardware external trigger", "hardware")
         self.trigger_mode_combo.setCurrentIndex(1)
         config_form.addRow("Machine", self.machine_combo)
         config_form.addRow("Config", self.config_combo)
@@ -1208,6 +1207,10 @@ class ScanImageControlWidget(QWidget):
             applied["send_mismatch_errors_upstream"] = self.ignore_incomplete_trigger_checkbox.isChecked()
         if "trigger_mode" in values:
             trigger_mode = str(values["trigger_mode"]).strip()
+            trigger_mode = {
+                "waveform_software": "software",
+                "waveform_external": "hardware",
+            }.get(trigger_mode, trigger_mode)
             index = self.trigger_mode_combo.findData(trigger_mode)
             if index < 0:
                 index = self.trigger_mode_combo.findText(trigger_mode)
@@ -2107,20 +2110,18 @@ class ScanImageControlWidget(QWidget):
                 prep_state_local.prepared_sequence_names = list(prepared_sequence_names)
                 prep_state_local.imported_pattern_names = list(pattern_names)
                 prep_state_local.pattern_to_schema_index = dict(pattern_to_schema_index)
-                prep_state_local.pattern_to_stimulus_group = {
-                    pattern_name: index + 3 for index, pattern_name in enumerate(pattern_names)
+                prep_state_local.sequence_to_stimulus_group = {
+                    sequence_name: index + 3 for index, sequence_name in enumerate(prepared_sequence_names)
                 }
                 payload["stimulus_groups"] = [
                     {
-                        "stimulus_group_num": prep_state_local.pattern_to_stimulus_group[pattern_name],
-                        "pattern_name": pattern_name,
-                        "pattern_num": prep_state_local.pattern_to_schema_index[pattern_name],
+                        "stimulus_group_num": prep_state_local.sequence_to_stimulus_group[sequence_name],
+                        "sequence_name": sequence_name,
+                        "seq_num": index,
                     }
-                    for pattern_name in pattern_names
+                    for index, sequence_name in enumerate(prepared_sequence_names)
                 ]
-                self.signals.log_message.emit(
-                    f"[{photostim_path}] prepared {len(pattern_names)} stimulus group(s) for all schema sequences"
-                )
+                self.signals.log_message.emit(f"[{photostim_path}] prepared {len(prepared_sequence_names)} sequence stimulus group(s)")
             if not ok:
                 payload["error"] = "prep_patterns failed"
 
@@ -2159,20 +2160,20 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         if prep_state.schema_path != schema_path or prep_state.schema_name != schema_name or prep_state.exp_id != exp_id:
             raise ValueError("trigger_photo_stim requires matching prepared photostim state. Run prep_patterns first.")
-        if not prep_state.pattern_to_stimulus_group:
+        if not prep_state.sequence_to_stimulus_group:
             raise ValueError("No prepared stimulus group mapping is available. Run prep_patterns first.")
 
-        sequence_name, expanded_groups, trigger_times_s, stimulus_pattern_numbers = self._expand_trigger_sequence(
+        sequence_name, stimulus_group_num = self._resolve_trigger_group(
             project,
             seq_num,
-            prep_state.pattern_to_stimulus_group,
+            prep_state.sequence_to_stimulus_group,
         )
 
         def worker() -> None:
             ok = self._run_action(
                 photostim_path,
                 "json trigger_photo_stim" if reply_address is not None else "gui trigger_photo_stim",
-                lambda name: self._trigger_photo_stim_checked(name, expanded_groups, trigger_times_s),
+                lambda name: self._trigger_photo_stim_checked(name, stimulus_group_num),
             )
             prep_state_local = self._runtimes[photostim_path].prepared_photostim
             status = "ready" if ok else "error"
@@ -2183,14 +2184,14 @@ class ScanImageControlWidget(QWidget):
                 "expID": exp_id,
                 "seq_num": seq_num,
                 "sequence_name": sequence_name,
-                "stimulus_groups": list(expanded_groups),
+                "stimulus_groups": [stimulus_group_num],
             }
             if ok:
                 prep_state_local.triggered_seq_num = seq_num
                 prep_state_local.triggered_sequence_name = sequence_name
-                prep_state_local.triggered_stimulus_groups = list(expanded_groups)
+                prep_state_local.triggered_stimulus_groups = [stimulus_group_num]
                 self.signals.log_message.emit(
-                    f"[{photostim_path}] triggered sequence '{sequence_name}' with {len(expanded_groups)} stimulus entries"
+                    f"[{photostim_path}] triggered sequence '{sequence_name}' via stimulus group {stimulus_group_num}"
                 )
             else:
                 payload["error"] = "trigger_photo_stim failed"
@@ -2199,39 +2200,6 @@ class ScanImageControlWidget(QWidget):
                 self._send_json_reply(request_path_name, reply_address, payload)
             else:
                 self.signals.log_message.emit(f"[config] gui trigger_photo_stim result={payload}")
-            trigger_mode = self._current_trigger_mode()
-            if ok and trigger_mode == "software":
-                self._start_software_trigger_schedule(
-                    photostim_path,
-                    sequence_name,
-                    trigger_times_s,
-                    stimulus_pattern_numbers=stimulus_pattern_numbers,
-                    request_path_name=request_path_name if reply_address is not None else None,
-                    reply_address=reply_address,
-                    schema_name=schema_name,
-                    exp_id=exp_id,
-                    seq_num=seq_num,
-                )
-            elif ok and trigger_mode == "waveform_software":
-                self._start_waveform_software_playback(
-                    photostim_path,
-                    sequence_name,
-                    request_path_name=request_path_name if reply_address is not None else None,
-                    reply_address=reply_address,
-                    schema_name=schema_name,
-                    exp_id=exp_id,
-                    seq_num=seq_num,
-                )
-            elif ok and trigger_mode == "waveform_external":
-                self._start_waveform_external_monitor(
-                    photostim_path,
-                    sequence_name,
-                    request_path_name=request_path_name if reply_address is not None else None,
-                    reply_address=reply_address,
-                    schema_name=schema_name,
-                    exp_id=exp_id,
-                    seq_num=seq_num,
-                )
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2273,12 +2241,12 @@ class ScanImageControlWidget(QWidget):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _expand_trigger_sequence(
+    def _resolve_trigger_group(
         self,
         project,
         seq_num: int,
-        pattern_to_stimulus_group: dict[str, int],
-    ) -> tuple[str, list[int], list[float], list[int]]:
+        sequence_to_stimulus_group: dict[str, int],
+    ) -> tuple[str, int]:
         sequence_names = list(project.sequences.keys())
         if not sequence_names:
             raise ValueError("Schema does not contain any sequences")
@@ -2286,36 +2254,20 @@ class ScanImageControlWidget(QWidget):
             raise IndexError(f"seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)")
 
         sequence_name = sequence_names[seq_num]
-        sequence = project.sequences[sequence_name]
-        expanded_groups: list[int] = [2]
-        trigger_times_s: list[float] = []
-        stimulus_pattern_numbers: list[int] = []
-        pattern_names = list(project.patterns.keys())
-        end_time_s = 0.0
-        for step in sequence.steps:
-            if step.pattern not in project.patterns:
-                raise ValueError(f"Sequence '{sequence_name}' references unknown pattern '{step.pattern}'")
-            if step.pattern not in pattern_to_stimulus_group:
-                raise ValueError(
-                    f"Pattern '{step.pattern}' in sequence '{sequence_name}' has not been prepared yet."
-                )
-            pattern = project.patterns[step.pattern]
-            expanded_groups.append(pattern_to_stimulus_group[step.pattern])
-            trigger_times_s.append(step.start_s)
-            pattern_number = pattern_names.index(step.pattern) + 1
-            stimulus_pattern_numbers.append(pattern_number)
-            end_time_s = max(end_time_s, step.start_s + pattern.duration_s)
+        if sequence_name not in sequence_to_stimulus_group:
+            raise ValueError(f"Sequence '{sequence_name}' has not been prepared yet.")
+        return sequence_name, sequence_to_stimulus_group[sequence_name]
 
-        expanded_groups.append(2)
-        trigger_times_s.append(end_time_s)
-        return sequence_name, expanded_groups, trigger_times_s, stimulus_pattern_numbers
-
-    def _apply_trigger_sequence(self, path_name: str, sequence_indices: list[int]) -> None:
+    def _apply_trigger_sequence(self, path_name: str, stimulus_group_idx: int) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
-                build_trigger_photostim_command(runtime.path_config, sequence_indices),
+                build_trigger_photostim_command(
+                    runtime.path_config,
+                    stimulus_group_idx,
+                    software_trigger=self._current_trigger_mode() != "hardware",
+                ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "photostim triggered"
@@ -2951,57 +2903,24 @@ class ScanImageControlWidget(QWidget):
     def _trigger_photo_stim_checked(
         self,
         path_name: str,
-        sequence_indices: list[int],
-        trigger_times_s: list[float],
+        stimulus_group_idx: int,
     ) -> None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
-        _, current_position, _, _ = self._query_photostim_sequence_state(path_name)
-        if self._current_trigger_mode() != "software":
-            mismatch_message = self._finalize_pending_photostim_check(path_name, "Previous photostim sequence check")
-            if mismatch_message is not None:
-                if self.ignore_incomplete_trigger_checkbox.isChecked():
-                    raise RuntimeError(mismatch_message)
-                self.signals.log_message.emit(f"[{path_name}] WARNING: {mismatch_message}")
-        lines = self._apply_trigger_sequence(path_name, sequence_indices)
-        insert_position = self._parse_trigger_insert_position(lines)
-        if insert_position is None:
-            insert_position = current_position if current_position is not None else 1
-        position_after_restart, completed_after_restart = self._wait_for_photostim_restart_ready(path_name)
-        active_after_restart, current_position_after_restart, sequence_after_restart, completed_now = (
-            self._query_photostim_sequence_state(path_name)
-        )
-        self.signals.log_message.emit(
-            f"[{path_name}] Leading park baseline: "
-            f"{self._format_photostim_state(active_after_restart, current_position_after_restart, completed_now, sequence_after_restart)}"
-        )
-        baseline_position = current_position_after_restart if current_position_after_restart is not None else 1
-        baseline_completed = (
-            completed_now
-            if completed_now is not None
-            else (completed_after_restart if completed_after_restart is not None else 0)
-        )
-        self._fire_leading_park_pulse(path_name)
-        self.signals.log_message.emit(f"[{path_name}] Leading park trigger pulse fired")
-        ready_position, ready_completed = self._wait_for_leading_park_advance(
-            path_name,
-            baseline_position,
-            baseline_completed,
-        )
-        time.sleep(0.05)
-        prep_state.last_trigger_insert_position = insert_position
-        prep_state.expected_sequence_position = insert_position + len(sequence_indices)
-        prep_state.remaining_expected_triggers = max(0, len(sequence_indices) - 1)
-        prep_state.ready_sequence_position = ready_position
-        prep_state.ready_completed_sequences = ready_completed if ready_completed is not None else baseline_completed
-        prep_state.leading_park_fired = True
-        prep_state.waveform_expected_done_time_s = max(trigger_times_s) if trigger_times_s else 0.0
-        trigger_mode = self._current_trigger_mode()
-        if trigger_mode == "waveform_software":
-            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=False)
-        elif trigger_mode == "waveform_external":
-            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=True)
-        self.signals.log_message.emit(f"[{path_name}] leading park fired; trial sequence armed")
+        self._cancel_software_trigger(path_name)
+        self._cancel_waveform_monitor(path_name)
+        self._apply_trigger_sequence(path_name, stimulus_group_idx)
+        prep_state.last_trigger_insert_position = stimulus_group_idx
+        prep_state.expected_sequence_position = None
+        prep_state.remaining_expected_triggers = None
+        prep_state.ready_sequence_position = None
+        prep_state.ready_completed_sequences = None
+        prep_state.leading_park_fired = self._current_trigger_mode() != "hardware"
+        prep_state.waveform_expected_done_time_s = None
+        if self._current_trigger_mode() == "hardware":
+            self.signals.log_message.emit(f"[{path_name}] sequence stimulus group armed and waiting for external trigger")
+        else:
+            self.signals.log_message.emit(f"[{path_name}] sequence stimulus group software-triggered")
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:
         animal_id = exp_id[14:] if len(exp_id) >= 15 else ""

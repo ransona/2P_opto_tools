@@ -2,7 +2,6 @@ function [importedPatternNames, patternNumbers] = prepareSchemaPhotostim(hSI, sc
 arguments
     hSI
     schemaPath (1,1) string
-    opts.PatternNames string = strings(0, 1)
     opts.PythonExecutable (1,1) string = "python"
     opts.PreStimPauseDuration (1,1) double = 0.001
     opts.BlankDuration (1,1) double = 0.001
@@ -17,14 +16,12 @@ if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
 end
 
 schema = opto.scanimage.loadSchemaYaml(schemaPath, opts.PythonExecutable);
-if ~isfield(schema, 'patterns')
-    error('Schema file does not contain a patterns block: %s', schemaPath);
+if ~isfield(schema, 'patterns') || ~isfield(schema, 'sequences')
+    error('Schema file must contain patterns and sequences blocks: %s', schemaPath);
 end
 
 patternNames = string(fieldnames(schema.patterns));
-if ~isempty(opts.PatternNames)
-    patternNames = string(opts.PatternNames(:));
-end
+sequenceNames = string(fieldnames(schema.sequences));
 
 hPs = hSI.hPhotostim;
 if hPs.active
@@ -43,35 +40,38 @@ importedPatternNames = strings(0, 1);
 patternNumbers = zeros(0, 1);
 
 schemaPatternNames = string(fieldnames(schema.patterns));
+usedPatternNames = strings(0, 1);
+usedPatternNumbers = zeros(0, 1);
 
-for idx = 1:numel(patternNames)
-    patternName = patternNames(idx);
-    patternField = char(patternName);
-    if ~isfield(schema.patterns, patternField)
-        error('Pattern "%s" was requested but is not present in schema %s.', patternName, schemaPath);
-    end
-
-    patternNumber = find(schemaPatternNames == patternName, 1, 'first');
-    if isempty(patternNumber)
-        error('Could not resolve schema pattern number for pattern "%s".', patternName);
-    end
-
-    pattern = schema.patterns.(patternField);
-    if ~isfield(pattern, 'name') || strlength(string(pattern.name)) == 0
-        pattern.name = sprintf('P%d', patternNumber);
-    end
-
-    disp("Preparing schema pattern:");
-    disp(patternName);
-    disp(patternNumber);
-    hGroup = buildSlmStimGroup(pattern, patternNumber, hSI, opts);
+for idx = 1:numel(sequenceNames)
+    sequenceName = sequenceNames(idx);
+    sequenceField = char(sequenceName);
+    sequence = schema.sequences.(sequenceField);
+    disp("Preparing schema sequence:");
+    disp(sequenceName);
+    disp(idx);
+    hGroup = buildSequenceStimGroup(sequence, schema, hSI, opts, schemaPatternNames);
     hPs.stimRoiGroups(end + 1) = hGroup;
-    importedPatternNames(end + 1, 1) = patternName; %#ok<AGROW>
-    patternNumbers(end + 1, 1) = patternNumber; %#ok<AGROW>
+
+    for stepIdx = 1:numel(sequence.steps)
+        stepPatternName = string(sequence.steps(stepIdx).pattern);
+        if any(usedPatternNames == stepPatternName)
+            continue;
+        end
+        patternNumber = find(schemaPatternNames == stepPatternName, 1, 'first');
+        if isempty(patternNumber)
+            error('Could not resolve schema pattern number for pattern "%s".', stepPatternName);
+        end
+        usedPatternNames(end + 1, 1) = stepPatternName; %#ok<AGROW>
+        usedPatternNumbers(end + 1, 1) = patternNumber; %#ok<AGROW>
+    end
 end
 
-hPs.stimulusMode = 'sequence';
-hPs.sequenceSelectedStimuli = 1:numel(hPs.stimRoiGroups);
+importedPatternNames = usedPatternNames;
+patternNumbers = usedPatternNumbers;
+
+hPs.stimulusMode = 'onDemand';
+hPs.sequenceSelectedStimuli = [];
 hPs.numSequences = 1;
 if strlength(opts.TriggerTerm) > 0
     hPs.stimTriggerTerm = normalizePhotostimTriggerTerm(char(opts.TriggerTerm));
@@ -83,7 +83,50 @@ disp('Photostim mask generation ready');
 end
 
 
-function hGroup = buildSlmStimGroup(pattern, patternNumber, hSI, opts)
+function hGroup = buildSequenceStimGroup(sequence, schema, hSI, opts, schemaPatternNames)
+nBeams = getPhotostimBeamCount(hSI);
+hGroup = scanimage.mroi.RoiGroup(char(sequence.name));
+hGroup.add(makePauseRoi([0 0], [0 0], opts.PreStimPauseDuration, nBeams));
+
+orderedSteps = sequence.steps;
+if isempty(orderedSteps)
+    error('Sequence "%s" contains no steps.', string(sequence.name));
+end
+
+cursorTime = 0.0;
+for stepIdx = 1:numel(orderedSteps)
+    step = orderedSteps(stepIdx);
+    patternName = string(step.pattern);
+    if ~isfield(schema.patterns, char(patternName))
+        error('Sequence "%s" references unknown pattern "%s".', string(sequence.name), patternName);
+    end
+    pattern = schema.patterns.(char(patternName));
+    patternNumber = find(schemaPatternNames == patternName, 1, 'first');
+    if isempty(patternNumber)
+        error('Could not resolve schema pattern number for pattern "%s".', patternName);
+    end
+    if step.start_s < cursorTime - 1e-9
+        error( ...
+            'Sequence "%s" timing is invalid: step "%s" starts at %.6fs before the previous step ended at %.6fs.', ...
+            string(sequence.name), ...
+            patternName, ...
+            step.start_s, ...
+            cursorTime ...
+        );
+    end
+    gapDuration = step.start_s - cursorTime;
+    if gapDuration > 1e-9
+        hGroup.add(makePauseRoi([0 0], [0 0], gapDuration, nBeams));
+    end
+    appendPatternBlockToGroup(hGroup, pattern, patternNumber, hSI, opts, nBeams);
+    cursorTime = step.start_s + pattern.duration_s;
+end
+
+hGroup.add(makeParkRoi(opts.ParkDuration, nBeams));
+end
+
+
+function appendPatternBlockToGroup(hGroup, pattern, patternNumber, hSI, opts, nBeams)
 validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
 validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
 validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
@@ -155,12 +198,9 @@ if ismethod(stimField, 'recenterGalvoOntoSlmPattern')
     stimField.recenterGalvoOntoSlmPattern();
 end
 
-nBeams = getPhotostimBeamCount(hSI);
 beamPowers = zeros(1, nBeams);
 beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
-
-hGroup = scanimage.mroi.RoiGroup(sprintf('P%d', patternNumber));
 for repeatIndex = 1:repeatCount
     hGroup.add(makePauseRoi(centerRef, sizeRef, opts.PreStimPauseDuration, nBeams));
     hGroup.add(makeStimRoi(stimField));
