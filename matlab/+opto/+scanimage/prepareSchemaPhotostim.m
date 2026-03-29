@@ -115,7 +115,7 @@ for stepIdx = 1:numel(orderedSteps)
     step = orderedSteps(stepIdx);
     patternName = string(step.pattern);
     if ~isfield(schema.patterns, char(patternName))
-        error('Sequence "%s" references unknown pattern "%s".', string(sequence.name), patternName);
+        error('Sequence "%s" references unknown pattern "%s".', string(sequenceName), patternName);
     end
     pattern = schema.patterns.(char(patternName));
     patternNumber = find(schemaPatternNames == patternName, 1, 'first');
@@ -147,10 +147,10 @@ function appendPatternBlockToGroup(hGroup, pattern, patternNumber, hSI, opts, nB
 validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
 validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
 validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
-assert(isfield(pattern, 'cells') && ~isempty(pattern.cells), 'Pattern P%d contains no cells.', patternNumber);
+patternCells = getStructArrayField(pattern, 'cells');
+assert(~isempty(patternCells), 'Pattern P%d contains no cells.', patternNumber);
 
 [resX, resY] = getResolutionXY(hSI);
-patternCells = getStructArrayField(pattern, 'cells');
 pointsUm = zeros(numel(patternCells), 4);
 for i = 1:numel(patternCells)
     c = patternCells(i);
