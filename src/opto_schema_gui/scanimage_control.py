@@ -955,7 +955,17 @@ class ScanImageControlWidget(QWidget):
         relaunch_cmd = self._relaunch_command()
         self.signals.log_message.emit(f"[update] Relaunching: {' '.join(relaunch_cmd)}")
         try:
-            subprocess.Popen(relaunch_cmd, cwd=self.repo_root)
+            popen_kwargs: dict[str, object] = {
+                "cwd": self.repo_root,
+                "start_new_session": True,
+            }
+            if sys.platform.startswith("win"):
+                creationflags = 0
+                creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+                creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if creationflags:
+                    popen_kwargs["creationflags"] = creationflags
+            subprocess.Popen(relaunch_cmd, **popen_kwargs)
         except Exception as exc:
             self.signals.log_message.emit(f"[update] relaunch failed: {exc}")
             QMessageBox.critical(
