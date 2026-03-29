@@ -226,9 +226,8 @@ class MatlabSession:
         try:
             self.engine = matlab_engine.connect_matlab(engine_name)
         except Exception as exc:
-            raise MatlabSessionError(
-                f"Could not reconnect to MATLAB engine '{engine_name}' for path '{self.config.name}': {exc}"
-            ) from exc
+            self.engine = None
+            return False
         return True
 
     def _share_engine(self) -> None:
