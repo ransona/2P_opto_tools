@@ -3,12 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import socket
-import subprocess
 import sys
-import time
-from pathlib import Path
 from typing import Any
 
 
@@ -28,146 +24,6 @@ class UdpJsonClient:
         finally:
             sock.close()
         return json.loads(data.decode("utf-8"))
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def _default_gui_entrypoint() -> Path:
-    return _repo_root() / "run_pattern_builder_gui.py"
-
-
-def launch_gui_process(
-    python_executable: str,
-    gui_entrypoint: str | Path,
-    workdir: str | Path | None = None,
-    detach: bool = True,
-) -> int:
-    entrypoint = Path(gui_entrypoint)
-    cwd = str(Path(workdir) if workdir is not None else entrypoint.resolve().parent)
-    cmd = [python_executable, str(entrypoint)]
-
-    kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-    }
-    if detach:
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            )
-        else:
-            kwargs["start_new_session"] = True
-
-    proc = subprocess.Popen(cmd, **kwargs)
-    return int(proc.pid)
-
-
-def launch_command_process(
-    argv: list[str],
-    workdir: str | Path | None = None,
-    detach: bool = True,
-) -> int:
-    if not argv:
-        raise ValueError("argv must not be empty")
-    cwd = str(Path(workdir) if workdir is not None else Path.cwd())
-    kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-    }
-    if detach:
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            )
-        else:
-            kwargs["start_new_session"] = True
-    proc = subprocess.Popen(argv, **kwargs)
-    return int(proc.pid)
-
-
-def _recv_json(sock: socket.socket) -> tuple[dict[str, Any], tuple[str, int]]:
-    payload, address = sock.recvfrom(65535)
-    data = json.loads(payload.decode("utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("UDP payload must be a JSON object")
-    return data, address
-
-
-def run_launcher_server(
-    host: str,
-    port: int,
-    python_executable: str,
-    gui_entrypoint: str | Path,
-    workdir: str | Path,
-) -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((host, port))
-    print(f"Launcher listening on {host}:{port}", flush=True)
-    launched_pid: int | None = None
-    try:
-        while True:
-            try:
-                request, address = _recv_json(sock)
-                action = str(request.get("action", "")).strip()
-                print(
-                    f"[launcher] from {address[0]}:{address[1]} action={action} payload={json.dumps(request, sort_keys=True)}",
-                    flush=True,
-                )
-                response: dict[str, Any] = {"action": action, "status": "ready"}
-                if "request_id" in request:
-                    response["request_id"] = request["request_id"]
-
-                if action == "ping":
-                    response["data"] = {"ok": True, "launched_pid": launched_pid}
-                elif action == "launch_gui":
-                    print("[launcher] launching GUI", flush=True)
-                    launched_pid = launch_gui_process(
-                        python_executable=python_executable,
-                        gui_entrypoint=gui_entrypoint,
-                        workdir=workdir,
-                        detach=True,
-                    )
-                    response["data"] = {"launched": True, "pid": launched_pid}
-                elif action == "launch_cmd":
-                    argv = request.get("argv")
-                    cwd = request.get("cwd", workdir)
-                    if not isinstance(argv, list) or not all(isinstance(v, str) for v in argv):
-                        raise ValueError("launch_cmd requires 'argv' as a JSON string array")
-                    print(f"[launcher] launching command: {argv} cwd={cwd}", flush=True)
-                    pid = launch_command_process(argv=argv, workdir=str(cwd), detach=True)
-                    response["data"] = {"launched": True, "pid": pid, "argv": argv, "cwd": str(cwd)}
-                elif action == "status":
-                    response["data"] = {"launched_pid": launched_pid}
-                else:
-                    response = {"action": "error", "status": "error", "error": f"Unknown action '{action}'"}
-                    if "request_id" in request:
-                        response["request_id"] = request["request_id"]
-            except Exception as exc:
-                print(f"[launcher] error: {exc}", flush=True)
-                response = {"action": "error", "status": "error", "error": str(exc)}
-            sock.sendto(json.dumps(response).encode("utf-8"), address)
-    finally:
-        sock.close()
-
-
-def wait_for_udp_ready(host: str, port: int, timeout_s: float) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout_s
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            return UdpJsonClient(host, port, timeout_s=min(2.0, timeout_s)).request({"action": "ping"})
-        except Exception as exc:
-            last_error = exc
-            time.sleep(1.0)
-    raise TimeoutError(f"Timed out waiting for UDP control on {host}:{port}: {last_error}")
 
 
 def _json_arg(text: str) -> Any:
@@ -193,27 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=1816, help="GUI control port by default")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--request-id", default=None)
-    parser.add_argument("--auto-launch", action="store_true", help="Launch GUI first, then issue the command")
-    parser.add_argument("--wait-after-launch", type=float, default=60.0)
-    parser.add_argument("--python-executable", default=sys.executable)
-    parser.add_argument("--gui-entrypoint", default=str(_default_gui_entrypoint()))
-    parser.add_argument("--workdir", default=str(_repo_root()))
-    parser.add_argument("--launcher-port", type=int, default=1815)
 
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
-
-    launch = subparsers.add_parser("launch-gui")
-    launch.add_argument("--no-detach", action="store_true")
-    launch.add_argument("--wait", action="store_true", help="Wait for UDP control ping after launch")
-
-    serve = subparsers.add_parser("serve-launcher")
-    serve.add_argument("--bind-host", default="0.0.0.0")
-    serve.add_argument("--bind-port", type=int, default=None)
-
-    launcher = subparsers.add_parser("launcher")
-    launcher.add_argument("launcher_action", choices=["ping", "launch_gui", "status", "launch_cmd"])
-    launcher.add_argument("launcher_args", nargs="*", help="For launch_cmd: command and args to launch")
-    launcher.add_argument("--cwd", default=None, help="Working directory for launch_cmd")
 
     subparsers.add_parser("ping")
     subparsers.add_parser("get-state")
@@ -252,19 +89,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_payload(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     request_id = args.request_id or f"cli-{args.subcommand}"
-    if args.subcommand == "launch-gui":
-        raise ValueError("launch-gui does not use a UDP payload")
-    if args.subcommand == "serve-launcher":
-        raise ValueError("serve-launcher does not use a UDP payload")
-    if args.subcommand == "launcher":
-        payload: dict[str, Any] = {"request_id": request_id, "action": args.launcher_action}
-        if args.launcher_action == "launch_cmd":
-            if not args.launcher_args:
-                raise ValueError("launcher launch_cmd requires a command after '--'")
-            payload["argv"] = list(args.launcher_args)
-            if args.cwd is not None:
-                payload["cwd"] = args.cwd
-        return payload, args.launcher_port
     if args.subcommand == "ping":
         return {"request_id": request_id, "action": "ping"}, args.port
     if args.subcommand == "get-state":
@@ -327,36 +151,6 @@ def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.subcommand == "serve-launcher":
-            return run_launcher_server(
-                host=args.bind_host,
-                port=args.bind_port or args.launcher_port,
-                python_executable=args.python_executable,
-                gui_entrypoint=args.gui_entrypoint,
-                workdir=args.workdir,
-            )
-        if args.subcommand == "launch-gui":
-            pid = launch_gui_process(
-                python_executable=args.python_executable,
-                gui_entrypoint=args.gui_entrypoint,
-                workdir=args.workdir,
-                detach=not args.no_detach,
-            )
-            result: dict[str, Any] = {"status": "ready", "data": {"launched": True, "pid": pid}}
-            if args.wait:
-                result["data"]["ping"] = wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
-            print(json.dumps(result, indent=2, sort_keys=True))
-            return 0
-
-        if args.auto_launch:
-            launch_gui_process(
-                python_executable=args.python_executable,
-                gui_entrypoint=args.gui_entrypoint,
-                workdir=args.workdir,
-                detach=True,
-            )
-            wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
-
         payload, port = build_payload(args)
         client = UdpJsonClient(args.host, port, args.timeout)
         reply = client.request(payload)

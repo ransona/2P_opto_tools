@@ -67,17 +67,23 @@ for idx = 1:numel(sequenceNames)
     disp("Preparing schema sequence:");
     disp(sequenceName);
     disp(idx);
-    hGroup = buildSequenceStimGroup(sequenceName, sequence, schema, hSI, opts, schemaPatternNames);
-    hPs.stimRoiGroups(end + 1) = hGroup;
 
     for stepIdx = 1:numel(sequenceSteps)
         stepPatternName = string(sequenceSteps(stepIdx).pattern);
-        if any(usedPatternNames == stepPatternName)
-            continue;
+        if ~isfield(schema.patterns, char(stepPatternName))
+            error('Sequence "%s" references unknown pattern "%s".', sequenceName, stepPatternName);
         end
+        pattern = schema.patterns.(char(stepPatternName));
         patternNumber = find(schemaPatternNames == stepPatternName, 1, 'first');
         if isempty(patternNumber)
             error('Could not resolve schema pattern number for pattern "%s".', stepPatternName);
+        end
+
+        hGroup = buildSequenceStepStimGroup(sequenceName, stepIdx, pattern, patternNumber, hSI, opts);
+        hPs.stimRoiGroups(end + 1) = hGroup;
+
+        if any(usedPatternNames == stepPatternName)
+            continue;
         end
         usedPatternNames(end + 1, 1) = stepPatternName; %#ok<AGROW>
         usedPatternNumbers(end + 1, 1) = patternNumber; %#ok<AGROW>
@@ -100,45 +106,11 @@ disp('Photostim mask generation ready');
 end
 
 
-function hGroup = buildSequenceStimGroup(sequenceName, sequence, schema, hSI, opts, schemaPatternNames)
+function hGroup = buildSequenceStepStimGroup(sequenceName, stepIdx, pattern, patternNumber, hSI, opts)
 nBeams = getPhotostimBeamCount(hSI);
-hGroup = scanimage.mroi.RoiGroup(char(sequenceName));
+hGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__step_%03d', sequenceName, stepIdx)));
 hGroup.add(makePauseRoi([0 0], [0 0], opts.PreStimPauseDuration, nBeams));
-
-orderedSteps = getStructArrayField(sequence, 'steps');
-if isempty(orderedSteps)
-    error('Sequence "%s" contains no steps.', string(sequenceName));
-end
-
-cursorTime = 0.0;
-for stepIdx = 1:numel(orderedSteps)
-    step = orderedSteps(stepIdx);
-    patternName = string(step.pattern);
-    if ~isfield(schema.patterns, char(patternName))
-        error('Sequence "%s" references unknown pattern "%s".', string(sequenceName), patternName);
-    end
-    pattern = schema.patterns.(char(patternName));
-    patternNumber = find(schemaPatternNames == patternName, 1, 'first');
-    if isempty(patternNumber)
-        error('Could not resolve schema pattern number for pattern "%s".', patternName);
-    end
-    if step.start_s < cursorTime - 1e-9
-        error( ...
-            'Sequence "%s" timing is invalid: step "%s" starts at %.6fs before the previous step ended at %.6fs.', ...
-            string(sequenceName), ...
-            patternName, ...
-            step.start_s, ...
-            cursorTime ...
-        );
-    end
-    gapDuration = step.start_s - cursorTime;
-    if gapDuration > 1e-9
-        hGroup.add(makePauseRoi([0 0], [0 0], gapDuration, nBeams));
-    end
-    appendPatternBlockToGroup(hGroup, pattern, patternNumber, hSI, opts, nBeams);
-    cursorTime = step.start_s + pattern.duration_s;
-end
-
+appendPatternBlockToGroup(hGroup, pattern, patternNumber, hSI, opts, nBeams);
 hGroup.add(makeParkRoi(opts.ParkDuration, nBeams));
 end
 
