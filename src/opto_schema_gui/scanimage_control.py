@@ -231,6 +231,7 @@ class UdpListener(threading.Thread):
 
 class _ControlSignals(ScanImageSignals):
     udp_message = pyqtSignal(str, bytes, tuple)
+    remote_prompt_response = pyqtSignal(str, str, object)
 
 
 class TestSlmDialog(QDialog):
@@ -642,6 +643,7 @@ class ScanImageControlWidget(QWidget):
         self.signals.path_udp_log.connect(self._append_path_udp_log)
         self.signals.waveform_test_result.connect(lambda *_: None)
         self.signals.udp_message.connect(self._handle_udp_message)
+        self.signals.remote_prompt_response.connect(self._handle_remote_prompt_response)
         self.machine_config: MachineConfig | None = None
         self._runtimes: dict[str, PathRuntime] = {}
         self._path_tabs: dict[str, PathTabWidgets] = {}
@@ -654,6 +656,8 @@ class ScanImageControlWidget(QWidget):
         self._startup_reconnect_prompt_shown = False
         self._startup_reconnect_prompt_box: QMessageBox | None = None
         self._startup_reconnect_prompt_paths: list[str] = []
+        self._remote_prompt_token = 0
+        self._remote_prompt_waiters: dict[int, tuple[threading.Event, dict[str, object]]] = {}
         self._debug_category_enabled: dict[str, bool] = {
             "general": True,
             "udp": True,
@@ -1142,6 +1146,24 @@ class ScanImageControlWidget(QWidget):
         return None
 
     def respond_remote_prompt(self, prompt_id: str, choice: str) -> bool:
+        if threading.current_thread() is threading.main_thread():
+            return self._respond_remote_prompt_ui(prompt_id, choice)
+
+        self._remote_prompt_token += 1
+        token = self._remote_prompt_token
+        done = threading.Event()
+        holder: dict[str, object] = {}
+        self._remote_prompt_waiters[token] = (done, holder)
+        self.signals.remote_prompt_response.emit(prompt_id, choice, token)
+        if not done.wait(5.0):
+            self._remote_prompt_waiters.pop(token, None)
+            raise TimeoutError("Timed out waiting for GUI thread to handle remote prompt")
+        error = holder.get("error")
+        if isinstance(error, BaseException):
+            raise error
+        return bool(holder.get("handled", False))
+
+    def _respond_remote_prompt_ui(self, prompt_id: str, choice: str) -> bool:
         if prompt_id != "startup_reconnect" or self._startup_reconnect_prompt_box is None:
             return False
         normalized = choice.strip().lower()
@@ -1149,6 +1171,19 @@ class ScanImageControlWidget(QWidget):
             raise ValueError("Prompt choice must be 'yes' or 'no'")
         self._resolve_startup_reconnect_prompt(normalized == "yes")
         return True
+
+    def _handle_remote_prompt_response(self, prompt_id: str, choice: str, token: object) -> None:
+        waiter = self._remote_prompt_waiters.get(int(token))
+        if waiter is None:
+            return
+        done, holder = waiter
+        try:
+            holder["handled"] = self._respond_remote_prompt_ui(prompt_id, choice)
+        except Exception as exc:
+            holder["error"] = exc
+        finally:
+            done.set()
+            self._remote_prompt_waiters.pop(int(token), None)
 
     def get_debug_log_lines(self, last_n: int = 200) -> list[str]:
         lines = [f"{timestamp} {message}" for timestamp, message, _ in self._debug_history]
