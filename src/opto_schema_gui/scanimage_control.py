@@ -52,14 +52,11 @@ from .matlab_bridge import (
     build_abort_photostim_command,
     build_experiment_context,
     build_fire_leading_park_pulse_command,
-    build_fire_trial_trigger_pulse_command,
     build_global_preamble,
     build_import_command,
     build_inspect_photostim_command,
     build_prepare_trial_waveform_command,
-    build_photostim_runtime_status_command,
     build_photostim_sequence_status_command,
-    build_prime_photostim_group_command,
     build_raw_vdaq_do_test_status_command,
     build_run_script_command,
     build_software_trigger_command,
@@ -2204,10 +2201,9 @@ class ScanImageControlWidget(QWidget):
                 self.signals.log_message.emit(f"[config] gui trigger_photo_stim result={payload}")
             trigger_mode = self._current_trigger_mode()
             if ok and trigger_mode == "software":
-                self._start_on_demand_trial_runner(
+                self._start_software_trigger_schedule(
                     photostim_path,
                     sequence_name,
-                    prep_state_local.triggered_stimulus_groups[1:],
                     trigger_times_s,
                     stimulus_pattern_numbers=stimulus_pattern_numbers,
                     request_path_name=request_path_name if reply_address is not None else None,
@@ -2217,12 +2213,9 @@ class ScanImageControlWidget(QWidget):
                     seq_num=seq_num,
                 )
             elif ok and trigger_mode == "waveform_software":
-                self._start_on_demand_trial_runner(
+                self._start_waveform_software_playback(
                     photostim_path,
                     sequence_name,
-                    prep_state_local.triggered_stimulus_groups[1:],
-                    trigger_times_s,
-                    stimulus_pattern_numbers=stimulus_pattern_numbers,
                     request_path_name=request_path_name if reply_address is not None else None,
                     reply_address=reply_address,
                     schema_name=schema_name,
@@ -2230,15 +2223,9 @@ class ScanImageControlWidget(QWidget):
                     seq_num=seq_num,
                 )
             elif ok and trigger_mode == "waveform_external":
-                self.signals.log_message.emit(
-                    f"[{photostim_path}] Waveform external-trigger is not implemented for within-group mode; using software-start runner"
-                )
-                self._start_on_demand_trial_runner(
+                self._start_waveform_external_monitor(
                     photostim_path,
                     sequence_name,
-                    prep_state_local.triggered_stimulus_groups[1:],
-                    trigger_times_s,
-                    stimulus_pattern_numbers=stimulus_pattern_numbers,
                     request_path_name=request_path_name if reply_address is not None else None,
                     reply_address=reply_address,
                     schema_name=schema_name,
@@ -2405,44 +2392,6 @@ class ScanImageControlWidget(QWidget):
                     pass
         return active, position, sequence, completed_sequences
 
-    def _query_photostim_runtime_status(self, path_name: str) -> tuple[bool, str, int | None]:
-        runtime = self._ensure_session(path_name)
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_photostim_runtime_status_command(runtime.path_config),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
-        active = False
-        status_text = ""
-        primed_stimulus: int | None = None
-        marker = None
-        for raw_line in lines:
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line in {
-                "PHOTOSTIM_ACTIVE",
-                "PHOTOSTIM_STATUS_TEXT",
-                "PHOTOSTIM_PRIMED_STIMULUS",
-                "PHOTOSTIM_STATUS_READY",
-            }:
-                marker = line
-                continue
-            if marker == "PHOTOSTIM_ACTIVE":
-                try:
-                    active = bool(int(float(line)))
-                except ValueError:
-                    active = False
-            elif marker == "PHOTOSTIM_STATUS_TEXT":
-                status_text = line
-            elif marker == "PHOTOSTIM_PRIMED_STIMULUS":
-                try:
-                    primed_stimulus = int(float(line))
-                except ValueError:
-                    primed_stimulus = None
-        return active, status_text, primed_stimulus
-
     def _get_waveform_test_preview(self, path_name: str) -> tuple[bool, int | None, list[int]]:
         active, position, sequence, _ = self._query_photostim_sequence_state(path_name)
         return active, position, sequence
@@ -2463,26 +2412,6 @@ class ScanImageControlWidget(QWidget):
             assert runtime.session is not None
             lines = runtime.session.eval(
                 build_fire_leading_park_pulse_command(runtime.path_config),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
-        self._emit_lines(path_name, lines)
-
-    def _fire_trial_trigger_pulse(self, path_name: str, task_var_name: str = "optoTrialPulseDoTask") -> None:
-        runtime = self._ensure_session(path_name)
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_fire_trial_trigger_pulse_command(runtime.path_config, task_var_name=task_var_name),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
-        self._emit_lines(path_name, lines)
-
-    def _prime_photostim_group(self, path_name: str, stimulus_group_idx: int) -> None:
-        runtime = self._ensure_session(path_name)
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_prime_photostim_group_command(runtime.path_config, stimulus_group_idx),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
         self._emit_lines(path_name, lines)
@@ -2700,107 +2629,6 @@ class ScanImageControlWidget(QWidget):
 
         thread = threading.Thread(target=worker, daemon=True)
         runtime.waveform_monitor_thread = thread
-        thread.start()
-
-    def _start_on_demand_trial_runner(
-        self,
-        path_name: str,
-        sequence_name: str,
-        trigger_groups: list[int],
-        trigger_times_s: list[float],
-        stimulus_pattern_numbers: list[int],
-        request_path_name: str | None = None,
-        reply_address: tuple[str, int] | None = None,
-        schema_name: str | None = None,
-        exp_id: str | None = None,
-        seq_num: int | None = None,
-    ) -> None:
-        self._cancel_software_trigger(path_name)
-        runtime = self._runtimes[path_name]
-        stop_event = threading.Event()
-        runtime.software_trigger_stop = stop_event
-
-        def worker() -> None:
-            delivered_triggers = 0
-            start_time = time.monotonic()
-            emitted_stimuli: list[str] = []
-            try:
-                if self._debug_category_enabled.get("software_trigger_times", True):
-                    self.signals.log_message.emit(
-                        f"[{path_name}] on-demand trial trigger schedule started for sequence '{sequence_name}' with {len(trigger_times_s)} trigger(s)"
-                    )
-                    self.signals.log_message.emit(
-                        f"[{path_name}] trigger times: " + ", ".join(f"{t:.4f}s" for t in trigger_times_s)
-                    )
-
-                for index, trigger_time_s in enumerate(trigger_times_s):
-                    while True:
-                        if stop_event.is_set():
-                            return
-                        remaining = start_time + trigger_time_s - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        time.sleep(min(remaining, 0.05))
-
-                    self._fire_trial_trigger_pulse(path_name, task_var_name=f"optoTrialPulseDoTask{index+1}")
-                    delivered_triggers += 1
-                    if self._debug_category_enabled.get("stimuli", True) and index < len(stimulus_pattern_numbers):
-                        emitted_stimuli.append(str(stimulus_pattern_numbers[index]))
-                        self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
-
-                    completion_timeout_s = 5.0
-                    if index + 1 < len(trigger_times_s):
-                        completion_timeout_s = max(5.0, trigger_times_s[index + 1] - trigger_time_s + 2.0)
-                    self._wait_for_photostim_ready_status(path_name, timeout_s=completion_timeout_s)
-
-                    if index + 1 < len(trigger_groups):
-                        next_group = trigger_groups[index + 1]
-                        self._prime_photostim_group(path_name, next_group)
-                        self._wait_for_photostim_group_armed(path_name, next_group, timeout_s=5.0)
-
-                expected_triggers = len(trigger_groups)
-                if self._debug_category_enabled.get("software_trigger_count", True):
-                    self.signals.log_message.emit(
-                        f"[{path_name}] Trigger count check: {delivered_triggers} stimuli delivered, {expected_triggers} expected"
-                    )
-                if delivered_triggers != expected_triggers:
-                    mismatch_message = f"{delivered_triggers} stimuli delivered, {expected_triggers} expected"
-                    if (
-                        self.ignore_incomplete_trigger_checkbox.isChecked()
-                        and request_path_name is not None
-                        and reply_address is not None
-                    ):
-                        payload = {
-                            "action": "trigger_photo_stim",
-                            "status": "error",
-                            "phase": "completion_check",
-                            "schema_name": schema_name,
-                            "expID": exp_id,
-                            "seq_num": seq_num,
-                            "sequence_name": sequence_name,
-                            "error": mismatch_message,
-                        }
-                        self._send_json_reply(request_path_name, reply_address, payload)
-            except Exception as exc:
-                self.signals.log_message.emit(f"[{path_name}] ERROR: on-demand trial runner failed: {exc}")
-                if request_path_name is not None and reply_address is not None:
-                    payload = {
-                        "action": "trigger_photo_stim",
-                        "status": "error",
-                        "phase": "runtime",
-                        "schema_name": schema_name,
-                        "expID": exp_id,
-                        "seq_num": seq_num,
-                        "sequence_name": sequence_name,
-                        "error": str(exc),
-                    }
-                    self._send_json_reply(request_path_name, reply_address, payload)
-            finally:
-                runtime.software_trigger_stop = None
-                runtime.software_trigger_thread = None
-
-        thread = threading.Thread(target=worker, daemon=True)
-        runtime.software_trigger_thread = thread
         thread.start()
 
     def _start_waveform_external_monitor(
@@ -3044,51 +2872,6 @@ class ScanImageControlWidget(QWidget):
             + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
         )
 
-    def _wait_for_photostim_group_armed(
-        self,
-        path_name: str,
-        stimulus_group_idx: int,
-        timeout_s: float = 5.0,
-    ) -> None:
-        deadline = time.monotonic() + timeout_s
-        last_active = False
-        last_status = ""
-        last_primed: int | None = None
-        while time.monotonic() < deadline:
-            active, status_text, primed_stimulus = self._query_photostim_runtime_status(path_name)
-            last_active = active
-            last_status = status_text
-            last_primed = primed_stimulus
-            if active and primed_stimulus == stimulus_group_idx and "waiting for trigger" in status_text.lower():
-                return
-            time.sleep(0.02)
-        raise RuntimeError(
-            f"Photostim group {stimulus_group_idx} did not arm before timeout. "
-            f"active={int(last_active)}, status={last_status!r}, primed={last_primed!r}"
-        )
-
-    def _wait_for_photostim_ready_status(
-        self,
-        path_name: str,
-        timeout_s: float = 5.0,
-    ) -> None:
-        deadline = time.monotonic() + timeout_s
-        last_active = False
-        last_status = ""
-        last_primed: int | None = None
-        while time.monotonic() < deadline:
-            active, status_text, primed_stimulus = self._query_photostim_runtime_status(path_name)
-            last_active = active
-            last_status = status_text
-            last_primed = primed_stimulus
-            if active and status_text.strip().lower() == "ready":
-                return
-            time.sleep(0.02)
-        raise RuntimeError(
-            f"Photostim did not return to Ready before timeout. "
-            f"active={int(last_active)}, status={last_status!r}, primed={last_primed!r}"
-        )
-
     def _wait_for_expected_photostim_completion(
         self,
         path_name: str,
@@ -3173,43 +2956,51 @@ class ScanImageControlWidget(QWidget):
     ) -> None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
-        if runtime.software_trigger_thread is not None or runtime.waveform_monitor_thread is not None:
-            raise RuntimeError("A photostim trial is already running.")
-
-        active_now, status_now, primed_now = self._query_photostim_runtime_status(path_name)
-        if not active_now:
-            raise RuntimeError("Photostim is not active after prep_patterns.")
-        if "ondemand" not in status_now.lower() and status_now.strip().lower() != "ready" and "waiting for trigger" not in status_now.lower():
-            self.signals.log_message.emit(
-                f"[{path_name}] Current on-demand status before trigger: active={int(active_now)}, status={status_now!r}, primed={primed_now!r}"
-            )
-
-        if len(sequence_indices) < 2:
-            raise RuntimeError("Trigger sequence is too short.")
-
-        groups_after_ready = sequence_indices[1:]
-        if not groups_after_ready:
-            raise RuntimeError("Trigger sequence contains no groups after the leading park.")
-
-        self._prime_photostim_group(path_name, 2)
-        self._wait_for_photostim_group_armed(path_name, 2, timeout_s=5.0)
-        self.signals.log_message.emit(f"[{path_name}] Leading park armed")
+        _, current_position, _, _ = self._query_photostim_sequence_state(path_name)
+        if self._current_trigger_mode() != "software":
+            mismatch_message = self._finalize_pending_photostim_check(path_name, "Previous photostim sequence check")
+            if mismatch_message is not None:
+                if self.ignore_incomplete_trigger_checkbox.isChecked():
+                    raise RuntimeError(mismatch_message)
+                self.signals.log_message.emit(f"[{path_name}] WARNING: {mismatch_message}")
+        lines = self._apply_trigger_sequence(path_name, sequence_indices)
+        insert_position = self._parse_trigger_insert_position(lines)
+        if insert_position is None:
+            insert_position = current_position if current_position is not None else 1
+        position_after_restart, completed_after_restart = self._wait_for_photostim_restart_ready(path_name)
+        active_after_restart, current_position_after_restart, sequence_after_restart, completed_now = (
+            self._query_photostim_sequence_state(path_name)
+        )
+        self.signals.log_message.emit(
+            f"[{path_name}] Leading park baseline: "
+            f"{self._format_photostim_state(active_after_restart, current_position_after_restart, completed_now, sequence_after_restart)}"
+        )
+        baseline_position = current_position_after_restart if current_position_after_restart is not None else 1
+        baseline_completed = (
+            completed_now
+            if completed_now is not None
+            else (completed_after_restart if completed_after_restart is not None else 0)
+        )
         self._fire_leading_park_pulse(path_name)
         self.signals.log_message.emit(f"[{path_name}] Leading park trigger pulse fired")
-        self._wait_for_photostim_ready_status(path_name, timeout_s=5.0)
-        self.signals.log_message.emit(f"[{path_name}] Leading park complete; photostim ready")
-
-        first_group = groups_after_ready[0]
-        self._prime_photostim_group(path_name, first_group)
-        self._wait_for_photostim_group_armed(path_name, first_group, timeout_s=5.0)
+        ready_position, ready_completed = self._wait_for_leading_park_advance(
+            path_name,
+            baseline_position,
+            baseline_completed,
+        )
         time.sleep(0.05)
-        prep_state.last_trigger_insert_position = None
-        prep_state.expected_sequence_position = None
-        prep_state.remaining_expected_triggers = len(groups_after_ready)
-        prep_state.ready_sequence_position = None
-        prep_state.ready_completed_sequences = None
+        prep_state.last_trigger_insert_position = insert_position
+        prep_state.expected_sequence_position = insert_position + len(sequence_indices)
+        prep_state.remaining_expected_triggers = max(0, len(sequence_indices) - 1)
+        prep_state.ready_sequence_position = ready_position
+        prep_state.ready_completed_sequences = ready_completed if ready_completed is not None else baseline_completed
         prep_state.leading_park_fired = True
         prep_state.waveform_expected_done_time_s = max(trigger_times_s) if trigger_times_s else 0.0
+        trigger_mode = self._current_trigger_mode()
+        if trigger_mode == "waveform_software":
+            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=False)
+        elif trigger_mode == "waveform_external":
+            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=True)
         self.signals.log_message.emit(f"[{path_name}] leading park fired; trial sequence armed")
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:
