@@ -214,33 +214,47 @@ def build_payload(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.subcommand == "launch-gui":
-        pid = launch_gui_process(
-            python_executable=args.python_executable,
-            gui_entrypoint=args.gui_entrypoint,
-            workdir=args.workdir,
-            detach=not args.no_detach,
-        )
-        result: dict[str, Any] = {"status": "ready", "data": {"launched": True, "pid": pid}}
-        if args.wait:
-            result["data"]["ping"] = wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
-        print(json.dumps(result, indent=2, sort_keys=True))
+    try:
+        if args.subcommand == "launch-gui":
+            pid = launch_gui_process(
+                python_executable=args.python_executable,
+                gui_entrypoint=args.gui_entrypoint,
+                workdir=args.workdir,
+                detach=not args.no_detach,
+            )
+            result: dict[str, Any] = {"status": "ready", "data": {"launched": True, "pid": pid}}
+            if args.wait:
+                result["data"]["ping"] = wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+
+        if args.auto_launch:
+            launch_gui_process(
+                python_executable=args.python_executable,
+                gui_entrypoint=args.gui_entrypoint,
+                workdir=args.workdir,
+                detach=True,
+            )
+            wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
+
+        payload, port = build_payload(args)
+        client = UdpJsonClient(args.host, port, args.timeout)
+        reply = client.request(payload)
+        print(json.dumps(reply, indent=2, sort_keys=True))
         return 0
-
-    if args.auto_launch:
-        launch_gui_process(
-            python_executable=args.python_executable,
-            gui_entrypoint=args.gui_entrypoint,
-            workdir=args.workdir,
-            detach=True,
+    except ConnectionResetError:
+        print(
+            f"ERROR: UDP control on {args.host}:{args.port} is not accepting requests. "
+            "The GUI is likely not running, the control listener is not bound, or the remote host rejected the port.",
+            file=sys.stderr,
         )
-        wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
-
-    payload, port = build_payload(args)
-    client = UdpJsonClient(args.host, port, args.timeout)
-    reply = client.request(payload)
-    print(json.dumps(reply, indent=2, sort_keys=True))
-    return 0
+        return 2
+    except TimeoutError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR: UDP request failed: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
