@@ -228,11 +228,39 @@ class MatlabSession:
         if engine_name not in available:
             return False
         try:
-            self.engine = matlab_engine.connect_matlab(engine_name)
+            self.engine = self._connect_matlab_with_timeout(engine_name, timeout_s=5.0)
         except Exception as exc:
             self.engine = None
             return False
         return True
+
+    @staticmethod
+    def _connect_matlab_with_timeout(engine_name: str, timeout_s: float):
+        assert matlab_engine is not None
+        result: list[object] = []
+        error_holder: list[BaseException] = []
+        done = threading.Event()
+
+        def worker() -> None:
+            try:
+                result.append(matlab_engine.connect_matlab(engine_name))
+            except BaseException as exc:
+                error_holder.append(exc)
+            finally:
+                done.set()
+
+        threading.Thread(target=worker, daemon=True).start()
+        if not done.wait(timeout_s):
+            raise MatlabSessionError(
+                f"Timed out connecting to shared MATLAB engine '{engine_name}'."
+            )
+        if error_holder:
+            raise error_holder[0]
+        if not result:
+            raise MatlabSessionError(
+                f"Connecting to shared MATLAB engine '{engine_name}' returned no session."
+            )
+        return result[0]
 
     def _share_engine(self) -> None:
         if self.engine is None:
@@ -288,7 +316,7 @@ class MatlabSession:
                 available = ()
             if self.config.engine_name in available:
                 try:
-                    self.engine = matlab_engine.connect_matlab(self.config.engine_name)
+                    self.engine = self._connect_matlab_with_timeout(self.config.engine_name, timeout_s=5.0)
                     self._validate_connected_session()
                     self._set_working_directory()
                     return
