@@ -2964,26 +2964,26 @@ class ScanImageControlWidget(QWidget):
             f"[{path_name}] Leading park baseline: "
             f"{self._format_photostim_state(active_after_restart, current_position_after_restart, completed_now, sequence_after_restart)}"
         )
-        if completed_now is not None and completed_now > 0:
-            ready_position = current_position_after_restart
-            ready_completed = completed_now
-            self.signals.log_message.emit(f"[{path_name}] Leading park completed during restart")
-        elif current_position_after_restart is not None and current_position_after_restart > 1:
-            ready_position = current_position_after_restart
-            ready_completed = completed_now
-            self.signals.log_message.emit(f"[{path_name}] Leading park advanced during restart")
-        else:
-            ready_position, ready_completed = self._wait_for_leading_park_advance(
-                path_name,
-                1,
-                completed_after_restart if completed_after_restart is not None else 0,
-            )
+        baseline_position = current_position_after_restart if current_position_after_restart is not None else 1
+        baseline_completed = (
+            completed_now
+            if completed_now is not None
+            else (completed_after_restart if completed_after_restart is not None else 0)
+        )
+        time.sleep(0.05)
+        self._fire_software_trigger(path_name)
+        self.signals.log_message.emit(f"[{path_name}] Leading park software trigger fired")
+        ready_position, ready_completed = self._wait_for_leading_park_advance(
+            path_name,
+            baseline_position,
+            baseline_completed,
+        )
         time.sleep(0.05)
         prep_state.last_trigger_insert_position = insert_position
         prep_state.expected_sequence_position = insert_position + len(sequence_indices)
         prep_state.remaining_expected_triggers = max(0, len(sequence_indices) - 1)
         prep_state.ready_sequence_position = ready_position
-        prep_state.ready_completed_sequences = ready_completed if ready_completed is not None else completed_before_park
+        prep_state.ready_completed_sequences = ready_completed if ready_completed is not None else baseline_completed
         prep_state.leading_park_fired = True
         prep_state.waveform_expected_done_time_s = max(trigger_times_s) if trigger_times_s else 0.0
         trigger_mode = self._current_trigger_mode()

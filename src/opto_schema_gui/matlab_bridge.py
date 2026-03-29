@@ -942,7 +942,7 @@ def build_trigger_photostim_command(path_config: PathConfig, sequence_indices: l
             "hPs.sequenceSelectedStimuli = triggerSequence;",
             "hPs.numSequences = 1;",
             "insertPosition = 1;",
-            "hPs.stimImmediately = true;",
+            "hPs.stimImmediately = false;",
             "hPs.start();",
             "hPs.stimImmediately = oldStimImmediately;",
             "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
