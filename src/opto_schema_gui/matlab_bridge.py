@@ -718,15 +718,21 @@ def build_import_command(
     pattern_names: list[str] | None = None,
     prepare_sequence: bool = False,
     start_photostim: bool = False,
+    schema_json_path: str | Path | None = None,
 ) -> str:
     schema_expr = matlab_string(str(Path(schema_path).resolve()))
     point_size_expr = f"[{path_config.point_size_xy[0]} {path_config.point_size_xy[1]}]"
     if prepare_sequence or start_photostim:
-        schema_payload = yaml.safe_load(Path(schema_path).read_text()) or {}
-        schema_json_expr = matlab_string(json.dumps(schema_payload, separators=(",", ":")))
+        if schema_json_path is not None:
+            schema_json_expr = matlab_string(str(Path(schema_json_path).resolve()))
+            schema_load_line = f"schemaData = jsondecode(fileread({schema_json_expr}));"
+        else:
+            schema_payload = yaml.safe_load(Path(schema_path).read_text()) or {}
+            schema_payload_expr = matlab_string(json.dumps(schema_payload, separators=(",", ":")))
+            schema_load_line = f"schemaData = jsondecode({schema_payload_expr});"
         lines = [
             build_global_preamble(path_config),
-            f"schemaData = jsondecode({schema_json_expr});",
+            schema_load_line,
             f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, schemaData, ...",
             "    PreStimPauseDuration=0.001, ...",
             "    BlankDuration=0.001, ...",

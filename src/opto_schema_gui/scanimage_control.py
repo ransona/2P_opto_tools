@@ -1720,6 +1720,11 @@ class ScanImageControlWidget(QWidget):
         start_photostim: bool = False,
     ) -> None:
         runtime = self._ensure_session(path_name)
+        schema_json_path: Path | None = None
+        if prepare_sequence or start_photostim:
+            schema_payload = yaml.safe_load(schema_path.read_text()) or {}
+            schema_json_path = runtime.path_config.directory / "_opto_schema_payload.json"
+            schema_json_path.write_text(json.dumps(schema_payload, separators=(",", ":")))
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
@@ -1729,12 +1734,18 @@ class ScanImageControlWidget(QWidget):
                     pattern_names=pattern_names,
                     prepare_sequence=prepare_sequence,
                     start_photostim=start_photostim,
+                    schema_json_path=schema_json_path,
                 ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
             runtime.status = "photostim ready" if start_photostim else "patterns imported"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
+        if schema_json_path is not None:
+            try:
+                schema_json_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _emit_lines(self, path_name: str, lines: list[str]) -> None:
         if not lines:
