@@ -648,6 +648,8 @@ class ScanImageControlWidget(QWidget):
         self._debug_history: list[tuple[str, str, bool]] = []
         self._startup_reconnect_prompt_pending = True
         self._startup_reconnect_prompt_shown = False
+        self._startup_reconnect_prompt_box: QMessageBox | None = None
+        self._startup_reconnect_prompt_paths: list[str] = []
         self._debug_category_enabled: dict[str, bool] = {
             "general": True,
             "udp": True,
@@ -1079,16 +1081,31 @@ class ScanImageControlWidget(QWidget):
         if not available_paths:
             return
         self._startup_reconnect_prompt_shown = True
+        self._startup_reconnect_prompt_paths = list(available_paths)
+        joined = ", ".join(self._startup_reconnect_prompt_paths)
+        box = QMessageBox(self)
+        box.setWindowTitle("Reconnect MATLAB")
+        box.setText(f"Found running MATLAB session(s) for: {joined}.\nConnect to them now?")
+        yes_button = box.addButton(QMessageBox.StandardButton.Yes)
+        no_button = box.addButton(QMessageBox.StandardButton.No)
+        box.setDefaultButton(yes_button)
+        self._startup_reconnect_prompt_box = box
+        yes_button.clicked.connect(lambda: self._resolve_startup_reconnect_prompt(True))
+        no_button.clicked.connect(lambda: self._resolve_startup_reconnect_prompt(False))
+        box.open()
+
+    def _resolve_startup_reconnect_prompt(self, should_reconnect: bool) -> None:
+        available_paths = list(self._startup_reconnect_prompt_paths)
         joined = ", ".join(available_paths)
-        choice = QMessageBox.question(
-            self,
-            "Reconnect MATLAB",
-            f"Found running MATLAB session(s) for: {joined}.\nConnect to them now?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if choice != QMessageBox.StandardButton.Yes:
-            self.signals.log_message.emit(f"[config] existing MATLAB sessions ignored: {joined}")
+        box = self._startup_reconnect_prompt_box
+        self._startup_reconnect_prompt_box = None
+        self._startup_reconnect_prompt_paths = []
+        if box is not None:
+            box.hide()
+            box.deleteLater()
+        if not should_reconnect:
+            if joined:
+                self.signals.log_message.emit(f"[config] existing MATLAB sessions ignored: {joined}")
             return
 
         def worker() -> None:
@@ -1096,6 +1113,182 @@ class ScanImageControlWidget(QWidget):
                 self._run_action(path_name, f"Launching path: {path_name}", self._launch_path)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def pending_remote_prompt(self) -> dict[str, object] | None:
+        if self._startup_reconnect_prompt_box is not None and self._startup_reconnect_prompt_paths:
+            return {
+                "prompt_id": "startup_reconnect",
+                "message": (
+                    "Found running MATLAB session(s) for: "
+                    + ", ".join(self._startup_reconnect_prompt_paths)
+                    + ". Connect to them now?"
+                ),
+                "choices": ["yes", "no"],
+                "paths": list(self._startup_reconnect_prompt_paths),
+            }
+        return None
+
+    def respond_remote_prompt(self, prompt_id: str, choice: str) -> bool:
+        if prompt_id != "startup_reconnect" or self._startup_reconnect_prompt_box is None:
+            return False
+        normalized = choice.strip().lower()
+        if normalized not in {"yes", "no"}:
+            raise ValueError("Prompt choice must be 'yes' or 'no'")
+        self._resolve_startup_reconnect_prompt(normalized == "yes")
+        return True
+
+    def get_debug_log_lines(self, last_n: int = 200) -> list[str]:
+        lines = [f"{timestamp} {message}" for timestamp, message, _ in self._debug_history]
+        if last_n > 0:
+            return lines[-last_n:]
+        return lines
+
+    def get_path_udp_log_lines(self, path_name: str, last_n: int = 200) -> list[str]:
+        widgets = self._path_tabs.get(path_name)
+        if widgets is None:
+            raise KeyError(f"Unknown path '{path_name}'")
+        lines = [line for line in widgets.udp_text.toPlainText().splitlines() if line.strip()]
+        if last_n > 0:
+            return lines[-last_n:]
+        return lines
+
+    def get_remote_state(self) -> dict[str, object]:
+        path_states: dict[str, object] = {}
+        for path_name, runtime in self._runtimes.items():
+            path_states[path_name] = {
+                "status": runtime.status,
+                "launched": runtime.launched,
+                "listener_on": runtime.udp_listener is not None,
+                "engine_name": runtime.path_config.engine_name,
+                "listener_host": runtime.path_config.listener_host,
+                "listener_port": runtime.path_config.listener_port,
+            }
+        return {
+            "machine": self.machine_combo.currentText(),
+            "config": self.config_combo.currentText(),
+            "force_simulated": self.force_simulated_checkbox.isChecked(),
+            "send_mismatch_errors_upstream": self.ignore_incomplete_trigger_checkbox.isChecked(),
+            "trigger_mode": {
+                "label": self.trigger_mode_combo.currentText(),
+                "value": self._current_trigger_mode(),
+            },
+            "photostim_path": self.machine_config.photostim_path if self.machine_config is not None else "",
+            "paths": path_states,
+            "pending_prompt": self.pending_remote_prompt(),
+        }
+
+    def set_remote_state(self, values: dict[str, object]) -> dict[str, object]:
+        applied: dict[str, object] = {}
+        if "machine" in values:
+            machine = str(values["machine"])
+            if self._has_active_paths() and machine != self.machine_combo.currentText():
+                raise ValueError("Stop all paths before switching machine")
+            index = self.machine_combo.findText(machine)
+            if index < 0:
+                raise ValueError(f"Unknown machine '{machine}'")
+            self.machine_combo.setCurrentIndex(index)
+            applied["machine"] = self.machine_combo.currentText()
+        if "config" in values:
+            config = str(values["config"])
+            if self._has_active_paths() and config != self.config_combo.currentText():
+                raise ValueError("Stop all paths before switching config")
+            index = self.config_combo.findText(config)
+            if index < 0:
+                raise ValueError(f"Unknown config '{config}'")
+            self.config_combo.setCurrentIndex(index)
+            applied["config"] = self.config_combo.currentText()
+        if "force_simulated" in values:
+            checked = bool(values["force_simulated"])
+            self.force_simulated_checkbox.setChecked(checked)
+            applied["force_simulated"] = self.force_simulated_checkbox.isChecked()
+        if "send_mismatch_errors_upstream" in values:
+            checked = bool(values["send_mismatch_errors_upstream"])
+            self.ignore_incomplete_trigger_checkbox.setChecked(checked)
+            applied["send_mismatch_errors_upstream"] = self.ignore_incomplete_trigger_checkbox.isChecked()
+        if "trigger_mode" in values:
+            trigger_mode = str(values["trigger_mode"]).strip()
+            index = self.trigger_mode_combo.findData(trigger_mode)
+            if index < 0:
+                index = self.trigger_mode_combo.findText(trigger_mode)
+            if index < 0:
+                raise ValueError(f"Unknown trigger mode '{trigger_mode}'")
+            self.trigger_mode_combo.setCurrentIndex(index)
+            applied["trigger_mode"] = self._current_trigger_mode()
+        return applied
+
+    def invoke_remote_action(
+        self,
+        action: str,
+        path_name: str | None = None,
+        exp_id: str | None = None,
+    ) -> dict[str, object]:
+        normalized = action.strip().lower()
+        if normalized == "reload_configs":
+            self.reload_discovery()
+            return {"started": True}
+        if normalized == "start_config":
+            self.start_config()
+            return {"started": True}
+        if normalized == "stop_config":
+            self.stop_config()
+            return {"started": True}
+        if normalized == "update_and_restart":
+            self._update_and_restart()
+            return {"started": True}
+        if normalized == "import_patterns":
+            self.import_patterns_for_photostim()
+            return {"started": True}
+        if not path_name:
+            raise ValueError("path_name is required for path-scoped actions")
+        if path_name not in self._runtimes:
+            raise ValueError(f"Unknown path '{path_name}'")
+        if normalized in {"launch_path", "start_path"}:
+            self._spawn_action(path_name, f"Launching path: {path_name}", self._launch_path)
+            return {"started": True}
+        if normalized == "stop_path":
+            self._spawn_action(path_name, "stop path", self._stop_path)
+            return {"started": True}
+        if normalized == "focus_path":
+            self._spawn_action(path_name, "focus", self._focus_path)
+            return {"started": True}
+        if normalized == "acquire":
+            if not exp_id:
+                raise ValueError("exp_id is required for acquire")
+            self._spawn_action(path_name, "acquire", lambda name: self._start_acquisition(name, exp_id))
+            return {"started": True}
+        if normalized == "stop_acquisition":
+            self._spawn_action(path_name, "stop acquisition", self._stop_acquisition)
+            return {"started": True}
+        if normalized == "inspect_slm":
+            self._spawn_action(path_name, "inspect slm", self._inspect_photostim_api)
+            return {"started": True}
+        if normalized == "start_listener":
+            self._spawn_action(path_name, "start listener", self._start_listener)
+            return {"started": True}
+        if normalized == "stop_listener":
+            self._spawn_action(path_name, "stop listener", self._stop_listener)
+            return {"started": True}
+        raise ValueError(f"Unknown action '{action}'")
+
+    def eval_matlab_command(
+        self,
+        path_name: str,
+        command: str,
+        timeout_s: float | None = None,
+        prepend_preamble: bool = True,
+    ) -> list[str]:
+        runtime = self._ensure_session(path_name)
+        matlab_command = command
+        if prepend_preamble:
+            matlab_command = "\n".join([build_global_preamble(runtime.path_config), command])
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                matlab_command,
+                timeout_s=timeout_s if timeout_s is not None else runtime.path_config.command_timeout_s,
+            )
+            self._emit_lines(path_name, lines)
+            return lines
 
     def _add_path_tab(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]

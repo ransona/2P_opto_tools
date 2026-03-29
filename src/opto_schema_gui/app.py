@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import configparser
+import json
+import socket
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-from PyQt6.QtCore import Qt, QRectF, QSize
+from PyQt6.QtCore import QObject, Qt, QRectF, QSize, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -41,6 +45,13 @@ from .io import load_schema, save_schema
 from .models import CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 from .matlab_bridge import autodetect_machine_name, load_machine_ui_config
 from .scanimage_control import ScanImageControlWidget
+
+
+@dataclass
+class GuiControlConfig:
+    enabled: bool
+    host: str
+    port: int
 
 
 def _stable_color(key: str) -> QColor:
@@ -100,6 +111,68 @@ def _load_schema_root() -> Path:
     if not raw_root:
         return _load_save_root()
     return _resolve_config_path(raw_root)
+
+
+def _load_gui_control_config() -> GuiControlConfig:
+    config = configparser.ConfigParser()
+    config.read(_config_path())
+    section = config["gui_control"] if config.has_section("gui_control") else None
+    if section is None:
+        return GuiControlConfig(enabled=True, host="0.0.0.0", port=1816)
+    enabled = section.getboolean("enabled", fallback=True)
+    host = section.get("host", fallback="0.0.0.0")
+    port = section.getint("port", fallback=1816)
+    return GuiControlConfig(enabled=enabled, host=host, port=port)
+
+
+class GuiControlSignals(QObject):
+    udp_message = pyqtSignal(bytes, tuple)
+
+
+class GuiControlListener(threading.Thread):
+    def __init__(self, host: str, port: int, signals: GuiControlSignals):
+        super().__init__(daemon=True)
+        self.host = host
+        self.port = port
+        self.signals = signals
+        self._stop_event = threading.Event()
+        self._socket: socket.socket | None = None
+
+    def run(self) -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._socket = sock
+        try:
+            sock.bind((self.host, self.port))
+            sock.settimeout(0.2)
+            while not self._stop_event.is_set():
+                try:
+                    payload, address = sock.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                self.signals.udp_message.emit(payload, address)
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+
+    def send(self, payload: bytes, address: tuple[str, int]) -> None:
+        if self._socket is None:
+            return
+        try:
+            self._socket.sendto(payload, address)
+        except OSError:
+            pass
 
 
 class TimelinePreview(QWidget):
@@ -738,8 +811,14 @@ class MainWindow(QMainWindow):
         self.pattern_list.currentItemChanged.connect(self._pattern_selected)
         self.sequence_list.currentItemChanged.connect(self._sequence_selected)
 
+        self.gui_control_config = _load_gui_control_config()
+        self.gui_control_signals = GuiControlSignals()
+        self.gui_control_signals.udp_message.connect(self._handle_gui_control_message)
+        self.gui_control_listener: GuiControlListener | None = None
+
         self._build_ui()
         self.refresh_lists()
+        self._start_gui_control_listener()
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("File")
@@ -822,6 +901,177 @@ class MainWindow(QMainWindow):
         self.copy_sequence_btn.clicked.connect(self.copy_sequence)
         self.delete_sequence_btn.clicked.connect(self.delete_sequence)
         self.update_save_path_label()
+
+    def _start_gui_control_listener(self) -> None:
+        if not self.gui_control_config.enabled or self.gui_control_config.port <= 0:
+            self.scanimage_control.signals.log_message.emit("[gui control] disabled")
+            return
+        if self.gui_control_listener is not None:
+            return
+        self.gui_control_listener = GuiControlListener(
+            self.gui_control_config.host,
+            self.gui_control_config.port,
+            self.gui_control_signals,
+        )
+        self.gui_control_listener.start()
+        self.scanimage_control.signals.log_message.emit(
+            f"[gui control] UDP listener started on {self.gui_control_config.host}:{self.gui_control_config.port}"
+        )
+
+    def _stop_gui_control_listener(self) -> None:
+        if self.gui_control_listener is None:
+            return
+        self.gui_control_listener.stop()
+        self.gui_control_listener = None
+        self.scanimage_control.signals.log_message.emit("[gui control] UDP listener stopped")
+
+    def _send_gui_control_reply(self, address: tuple[str, int], payload: dict[str, object]) -> None:
+        if self.gui_control_listener is None:
+            return
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.gui_control_listener.send(encoded, address)
+
+    def _set_main_tab(self, tab_value: object) -> dict[str, object]:
+        if isinstance(tab_value, int):
+            index = tab_value
+        else:
+            target = str(tab_value).strip()
+            index = -1
+            for idx in range(self.main_tabs.count()):
+                if self.main_tabs.tabText(idx).lower() == target.lower():
+                    index = idx
+                    break
+        if index < 0 or index >= self.main_tabs.count():
+            raise ValueError(f"Unknown main tab '{tab_value}'")
+        self.main_tabs.setCurrentIndex(index)
+        return {
+            "index": self.main_tabs.currentIndex(),
+            "label": self.main_tabs.tabText(self.main_tabs.currentIndex()),
+        }
+
+    def _remote_set_state(self, values: dict[str, object]) -> dict[str, object]:
+        applied: dict[str, object] = {}
+        if "main_tab" in values:
+            applied["main_tab"] = self._set_main_tab(values["main_tab"])
+        if "animal_id" in values:
+            self.animal_edit.setText(str(values["animal_id"]))
+            applied["animal_id"] = self.animal_edit.text()
+        if "project_name" in values:
+            self.project_edit.setText(str(values["project_name"]))
+            applied["project_name"] = self.project_edit.text()
+        applied.update(self.scanimage_control.set_remote_state(values))
+        return applied
+
+    def _schema_state(self) -> dict[str, object]:
+        return {
+            "animal_id": self.animal_id(),
+            "project_name": self.project_name(),
+            "schema_file_path": self.schema_file_path,
+            "schema_save_path": str(self.schema_save_path()),
+            "pattern_dirty": self.pattern_dirty,
+            "sequence_dirty": self.sequence_dirty,
+            "current_pattern": self._current_item_name(self.pattern_list),
+            "current_sequence": self._current_item_name(self.sequence_list),
+            "pattern_names": list(self.project.patterns.keys()),
+            "sequence_names": list(self.project.sequences.keys()),
+        }
+
+    def _remote_state(self) -> dict[str, object]:
+        return {
+            "window_title": self.windowTitle(),
+            "main_tab": {
+                "index": self.main_tabs.currentIndex(),
+                "label": self.main_tabs.tabText(self.main_tabs.currentIndex()),
+            },
+            "schema": self._schema_state(),
+            "scanimage": self.scanimage_control.get_remote_state(),
+        }
+
+    def _remote_invoke(self, command: str, payload: dict[str, object]) -> dict[str, object]:
+        normalized = command.strip().lower()
+        if normalized == "save_schema_default":
+            return {"ok": self._save_schema_to_default(force=True)}
+        if normalized == "ensure_schema_path":
+            path = self.ensure_schema_path_for_external_use()
+            return {"schema_path": str(path) if path is not None else ""}
+        return self.scanimage_control.invoke_remote_action(
+            normalized,
+            path_name=str(payload["path_name"]) if "path_name" in payload and payload["path_name"] is not None else None,
+            exp_id=str(payload["exp_id"]) if "exp_id" in payload and payload["exp_id"] is not None else None,
+        )
+
+    def _handle_gui_control_message(self, payload: bytes, address: tuple[str, int]) -> None:
+        response: dict[str, object]
+        try:
+            request = json.loads(payload.decode("utf-8"))
+            if not isinstance(request, dict):
+                raise ValueError("GUI control payload must be a JSON object")
+            action = str(request.get("action", "")).strip()
+            response = {"action": action, "status": "ready"}
+            if "request_id" in request:
+                response["request_id"] = request["request_id"]
+
+            if action == "ping":
+                response["data"] = {"ok": True}
+            elif action == "get_state":
+                response["data"] = self._remote_state()
+            elif action == "set_state":
+                values = request.get("values")
+                if not isinstance(values, dict):
+                    raise ValueError("set_state requires a 'values' object")
+                response["data"] = self._remote_set_state(values)
+            elif action == "invoke":
+                command = str(request.get("command", "")).strip()
+                if not command:
+                    raise ValueError("invoke requires 'command'")
+                response["data"] = self._remote_invoke(command, request)
+            elif action == "get_debug_log":
+                scope = str(request.get("scope", "global")).strip().lower()
+                last_n = int(request.get("last_n", 200))
+                if scope == "global":
+                    lines = self.scanimage_control.get_debug_log_lines(last_n)
+                elif scope == "path_udp":
+                    path_name = str(request.get("path_name", "")).strip()
+                    if not path_name:
+                        raise ValueError("get_debug_log scope=path_udp requires path_name")
+                    lines = self.scanimage_control.get_path_udp_log_lines(path_name, last_n)
+                else:
+                    raise ValueError(f"Unknown log scope '{scope}'")
+                response["data"] = {"scope": scope, "lines": lines}
+            elif action == "matlab_eval":
+                path_name = str(request.get("path_name", "")).strip()
+                command = str(request.get("command", ""))
+                if not path_name or not command:
+                    raise ValueError("matlab_eval requires path_name and command")
+                timeout_s = request.get("timeout_s")
+                prepend_preamble = bool(request.get("prepend_preamble", True))
+                lines = self.scanimage_control.eval_matlab_command(
+                    path_name,
+                    command,
+                    timeout_s=float(timeout_s) if timeout_s is not None else None,
+                    prepend_preamble=prepend_preamble,
+                )
+                response["data"] = {"path_name": path_name, "lines": lines}
+            elif action == "respond_prompt":
+                prompt_id = str(request.get("prompt_id", "")).strip()
+                choice = str(request.get("choice", "")).strip()
+                handled = self.scanimage_control.respond_remote_prompt(prompt_id, choice)
+                response["data"] = {"handled": handled}
+            else:
+                raise ValueError(f"Unknown action '{action}'")
+        except Exception as exc:
+            response = {
+                "action": "error",
+                "status": "error",
+                "error": str(exc),
+            }
+            try:
+                decoded = json.loads(payload.decode("utf-8"))
+                if isinstance(decoded, dict) and "request_id" in decoded:
+                    response["request_id"] = decoded["request_id"]
+            except Exception:
+                pass
+        self._send_gui_control_reply(address, response)
 
     def refresh_lists(self) -> None:
         current_pattern = self._current_item_name(self.pattern_list)
@@ -1233,6 +1483,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not (self.pattern_dirty or self.sequence_dirty):
+            self._stop_gui_control_listener()
             self.scanimage_control.shutdown()
             event.accept()
             return
@@ -1252,6 +1503,7 @@ class MainWindow(QMainWindow):
             if not self._save_schema_to_default(force=False):
                 event.ignore()
                 return
+        self._stop_gui_control_listener()
         self.scanimage_control.shutdown()
         event.accept()
 
