@@ -6,6 +6,7 @@ arguments
     opts.PreStimPauseDuration (1,1) double = 0.001
     opts.BlankDuration (1,1) double = 0.001
     opts.ParkDuration (1,1) double = 0.001
+    opts.BlockDuration (1,1) double = 0.05
     opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
@@ -79,8 +80,11 @@ for idx = 1:numel(sequenceNames)
             error('Could not resolve schema pattern number for pattern "%s".', stepPatternName);
         end
 
-        hGroup = buildSequenceStepStimGroup(sequenceName, stepIdx, pattern, patternNumber, hSI, opts);
-        hPs.stimRoiGroups(end + 1) = hGroup;
+        blockCount = max(1, ceil(double(pattern.duration_s) ./ double(opts.BlockDuration)));
+        for blockIdx = 1:blockCount
+            hGroup = buildSequenceStepBlockStimGroup(sequenceName, stepIdx, blockIdx, pattern, patternNumber, hSI, opts);
+            hPs.stimRoiGroups(end + 1) = hGroup;
+        end
 
         if any(usedPatternNames == stepPatternName)
             continue;
@@ -106,16 +110,14 @@ disp('Photostim mask generation ready');
 end
 
 
-function hGroup = buildSequenceStepStimGroup(sequenceName, stepIdx, pattern, patternNumber, hSI, opts)
+function hGroup = buildSequenceStepBlockStimGroup(sequenceName, stepIdx, blockIdx, pattern, patternNumber, hSI, opts)
 nBeams = getPhotostimBeamCount(hSI);
-hGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__step_%03d', sequenceName, stepIdx)));
-hGroup.add(makePauseRoi([0 0], [0 0], opts.PreStimPauseDuration, nBeams));
-appendPatternBlockToGroup(hGroup, pattern, patternNumber, hSI, opts, nBeams);
-hGroup.add(makeParkRoi(opts.ParkDuration, nBeams));
+hGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__step_%03d__block_%03d', sequenceName, stepIdx, blockIdx)));
+appendPatternBlockSliceToGroup(hGroup, pattern, patternNumber, blockIdx, hSI, opts, nBeams);
 end
 
 
-function appendPatternBlockToGroup(hGroup, pattern, patternNumber, hSI, opts, nBeams)
+function appendPatternBlockSliceToGroup(hGroup, pattern, patternNumber, blockIdx, hSI, opts, nBeams)
 validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
 validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
 validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
@@ -153,8 +155,10 @@ centerRef = reshape(centerRef, 1, []);
 stimDuration = pattern.duty_cycle ./ pattern.frequency_hz;
 repeatCount = max(1, round(pattern.duration_s .* pattern.frequency_hz));
 cycleDuration = pattern.duration_s ./ repeatCount;
-interStimPauseDuration = cycleDuration - opts.PreStimPauseDuration - stimDuration;
-if interStimPauseDuration < -1e-9
+if opts.BlockDuration <= 0
+    error('BlockDuration must be positive.');
+end
+if cycleDuration < opts.PreStimPauseDuration + stimDuration - 1e-9
     error( ...
         'Pattern P%d timing is impossible: duration %.6fs, frequency %.6fHz, duty_cycle %.6f, and pre-stim pause %.6fs exceed the cycle duration %.6fs.', ...
         patternNumber, ...
@@ -165,15 +169,20 @@ if interStimPauseDuration < -1e-9
         cycleDuration ...
     );
 end
-interStimPauseDuration = max(0, interStimPauseDuration);
 spiralWidth = getfieldwithdefault(pattern, 'spiral_width', 10); %#ok<GFLD>
 spiralHeight = getfieldwithdefault(pattern, 'spiral_height', 10); %#ok<GFLD>
 sizeRef = [double(spiralWidth) ./ resX, double(spiralHeight) ./ resY];
+blockStart_s = (double(blockIdx) - 1.0) * double(opts.BlockDuration);
+totalDuration_s = double(pattern.duration_s);
+blockDuration_s = min(double(opts.BlockDuration), max(0.0, totalDuration_s - blockStart_s));
+if blockDuration_s <= 0
+    error('Pattern P%d block %d is out of range for pattern duration %.6fs.', patternNumber, blockIdx, totalDuration_s);
+end
 
 stimField = scanimage.mroi.scanfield.fields.StimulusField();
 stimField.centerXY = centerRef;
 stimField.sizeXY = sizeRef;
-stimField.duration = stimDuration;
+stimField.duration = blockDuration_s;
 stimField.repetitions = 1;
 stimField.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;
 stimField.stimparams = {'revolutions', opts.Revolutions, 'direction', 'outward'};
@@ -191,12 +200,15 @@ end
 beamPowers = zeros(1, nBeams);
 beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
-stimField.duration = cycleDuration;
-stimField.repetitions = repeatCount;
+stimField.duration = blockDuration_s;
+stimField.repetitions = 1;
 stimField.stimfcnhdl = @opto.scanimage.pulsedStimulusPath;
 stimField.stimparams = { ...
     'prePause_s', opts.PreStimPauseDuration, ...
     'stimActive_s', stimDuration, ...
+    'cycleDuration_s', cycleDuration, ...
+    'patternOffset_s', blockStart_s, ...
+    'totalPatternDuration_s', totalDuration_s, ...
     'delegateFunction', 'scanimage.mroi.stimulusfunctions.logspiral', ...
     'delegateParams', {'revolutions', opts.Revolutions, 'direction', 'outward'} ...
 };

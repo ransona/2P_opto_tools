@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .io import load_schema, save_schema
-from .models import CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
+from .models import SCHEMA_TIME_QUANTUM_S, CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 from .matlab_bridge import autodetect_machine_name, load_machine_ui_config
 from .scanimage_control import ScanImageControlWidget
 
@@ -263,8 +263,9 @@ class PatternEditor(QWidget):
 
         self.name_edit = QLineEdit()
         self.duration_spin = QDoubleSpinBox()
-        self.duration_spin.setRange(0.001, 9999.0)
-        self.duration_spin.setDecimals(4)
+        self.duration_spin.setRange(SCHEMA_TIME_QUANTUM_S, 9999.0)
+        self.duration_spin.setDecimals(3)
+        self.duration_spin.setSingleStep(SCHEMA_TIME_QUANTUM_S)
         self.duration_spin.setValue(1.0)
 
         self.freq_spin = QDoubleSpinBox()
@@ -565,7 +566,8 @@ class SequenceEditor(QWidget):
         self.pattern_select = QComboBox()
         self.start_spin = QDoubleSpinBox()
         self.start_spin.setRange(0.0, 999999.0)
-        self.start_spin.setDecimals(4)
+        self.start_spin.setDecimals(3)
+        self.start_spin.setSingleStep(SCHEMA_TIME_QUANTUM_S)
         self.start_spin.setValue(0.0)
         self.add_step_btn = QPushButton("Add Step")
         self.remove_step_btn = QPushButton("Remove Step")

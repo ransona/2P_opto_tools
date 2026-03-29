@@ -13,6 +13,15 @@ end
 if ~isfield(inputs, 'stimActive_s') || isempty(inputs.stimActive_s)
     inputs.stimActive_s = 0;
 end
+if ~isfield(inputs, 'cycleDuration_s') || isempty(inputs.cycleDuration_s)
+    inputs.cycleDuration_s = [];
+end
+if ~isfield(inputs, 'patternOffset_s') || isempty(inputs.patternOffset_s)
+    inputs.patternOffset_s = 0;
+end
+if ~isfield(inputs, 'totalPatternDuration_s') || isempty(inputs.totalPatternDuration_s)
+    inputs.totalPatternDuration_s = inf;
+end
 if ~isfield(inputs, 'delegateFunction') || isempty(inputs.delegateFunction)
     inputs.delegateFunction = 'scanimage.mroi.stimulusfunctions.logspiral';
 end
@@ -22,6 +31,9 @@ end
 
 prePause_s = double(inputs.prePause_s);
 stimActive_s = double(inputs.stimActive_s);
+cycleDuration_s = double(inputs.cycleDuration_s);
+patternOffset_s = double(inputs.patternOffset_s);
+totalPatternDuration_s = double(inputs.totalPatternDuration_s);
 delegateParams = inputs.delegateParams;
 delegateFunction = inputs.delegateFunction;
 if isa(delegateFunction, 'function_handle')
@@ -33,14 +45,22 @@ end
 xx = zeros(size(tt));
 yy = zeros(size(tt));
 
+absT = tt + patternOffset_s;
+validMask = absT >= 0 & absT < totalPatternDuration_s;
+if isempty(cycleDuration_s) || cycleDuration_s <= 0
+    cycleT = absT;
+else
+    cycleT = mod(absT, cycleDuration_s);
+end
+
 activeStart_s = max(0, prePause_s);
 activeStop_s = max(activeStart_s, activeStart_s + stimActive_s);
-activeMask = (tt >= activeStart_s) & (tt < activeStop_s);
+activeMask = validMask & (cycleT >= activeStart_s) & (cycleT < activeStop_s);
 if ~any(activeMask)
     return;
 end
 
-activeT = tt(activeMask) - activeStart_s;
+activeT = cycleT(activeMask) - activeStart_s;
 if activeStop_s > activeStart_s
     if numel(activeT) == 1
         delegateT = [0 stimActive_s];

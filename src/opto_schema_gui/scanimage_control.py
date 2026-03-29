@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import math
 import html
 import json
 import random
@@ -2186,12 +2187,17 @@ class ScanImageControlWidget(QWidget):
                 prep_state_local.sequence_to_stimulus_group = {}
                 prep_state_local.sequence_to_stimulus_groups = {}
                 next_group_num = 3
+                photostim_block_duration_s = self._runtimes[photostim_path].path_config.sequence_block_duration_s
                 for sequence_name in prepared_sequence_names:
                     sequence = project.sequences[sequence_name]
-                    step_groups = list(range(next_group_num, next_group_num + len(sequence.steps)))
+                    block_group_count = 0
+                    for step in sequence.steps:
+                        pattern = project.patterns[step.pattern]
+                        block_group_count += max(1, int(math.ceil(float(pattern.duration_s) / photostim_block_duration_s)))
+                    step_groups = list(range(next_group_num, next_group_num + block_group_count))
                     prep_state_local.sequence_to_stimulus_groups[sequence_name] = step_groups
                     prep_state_local.sequence_to_stimulus_group[sequence_name] = step_groups[0]
-                    next_group_num += len(sequence.steps)
+                    next_group_num += block_group_count
                 payload["stimulus_groups"] = [
                     {
                         "stimulus_group_nums": prep_state_local.sequence_to_stimulus_groups[sequence_name],
@@ -2348,25 +2354,44 @@ class ScanImageControlWidget(QWidget):
             raise ValueError(f"Sequence '{sequence_name}' has not been prepared yet.")
         sequence = project.sequences[sequence_name]
         stimulus_group_nums = list(sequence_to_stimulus_groups[sequence_name])
-        if len(stimulus_group_nums) != len(sequence.steps):
-            raise ValueError(
-                f"Prepared group count for sequence '{sequence_name}' does not match schema step count."
-            )
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if not photostim_path:
+            raise ValueError("No photostim path configured")
+        block_duration_s = self._runtimes[photostim_path].path_config.sequence_block_duration_s
+        if block_duration_s <= 0:
+            raise ValueError("Configured sequence block duration must be positive.")
 
-        pre_pause_s = 0.001
-        park_s = 0.001
-        trigger_times_s: list[float] = []
+        planned_group_nums: list[int] = [2]
+        trigger_times_s: list[float] = [0.0]
         stimulus_pattern_numbers: list[int] = []
-        next_earliest_trigger_s = 0.0
         schema_pattern_names = list(project.patterns.keys())
+        group_cursor = 0
+        sequence_end_s = block_duration_s
         for step in sequence.steps:
             pattern = project.patterns[step.pattern]
-            trigger_time_s = max(max(0.0, float(step.start_s) - pre_pause_s), next_earliest_trigger_s)
-            trigger_times_s.append(trigger_time_s)
-            stimulus_pattern_numbers.append(schema_pattern_names.index(step.pattern) + 1)
-            next_earliest_trigger_s = trigger_time_s + pre_pause_s + float(pattern.duration_s) + park_s
+            block_count = max(1, int(math.ceil(float(pattern.duration_s) / block_duration_s)))
+            if group_cursor + block_count > len(stimulus_group_nums):
+                raise ValueError(
+                    f"Prepared block count for sequence '{sequence_name}' does not match schema step count."
+                )
+            for block_idx in range(block_count):
+                planned_group_nums.append(stimulus_group_nums[group_cursor])
+                trigger_times_s.append(block_duration_s + float(step.start_s) + (block_idx * block_duration_s))
+                stimulus_pattern_numbers.append(schema_pattern_names.index(step.pattern) + 1)
+                group_cursor += 1
+            sequence_end_s = max(
+                sequence_end_s,
+                block_duration_s + float(step.start_s) + float(pattern.duration_s),
+            )
 
-        return sequence_name, stimulus_group_nums, trigger_times_s, stimulus_pattern_numbers
+        if group_cursor != len(stimulus_group_nums):
+            raise ValueError(
+                f"Prepared block mapping for sequence '{sequence_name}' contains {len(stimulus_group_nums)} groups but only {group_cursor} were consumed."
+            )
+
+        planned_group_nums.append(2)
+        trigger_times_s.append(sequence_end_s)
+        return sequence_name, planned_group_nums, trigger_times_s, stimulus_pattern_numbers
 
     def _apply_trigger_sequence(self, path_name: str, stimulus_group_idx: int) -> None:
         self._apply_on_demand_group(path_name, stimulus_group_idx, software_trigger=self._current_trigger_mode() != "hardware")
@@ -2536,13 +2561,9 @@ class ScanImageControlWidget(QWidget):
                 else:
                     start_time = self._wait_for_on_demand_output_start(path_name)
                 self.signals.log_message.emit(
-                    f"[{path_name}] on-demand sequence schedule started for '{sequence_name}' with {len(stimulus_group_nums)} step group(s)"
+                    f"[{path_name}] on-demand sequence schedule started for '{sequence_name}' with {len(stimulus_group_nums)} group(s) including leading/trailing park"
                 )
                 emitted_stimuli: list[str] = []
-                if stimulus_pattern_numbers:
-                    emitted_stimuli.append(str(stimulus_pattern_numbers[0]))
-                    if self._debug_category_enabled.get("stimuli", True):
-                        self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
                 for index in range(1, len(stimulus_group_nums)):
                     trigger_time_s = trigger_times_s[index]
                     while True:
@@ -2554,12 +2575,12 @@ class ScanImageControlWidget(QWidget):
                             break
                         time.sleep(min(remaining, 0.05))
                     self._apply_on_demand_group(path_name, stimulus_group_nums[index], software_trigger=True)
-                    if index < len(stimulus_pattern_numbers):
-                        emitted_stimuli.append(str(stimulus_pattern_numbers[index]))
+                    if 1 <= index <= len(stimulus_pattern_numbers):
+                        emitted_stimuli.append(str(stimulus_pattern_numbers[index - 1]))
                         if self._debug_category_enabled.get("stimuli", True):
                             self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
                     self.signals.log_message.emit(
-                        f"[{path_name}] triggered step group {stimulus_group_nums[index]} at t={trigger_time_s:.4f}s"
+                        f"[{path_name}] triggered group {stimulus_group_nums[index]} at t={trigger_time_s:.4f}s"
                     )
                 runtime.software_trigger_stop = None
                 runtime.software_trigger_thread = None
@@ -3153,11 +3174,11 @@ class ScanImageControlWidget(QWidget):
         )
         if first_group_software_triggered:
             self.signals.log_message.emit(
-                f"[{path_name}] first step group {first_group} software-triggered before ready"
+                f"[{path_name}] leading park group {first_group} software-triggered before ready"
             )
         else:
             self.signals.log_message.emit(
-                f"[{path_name}] first step group {first_group} armed and waiting for external trigger"
+                f"[{path_name}] leading park group {first_group} armed and waiting for external trigger"
             )
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:

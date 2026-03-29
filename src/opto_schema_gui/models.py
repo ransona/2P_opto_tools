@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List
 
+SCHEMA_TIME_QUANTUM_S = 0.05
+
+
+def _is_quantized(value: float, quantum: float = SCHEMA_TIME_QUANTUM_S, tol: float = 1e-9) -> bool:
+    if quantum <= 0:
+        return True
+    steps = round(value / quantum)
+    return abs(value - (steps * quantum)) <= tol
+
 
 @dataclass
 class CellSpec:
@@ -93,6 +102,10 @@ class ExperimentProject:
                 errors.append("Pattern name cannot be empty.")
             if pattern.duration_s <= 0:
                 errors.append(f"Pattern '{name}' must have duration > 0.")
+            if not _is_quantized(pattern.duration_s):
+                errors.append(
+                    f"Pattern '{name}' must have duration in {SCHEMA_TIME_QUANTUM_S * 1000:.0f} ms increments."
+                )
             if pattern.frequency_hz <= 0:
                 errors.append(f"Pattern '{name}' must have frequency > 0.")
             if pattern.duty_cycle < 0 or pattern.duty_cycle > 1:
@@ -126,6 +139,10 @@ class ExperimentProject:
                 if step.start_s < 0:
                     errors.append(f"Sequence '{name}' contains a negative start time.")
                     continue
+                if not _is_quantized(step.start_s):
+                    errors.append(
+                        f"Sequence '{name}' step '{step.pattern}' must start on a {SCHEMA_TIME_QUANTUM_S * 1000:.0f} ms grid."
+                    )
                 pattern = self.patterns[step.pattern]
                 end_s = step.start_s + pattern.duration_s
                 if last_end is not None and step.start_s < last_end:

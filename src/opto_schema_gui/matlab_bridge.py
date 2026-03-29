@@ -60,6 +60,7 @@ class PathConfig:
     ignore_frequency: bool
     stimulus_function: str
     power_scale_mode: str
+    sequence_block_duration_s: float
     trial_waveform_output_port: str
     trial_waveform_photostim_trigger_term: str
     trial_waveform_start_trigger_port: str
@@ -675,6 +676,7 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             ignore_frequency=_get_bool(section, None, "ignore_frequency", True),
             stimulus_function=_get_string(section, None, "stimulus_function", "point"),
             power_scale_mode=_get_string(section, None, "power_scale_mode", "multiply"),
+            sequence_block_duration_s=_get_float(section, None, "sequence_block_duration_s", 0.05),
             trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D1.7"),
             trial_waveform_photostim_trigger_term=_get_string(
                 section, None, "trial_waveform_photostim_trigger_term", "D1.7"
@@ -799,6 +801,7 @@ def build_prepare_schema_photostim_command(
         "    PreStimPauseDuration=0.001, ...",
         "    BlankDuration=0.001, ...",
         "    ParkDuration=0.001, ...",
+        f"    BlockDuration={path_config.sequence_block_duration_s}, ...",
         f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
         "    MinCenterDistanceUm=15, ...",
         "    Revolutions=5);",
