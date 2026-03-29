@@ -24,7 +24,11 @@ command = strjoin([
     quoteForShell(schemaPath)
 ], " ");
 
+disp('loadSchemaYaml: running helper command');
+disp(command);
 [status, output] = system(command);
+disp('loadSchemaYaml: helper command completed');
+disp(status);
 if status ~= 0
     error('Failed to load schema YAML via helper script.\nCommand: %s\nOutput:\n%s', command, output);
 end

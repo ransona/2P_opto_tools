@@ -15,7 +15,9 @@ if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
     error('The provided hSI handle does not expose hPhotostim.');
 end
 
+disp('prepareSchemaPhotostim: loading schema');
 schema = opto.scanimage.loadSchemaYaml(schemaPath, opts.PythonExecutable);
+disp('prepareSchemaPhotostim: schema loaded');
 if ~isfield(schema, 'patterns') || ~isfield(schema, 'sequences')
     error('Schema file must contain patterns and sequences blocks: %s', schemaPath);
 end
@@ -24,13 +26,20 @@ patternNames = string(fieldnames(schema.patterns));
 sequenceNames = string(fieldnames(schema.sequences));
 
 hPs = hSI.hPhotostim;
+disp('prepareSchemaPhotostim: photostim handle ready');
 if hPs.active
+    disp('prepareSchemaPhotostim: aborting active photostim');
     hPs.abort();
+    disp('prepareSchemaPhotostim: active photostim aborted');
 end
+disp('prepareSchemaPhotostim: clearing existing stimulus groups');
 hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);
 hPs.sequenceSelectedStimuli = [];
+disp('prepareSchemaPhotostim: existing stimulus groups cleared');
 
 nBeams = getPhotostimBeamCount(hSI);
+disp('prepareSchemaPhotostim: beam count resolved');
+disp(nBeams);
 disp('Preparing reserved stimulus group: BLANK');
 hPs.stimRoiGroups(end + 1) = makeBlankOnlyGroup("BLANK", opts.BlankDuration, nBeams);
 disp('Preparing reserved stimulus group: PARK');
@@ -212,6 +221,7 @@ stimField.stimparams = { ...
 };
 stimField.beamsfcnhdl = @opto.scanimage.pulsedBeamPowers;
 hGroup.add(makeStimRoi(stimField));
+end
 
 
 function group = makeBlankOnlyGroup(name, durationSeconds, nBeams)
