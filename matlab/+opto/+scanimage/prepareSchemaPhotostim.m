@@ -201,14 +201,17 @@ end
 beamPowers = zeros(1, nBeams);
 beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
-for repeatIndex = 1:repeatCount
-    hGroup.add(makePauseRoi(centerRef, sizeRef, opts.PreStimPauseDuration, nBeams));
-    hGroup.add(makeStimRoi(stimField));
-    if interStimPauseDuration > 0
-        hGroup.add(makePauseRoi(centerRef, sizeRef, interStimPauseDuration, nBeams));
-    end
-end
-end
+stimField.duration = cycleDuration;
+stimField.repetitions = repeatCount;
+stimField.stimfcnhdl = @opto.scanimage.pulsedStimulusPath;
+stimField.stimparams = { ...
+    'prePause_s', opts.PreStimPauseDuration, ...
+    'stimActive_s', stimDuration, ...
+    'delegateFunction', 'scanimage.mroi.stimulusfunctions.logspiral', ...
+    'delegateParams', {'revolutions', opts.Revolutions, 'direction', 'outward'} ...
+};
+stimField.beamsfcnhdl = @opto.scanimage.pulsedBeamPowers;
+hGroup.add(makeStimRoi(stimField));
 
 
 function group = makeBlankOnlyGroup(name, durationSeconds, nBeams)
