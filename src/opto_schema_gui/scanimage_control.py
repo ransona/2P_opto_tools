@@ -2742,7 +2742,7 @@ class ScanImageControlWidget(QWidget):
                             break
                         time.sleep(min(remaining, 0.05))
 
-                    self._fire_software_trigger(path_name)
+                    self._fire_trial_trigger_pulse(path_name, task_var_name=f"optoTrialPulseDoTask{index+1}")
                     delivered_triggers += 1
                     if self._debug_category_enabled.get("stimuli", True) and index < len(stimulus_pattern_numbers):
                         emitted_stimuli.append(str(stimulus_pattern_numbers[index]))
@@ -3194,8 +3194,8 @@ class ScanImageControlWidget(QWidget):
         self._prime_photostim_group(path_name, 2)
         self._wait_for_photostim_group_armed(path_name, 2, timeout_s=5.0)
         self.signals.log_message.emit(f"[{path_name}] Leading park armed")
-        self._fire_software_trigger(path_name)
-        self.signals.log_message.emit(f"[{path_name}] Leading park software trigger fired")
+        self._fire_leading_park_pulse(path_name)
+        self.signals.log_message.emit(f"[{path_name}] Leading park trigger pulse fired")
         self._wait_for_photostim_ready_status(path_name, timeout_s=5.0)
         self.signals.log_message.emit(f"[{path_name}] Leading park complete; photostim ready")
 
