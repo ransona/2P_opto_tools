@@ -51,6 +51,7 @@ from .matlab_bridge import (
     autodetect_machine_name,
     build_abort_photostim_command,
     build_experiment_context,
+    build_fire_leading_park_pulse_command,
     build_global_preamble,
     build_import_command,
     build_inspect_photostim_command,
@@ -2405,6 +2406,16 @@ class ScanImageControlWidget(QWidget):
             )
         self._emit_lines(path_name, lines)
 
+    def _fire_leading_park_pulse(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_fire_leading_park_pulse_command(runtime.path_config),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        self._emit_lines(path_name, lines)
+
     def _cancel_software_trigger(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
         if runtime.software_trigger_stop is not None:
@@ -2970,9 +2981,8 @@ class ScanImageControlWidget(QWidget):
             if completed_now is not None
             else (completed_after_restart if completed_after_restart is not None else 0)
         )
-        time.sleep(0.05)
-        self._fire_software_trigger(path_name)
-        self.signals.log_message.emit(f"[{path_name}] Leading park software trigger fired")
+        self._fire_leading_park_pulse(path_name)
+        self.signals.log_message.emit(f"[{path_name}] Leading park trigger pulse fired")
         ready_position, ready_completed = self._wait_for_leading_park_advance(
             path_name,
             baseline_position,

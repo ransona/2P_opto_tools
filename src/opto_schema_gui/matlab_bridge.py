@@ -1099,6 +1099,25 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
     )
 
 
+def build_fire_leading_park_pulse_command(
+    path_config: PathConfig,
+    pulse_delay_s: float = 0.1,
+) -> str:
+    pulse_width_s = path_config.trial_waveform_pulse_width_ms / 1000.0
+    pulse_times_expr = "[" + repr(float(pulse_delay_s)) + "]"
+    total_duration_s = pulse_delay_s + pulse_width_s + 0.2
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "disp('LEADING_PARK_TRIGGER_PULSE');",
+            f"disp({pulse_times_expr});",
+            f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', '', 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', {pulse_times_expr}, 'pulseWidth_s', {pulse_width_s!r}, 'taskName', 'Opto Leading Park Trigger', 'taskVarName', 'optoLeadingParkDoTask');",
+            f"t0 = tic; while most.idioms.isValidObj(do_task) && double(do_task.active) && toc(t0) < {max(1.0, total_duration_s)!r}; pause(0.01); end",
+            "disp('LEADING_PARK_TRIGGER_PULSE_DONE');",
+        ]
+    )
+
+
 def build_test_stim_waveform_command(
     path_config: PathConfig,
     pulse_times_s: list[float],
