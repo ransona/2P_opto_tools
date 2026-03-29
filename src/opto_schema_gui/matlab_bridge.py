@@ -301,11 +301,12 @@ class MatlabSession:
         )
 
     def _build_startup_command(self, startup_command: str | None) -> str:
-        commands = [f"matlab.engine.shareEngine({matlab_string(self.config.engine_name)})"]
+        commands: list[str] = []
         if startup_command:
             commands.append(startup_command)
         else:
             commands.append(f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}))")
+        commands.append(f"matlab.engine.shareEngine({matlab_string(self.config.engine_name)})")
         body = "; ".join(commands)
         return (
             "try; "
