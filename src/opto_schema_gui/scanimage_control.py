@@ -3174,12 +3174,15 @@ class ScanImageControlWidget(QWidget):
         prep_state.leading_park_fired = False
         prep_state.waveform_expected_done_time_s = None
 
+        baseline_active, baseline_position, _, baseline_completed, _ = self._query_photostim_sequence_state(path_name)
+        if not baseline_active:
+            raise RuntimeError("Photostim is not active after programming the trigger sequence.")
+
         software_mode = self._current_trigger_mode() != "hardware"
         if software_mode:
-            baseline_position, baseline_completed = self._wait_for_photostim_restart_ready(path_name)
             self.signals.log_message.emit(
                 f"[{path_name}] Leading park baseline: "
-                + self._format_photostim_state(True, baseline_position, baseline_completed, stimulus_group_nums)
+                + self._format_photostim_state(baseline_active, baseline_position, baseline_completed, stimulus_group_nums)
             )
             self._fire_software_trigger(path_name)
             prep_state.leading_park_fired = True
@@ -3212,7 +3215,6 @@ class ScanImageControlWidget(QWidget):
                 f"[{path_name}] leading park software-triggered before ready"
             )
         else:
-            baseline_position, baseline_completed = self._wait_for_photostim_restart_ready(path_name)
             prep_state.ready_sequence_position = baseline_position
             prep_state.ready_completed_sequences = baseline_completed
             prep_state.remaining_expected_triggers = len(stimulus_group_nums)
