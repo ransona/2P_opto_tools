@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
+import subprocess
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 
@@ -24,6 +28,55 @@ class UdpJsonClient:
         finally:
             sock.close()
         return json.loads(data.decode("utf-8"))
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_gui_entrypoint() -> Path:
+    return _repo_root() / "run_pattern_builder_gui.py"
+
+
+def launch_gui_process(
+    python_executable: str,
+    gui_entrypoint: str | Path,
+    workdir: str | Path | None = None,
+    detach: bool = True,
+) -> int:
+    entrypoint = Path(gui_entrypoint)
+    cwd = str(Path(workdir) if workdir is not None else entrypoint.resolve().parent)
+    cmd = [python_executable, str(entrypoint)]
+
+    kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if detach:
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        else:
+            kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(cmd, **kwargs)
+    return int(proc.pid)
+
+
+def wait_for_udp_ready(host: str, port: int, timeout_s: float) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            return UdpJsonClient(host, port, timeout_s=min(2.0, timeout_s)).request({"action": "ping"})
+        except Exception as exc:
+            last_error = exc
+            time.sleep(1.0)
+    raise TimeoutError(f"Timed out waiting for UDP control on {host}:{port}: {last_error}")
 
 
 def _json_arg(text: str) -> Any:
@@ -49,8 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=1816, help="GUI control port by default")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--request-id", default=None)
+    parser.add_argument("--auto-launch", action="store_true", help="Launch GUI first, then issue the command")
+    parser.add_argument("--wait-after-launch", type=float, default=60.0)
+    parser.add_argument("--python-executable", default=sys.executable)
+    parser.add_argument("--gui-entrypoint", default=str(_default_gui_entrypoint()))
+    parser.add_argument("--workdir", default=str(_repo_root()))
 
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    launch = subparsers.add_parser("launch-gui")
+    launch.add_argument("--no-detach", action="store_true")
+    launch.add_argument("--wait", action="store_true", help="Wait for UDP control ping after launch")
 
     subparsers.add_parser("ping")
     subparsers.add_parser("get-state")
@@ -89,6 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_payload(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     request_id = args.request_id or f"cli-{args.subcommand}"
+    if args.subcommand == "launch-gui":
+        raise ValueError("launch-gui does not use a UDP payload")
     if args.subcommand == "ping":
         return {"request_id": request_id, "action": "ping"}, args.port
     if args.subcommand == "get-state":
@@ -150,6 +214,28 @@ def build_payload(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.subcommand == "launch-gui":
+        pid = launch_gui_process(
+            python_executable=args.python_executable,
+            gui_entrypoint=args.gui_entrypoint,
+            workdir=args.workdir,
+            detach=not args.no_detach,
+        )
+        result: dict[str, Any] = {"status": "ready", "data": {"launched": True, "pid": pid}}
+        if args.wait:
+            result["data"]["ping"] = wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    if args.auto_launch:
+        launch_gui_process(
+            python_executable=args.python_executable,
+            gui_entrypoint=args.gui_entrypoint,
+            workdir=args.workdir,
+            detach=True,
+        )
+        wait_for_udp_ready(args.host, args.port, args.wait_after_launch)
+
     payload, port = build_payload(args)
     client = UdpJsonClient(args.host, port, args.timeout)
     reply = client.request(payload)
