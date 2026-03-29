@@ -63,14 +63,15 @@ for idx = 1:numel(sequenceNames)
     sequenceName = sequenceNames(idx);
     sequenceField = char(sequenceName);
     sequence = schema.sequences.(sequenceField);
+    sequenceSteps = getStructArrayField(sequence, 'steps');
     disp("Preparing schema sequence:");
     disp(sequenceName);
     disp(idx);
     hGroup = buildSequenceStimGroup(sequenceName, sequence, schema, hSI, opts, schemaPatternNames);
     hPs.stimRoiGroups(end + 1) = hGroup;
 
-    for stepIdx = 1:numel(sequence.steps)
-        stepPatternName = string(sequence.steps(stepIdx).pattern);
+    for stepIdx = 1:numel(sequenceSteps)
+        stepPatternName = string(sequenceSteps(stepIdx).pattern);
         if any(usedPatternNames == stepPatternName)
             continue;
         end
@@ -104,7 +105,7 @@ nBeams = getPhotostimBeamCount(hSI);
 hGroup = scanimage.mroi.RoiGroup(char(sequenceName));
 hGroup.add(makePauseRoi([0 0], [0 0], opts.PreStimPauseDuration, nBeams));
 
-orderedSteps = sequence.steps;
+orderedSteps = getStructArrayField(sequence, 'steps');
 if isempty(orderedSteps)
     error('Sequence "%s" contains no steps.', string(sequenceName));
 end
@@ -149,9 +150,10 @@ validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonna
 assert(isfield(pattern, 'cells') && ~isempty(pattern.cells), 'Pattern P%d contains no cells.', patternNumber);
 
 [resX, resY] = getResolutionXY(hSI);
-pointsUm = zeros(numel(pattern.cells), 4);
-for i = 1:numel(pattern.cells)
-    c = pattern.cells(i);
+patternCells = getStructArrayField(pattern, 'cells');
+pointsUm = zeros(numel(patternCells), 4);
+for i = 1:numel(patternCells)
+    c = patternCells(i);
     cellLabel = getfieldwithdefault(c, 'label', sprintf('cell%d', i)); %#ok<GFLD>
     try
         x = getScalarField(c, 'x');
@@ -351,6 +353,27 @@ if numel(raw) ~= 1 || ~isfinite(raw)
     error('Field "%s" must be a finite scalar.', fieldName);
 end
 value = raw;
+end
+
+
+function values = getStructArrayField(s, fieldName)
+if ~isfield(s, fieldName)
+    error('Missing required field "%s".', fieldName);
+end
+raw = s.(fieldName);
+if isempty(raw)
+    values = raw;
+    return;
+end
+if iscell(raw)
+    try
+        values = [raw{:}];
+    catch ME
+        error('Field "%s" could not be normalized from a cell array: %s', fieldName, ME.message);
+    end
+    return;
+end
+values = raw;
 end
 
 
