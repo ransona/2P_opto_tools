@@ -2393,8 +2393,21 @@ class ScanImageControlWidget(QWidget):
         trigger_times_s.append(sequence_end_s)
         return sequence_name, planned_group_nums, trigger_times_s, stimulus_pattern_numbers
 
-    def _apply_trigger_sequence(self, path_name: str, stimulus_group_idx: int) -> None:
-        self._apply_on_demand_group(path_name, stimulus_group_idx, software_trigger=self._current_trigger_mode() != "hardware")
+    def _apply_trigger_sequence(self, path_name: str, stimulus_group_nums: list[int]) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_trigger_photostim_command(
+                    runtime.path_config,
+                    stimulus_group_nums,
+                ),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+            runtime.status = "photostim triggered"
+            self.signals.path_status.emit(path_name, runtime.status)
+            self._emit_lines(path_name, lines)
+            return lines
 
     def _apply_on_demand_group(self, path_name: str, stimulus_group_idx: int, software_trigger: bool) -> None:
         runtime = self._ensure_session(path_name)
@@ -3149,36 +3162,73 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         self._cancel_software_trigger(path_name)
         self._cancel_waveform_monitor(path_name)
-        first_group = stimulus_group_nums[0]
-        first_group_software_triggered = self._current_trigger_mode() != "hardware"
-        self._apply_on_demand_group(path_name, first_group, software_trigger=first_group_software_triggered)
-        prep_state.last_trigger_insert_position = first_group
+        if len(trigger_times_s) != len(stimulus_group_nums):
+            raise ValueError("Trigger timing does not match the planned stimulus sequence.")
+        self._apply_trigger_sequence(path_name, stimulus_group_nums)
+
+        prep_state.last_trigger_insert_position = 1
         prep_state.expected_sequence_position = None
         prep_state.remaining_expected_triggers = None
         prep_state.ready_sequence_position = None
         prep_state.ready_completed_sequences = None
-        prep_state.leading_park_fired = first_group_software_triggered
+        prep_state.leading_park_fired = False
         prep_state.waveform_expected_done_time_s = None
-        self._start_on_demand_sequence_schedule(
-            path_name,
-            sequence_name,
-            stimulus_group_nums,
-            trigger_times_s,
-            stimulus_pattern_numbers,
-            first_group_software_triggered=first_group_software_triggered,
-            request_path_name=request_path_name,
-            reply_address=reply_address,
-            schema_name=schema_name,
-            exp_id=exp_id,
-            seq_num=seq_num,
-        )
-        if first_group_software_triggered:
+
+        software_mode = self._current_trigger_mode() != "hardware"
+        if software_mode:
+            baseline_position, baseline_completed = self._wait_for_photostim_restart_ready(path_name)
             self.signals.log_message.emit(
-                f"[{path_name}] leading park group {first_group} software-triggered before ready"
+                f"[{path_name}] Leading park baseline: "
+                + self._format_photostim_state(True, baseline_position, baseline_completed, stimulus_group_nums)
+            )
+            self._fire_software_trigger(path_name)
+            prep_state.leading_park_fired = True
+            ready_position, ready_completed = self._wait_for_leading_park_advance(
+                path_name,
+                baseline_position,
+                baseline_completed,
+                timeout_s=max(5.0, 4.0 * self._runtimes[path_name].path_config.sequence_block_duration_s),
+            )
+            prep_state.ready_sequence_position = ready_position
+            prep_state.ready_completed_sequences = ready_completed
+            prep_state.remaining_expected_triggers = max(0, len(stimulus_group_nums) - 1)
+            if len(trigger_times_s) > 1:
+                first_step_time_s = trigger_times_s[1]
+                remaining_trigger_times_s = [max(0.0, t - first_step_time_s) for t in trigger_times_s[1:]]
+            else:
+                remaining_trigger_times_s = []
+            self._start_software_trigger_schedule(
+                path_name,
+                sequence_name,
+                remaining_trigger_times_s,
+                stimulus_pattern_numbers,
+                request_path_name=request_path_name,
+                reply_address=reply_address,
+                schema_name=schema_name,
+                exp_id=exp_id,
+                seq_num=seq_num,
+            )
+            self.signals.log_message.emit(
+                f"[{path_name}] leading park software-triggered before ready"
             )
         else:
+            baseline_position, baseline_completed = self._wait_for_photostim_restart_ready(path_name)
+            prep_state.ready_sequence_position = baseline_position
+            prep_state.ready_completed_sequences = baseline_completed
+            prep_state.remaining_expected_triggers = len(stimulus_group_nums)
+            prep_state.waveform_expected_done_time_s = trigger_times_s[-1] if trigger_times_s else 0.0
+            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=True)
+            self._start_waveform_external_monitor(
+                path_name,
+                sequence_name,
+                request_path_name=request_path_name,
+                reply_address=reply_address,
+                schema_name=schema_name,
+                exp_id=exp_id,
+                seq_num=seq_num,
+            )
             self.signals.log_message.emit(
-                f"[{path_name}] leading park group {first_group} armed and waiting for external trigger"
+                f"[{path_name}] sequence armed and waiting for external trigger train"
             )
 
     def _resolve_schema_path(self, schema_name: str, exp_id: str) -> Path:

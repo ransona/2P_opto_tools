@@ -97,9 +97,15 @@ end
 importedPatternNames = usedPatternNames;
 patternNumbers = usedPatternNumbers;
 
-hPs.stimulusMode = 'onDemand';
-hPs.sequenceSelectedStimuli = [];
+hPs.stimulusMode = 'sequence';
+hPs.sequenceSelectedStimuli = 2;
 hPs.numSequences = 1;
+if isprop(hPs, 'autoTriggerPeriod')
+    hPs.autoTriggerPeriod = 0;
+end
+if isprop(hPs, 'stimImmediately')
+    hPs.stimImmediately = false;
+end
 if strlength(opts.TriggerTerm) > 0
     hPs.stimTriggerTerm = normalizePhotostimTriggerTerm(char(opts.TriggerTerm));
 end

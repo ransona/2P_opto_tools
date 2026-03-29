@@ -1003,41 +1003,37 @@ def build_inspect_photostim_command(path_config: PathConfig) -> str:
 
 def build_trigger_photostim_command(
     path_config: PathConfig,
-    stimulus_group_idx: int,
-    software_trigger: bool,
+    stimulus_group_indices: list[int],
 ) -> str:
     hsi = path_config.hsi_variable
     trigger_term = matlab_string(path_config.trial_waveform_photostim_trigger_term)
+    sequence_expr = "[" + " ".join(str(int(idx)) for idx in stimulus_group_indices) + "]"
 
     lines = [
         build_global_preamble(path_config),
         f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
         "hPs = " + hsi + ".hPhotostim;",
-        f"stimGroupIdx = {int(stimulus_group_idx)};",
-        "assert(stimGroupIdx >= 1 && stimGroupIdx <= numel(hPs.stimRoiGroups), 'Trigger group references an invalid stimulus group.');",
-        "assert(hPs.active, 'Photostim must already be active. Run prep_patterns first.');",
-        "hPs.stimulusMode = 'onDemand';",
+        f"triggerSequence = {sequence_expr};",
+        "assert(~isempty(triggerSequence), 'Trigger sequence must contain at least one prepared stimulus group.');",
+        "assert(all(triggerSequence >= 1) && all(triggerSequence <= numel(hPs.stimRoiGroups)), 'Trigger sequence references an invalid stimulus group.');",
+        "if hPs.active;",
+        "    hPs.abort();",
+        "end",
+        "hPs.stimulusMode = 'sequence';",
         f"hPs.stimTriggerTerm = {trigger_term};",
-        f"hPs.stimImmediately = {'true' if software_trigger else 'false'};",
-        "disp('TRIGGER_PHOTOSTIM_GROUP');",
-        "disp(stimGroupIdx);",
+        "hPs.sequenceSelectedStimuli = triggerSequence;",
+        "hPs.numSequences = 1;",
+        "if isprop(hPs,'autoTriggerPeriod'); hPs.autoTriggerPeriod = 0; end",
+        "if isprop(hPs,'stimImmediately'); hPs.stimImmediately = false; end",
+        "hPs.start();",
+        "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",
+        "disp(triggerSequence);",
         "disp('TRIGGER_PHOTOSTIM_MODE');",
         "disp(string(hPs.stimulusMode));",
-        "disp('TRIGGER_PHOTOSTIM_STIM_IMMEDIATELY');",
-        "disp(double(hPs.stimImmediately));",
-        "hPs.onDemandStimNow(stimGroupIdx, false);",
+        "disp('TRIGGER_PHOTOSTIM_NUM_SEQUENCES');",
+        "disp(double(hPs.numSequences));",
+        "disp('TRIGGER_PHOTOSTIM_READY');",
     ]
-    if software_trigger:
-        lines.extend(
-            [
-                "disp('SOFTWARE_TRIGGER_FIRED');",
-            ]
-        )
-    lines.extend(
-        [
-            "disp('TRIGGER_PHOTOSTIM_READY');",
-        ]
-    )
     return "\n".join(lines)
 
 
