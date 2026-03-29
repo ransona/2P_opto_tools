@@ -67,6 +67,32 @@ def launch_gui_process(
     return int(proc.pid)
 
 
+def launch_command_process(
+    argv: list[str],
+    workdir: str | Path | None = None,
+    detach: bool = True,
+) -> int:
+    if not argv:
+        raise ValueError("argv must not be empty")
+    cwd = str(Path(workdir) if workdir is not None else Path.cwd())
+    kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if detach:
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        else:
+            kwargs["start_new_session"] = True
+    proc = subprocess.Popen(argv, **kwargs)
+    return int(proc.pid)
+
+
 def _recv_json(sock: socket.socket) -> tuple[dict[str, Any], tuple[str, int]]:
     payload, address = sock.recvfrom(65535)
     data = json.loads(payload.decode("utf-8"))
@@ -105,6 +131,13 @@ def run_launcher_server(
                         detach=True,
                     )
                     response["data"] = {"launched": True, "pid": launched_pid}
+                elif action == "launch_cmd":
+                    argv = request.get("argv")
+                    cwd = request.get("cwd", workdir)
+                    if not isinstance(argv, list) or not all(isinstance(v, str) for v in argv):
+                        raise ValueError("launch_cmd requires 'argv' as a JSON string array")
+                    pid = launch_command_process(argv=argv, workdir=str(cwd), detach=True)
+                    response["data"] = {"launched": True, "pid": pid, "argv": argv, "cwd": str(cwd)}
                 elif action == "status":
                     response["data"] = {"launched_pid": launched_pid}
                 else:
@@ -171,7 +204,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--bind-port", type=int, default=None)
 
     launcher = subparsers.add_parser("launcher")
-    launcher.add_argument("launcher_action", choices=["ping", "launch_gui", "status"])
+    launcher.add_argument("launcher_action", choices=["ping", "launch_gui", "status", "launch_cmd"])
+    launcher.add_argument("launcher_args", nargs="*", help="For launch_cmd: command and args to launch")
+    launcher.add_argument("--cwd", default=None, help="Working directory for launch_cmd")
 
     subparsers.add_parser("ping")
     subparsers.add_parser("get-state")
@@ -215,7 +250,14 @@ def build_payload(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if args.subcommand == "serve-launcher":
         raise ValueError("serve-launcher does not use a UDP payload")
     if args.subcommand == "launcher":
-        return {"request_id": request_id, "action": args.launcher_action}, args.launcher_port
+        payload: dict[str, Any] = {"request_id": request_id, "action": args.launcher_action}
+        if args.launcher_action == "launch_cmd":
+            if not args.launcher_args:
+                raise ValueError("launcher launch_cmd requires a command after '--'")
+            payload["argv"] = list(args.launcher_args)
+            if args.cwd is not None:
+                payload["cwd"] = args.cwd
+        return payload, args.launcher_port
     if args.subcommand == "ping":
         return {"request_id": request_id, "action": "ping"}, args.port
     if args.subcommand == "get-state":
