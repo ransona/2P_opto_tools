@@ -147,9 +147,13 @@ class MatlabSession:
         if connected:
             self.attached = True
             self.started_with_launch = False
-            self._validate_connected_session()
-            self._set_working_directory()
-            return
+            try:
+                self._validate_connected_session()
+                self._set_working_directory()
+                return
+            except Exception:
+                self.engine = None
+                self.attached = False
 
         self.attached = False
         self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
