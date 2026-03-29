@@ -1,7 +1,7 @@
-function [importedPatternNames, patternNumbers] = prepareSchemaPhotostim(hSI, schemaPath, opts)
+function [importedPatternNames, patternNumbers] = prepareSchemaPhotostim(hSI, schemaSource, opts)
 arguments
     hSI
-    schemaPath (1,1) string
+    schemaSource
     opts.PythonExecutable (1,1) string = "python"
     opts.PreStimPauseDuration (1,1) double = 0.001
     opts.BlankDuration (1,1) double = 0.001
@@ -15,11 +15,18 @@ if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
     error('The provided hSI handle does not expose hPhotostim.');
 end
 
-disp('prepareSchemaPhotostim: loading schema');
-schema = opto.scanimage.loadSchemaYaml(schemaPath, opts.PythonExecutable);
-disp('prepareSchemaPhotostim: schema loaded');
+disp('prepareSchemaPhotostim: resolving schema');
+if isstruct(schemaSource)
+    schema = schemaSource;
+elseif ischar(schemaSource) || isstring(schemaSource)
+    schemaPath = string(schemaSource);
+    schema = opto.scanimage.loadSchemaYaml(schemaPath, opts.PythonExecutable);
+else
+    error('prepareSchemaPhotostim requires schemaSource to be a struct or path string.');
+end
+disp('prepareSchemaPhotostim: schema ready');
 if ~isfield(schema, 'patterns') || ~isfield(schema, 'sequences')
-    error('Schema file must contain patterns and sequences blocks: %s', schemaPath);
+    error('Schema data must contain patterns and sequences blocks.');
 end
 
 patternNames = string(fieldnames(schema.patterns));

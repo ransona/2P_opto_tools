@@ -721,9 +721,12 @@ def build_import_command(
     schema_expr = matlab_string(str(Path(schema_path).resolve()))
     point_size_expr = f"[{path_config.point_size_xy[0]} {path_config.point_size_xy[1]}]"
     if prepare_sequence or start_photostim:
+        schema_payload = yaml.safe_load(Path(schema_path).read_text()) or {}
+        schema_json_expr = matlab_string(json.dumps(schema_payload, separators=(",", ":")))
         lines = [
             build_global_preamble(path_config),
-            f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, {schema_expr}, ...",
+            f"schemaData = jsondecode({schema_json_expr});",
+            f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, schemaData, ...",
             "    PreStimPauseDuration=0.001, ...",
             "    BlankDuration=0.001, ...",
             "    ParkDuration=0.001, ...",
