@@ -774,6 +774,41 @@ def build_import_command(
     return "\n".join(lines)
 
 
+def build_schema_payload_load_command(
+    path_config: PathConfig,
+    schema_json_path: str | Path,
+    schema_var_name: str = "schemaData",
+) -> str:
+    schema_json_expr = matlab_string(str(Path(schema_json_path).resolve()))
+    lines = [
+        build_global_preamble(path_config),
+        f"{schema_var_name} = jsondecode(fileread({schema_json_expr}));",
+        f"disp('SCHEMA_PAYLOAD_READY');",
+        f"disp(fieldnames({schema_var_name}));",
+    ]
+    return "\n".join(lines)
+
+
+def build_prepare_schema_photostim_command(
+    path_config: PathConfig,
+    schema_var_name: str = "schemaData",
+) -> str:
+    lines = [
+        build_global_preamble(path_config),
+        f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, {schema_var_name}, ...",
+        "    PreStimPauseDuration=0.001, ...",
+        "    BlankDuration=0.001, ...",
+        "    ParkDuration=0.001, ...",
+        f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
+        "    MinCenterDistanceUm=15, ...",
+        "    Revolutions=5);",
+        "disp('Prepared schema photostim patterns used by sequence groups:');",
+        "disp(importedPatternNames);",
+        "disp(importedPatternNumbers);",
+    ]
+    return "\n".join(lines)
+
+
 def build_global_preamble(path_config: PathConfig) -> str:
     names = [path_config.hsi_variable, path_config.hsictl_variable]
     if path_config.motor_data_variable:

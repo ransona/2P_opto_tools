@@ -56,10 +56,12 @@ from .matlab_bridge import (
     build_global_preamble,
     build_import_command,
     build_inspect_photostim_command,
+    build_prepare_schema_photostim_command,
     build_prepare_trial_waveform_command,
     build_photostim_sequence_status_command,
     build_raw_vdaq_do_test_status_command,
     build_run_script_command,
+    build_schema_payload_load_command,
     build_software_trigger_command,
     build_start_trial_waveform_command,
     build_stop_trial_waveform_command,
@@ -1728,17 +1730,29 @@ class ScanImageControlWidget(QWidget):
             schema_json_path.write_text(json.dumps(schema_payload, separators=(",", ":")))
         with runtime.lock:
             assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_import_command(
-                    schema_path,
-                    runtime.path_config,
-                    pattern_names=pattern_names,
-                    prepare_sequence=prepare_sequence,
-                    start_photostim=start_photostim,
-                    schema_json_path=schema_json_path,
-                ),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
+            if prepare_sequence or start_photostim:
+                assert schema_json_path is not None
+                lines = runtime.session.eval(
+                    build_schema_payload_load_command(runtime.path_config, schema_json_path=schema_json_path),
+                    timeout_s=runtime.path_config.command_timeout_s,
+                )
+                self._emit_lines(path_name, lines)
+                lines = runtime.session.eval(
+                    build_prepare_schema_photostim_command(runtime.path_config),
+                    timeout_s=runtime.path_config.command_timeout_s,
+                )
+            else:
+                lines = runtime.session.eval(
+                    build_import_command(
+                        schema_path,
+                        runtime.path_config,
+                        pattern_names=pattern_names,
+                        prepare_sequence=prepare_sequence,
+                        start_photostim=start_photostim,
+                        schema_json_path=schema_json_path,
+                    ),
+                    timeout_s=runtime.path_config.command_timeout_s,
+                )
             runtime.status = "photostim ready" if start_photostim else "patterns imported"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
