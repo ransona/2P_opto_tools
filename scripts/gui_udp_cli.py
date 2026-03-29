@@ -117,6 +117,10 @@ def run_launcher_server(
             try:
                 request, address = _recv_json(sock)
                 action = str(request.get("action", "")).strip()
+                print(
+                    f"[launcher] from {address[0]}:{address[1]} action={action} payload={json.dumps(request, sort_keys=True)}",
+                    flush=True,
+                )
                 response: dict[str, Any] = {"action": action, "status": "ready"}
                 if "request_id" in request:
                     response["request_id"] = request["request_id"]
@@ -124,6 +128,7 @@ def run_launcher_server(
                 if action == "ping":
                     response["data"] = {"ok": True, "launched_pid": launched_pid}
                 elif action == "launch_gui":
+                    print("[launcher] launching GUI", flush=True)
                     launched_pid = launch_gui_process(
                         python_executable=python_executable,
                         gui_entrypoint=gui_entrypoint,
@@ -136,6 +141,7 @@ def run_launcher_server(
                     cwd = request.get("cwd", workdir)
                     if not isinstance(argv, list) or not all(isinstance(v, str) for v in argv):
                         raise ValueError("launch_cmd requires 'argv' as a JSON string array")
+                    print(f"[launcher] launching command: {argv} cwd={cwd}", flush=True)
                     pid = launch_command_process(argv=argv, workdir=str(cwd), detach=True)
                     response["data"] = {"launched": True, "pid": pid, "argv": argv, "cwd": str(cwd)}
                 elif action == "status":
@@ -145,6 +151,7 @@ def run_launcher_server(
                     if "request_id" in request:
                         response["request_id"] = request["request_id"]
             except Exception as exc:
+                print(f"[launcher] error: {exc}", flush=True)
                 response = {"action": "error", "status": "error", "error": str(exc)}
             sock.sendto(json.dumps(response).encode("utf-8"), address)
     finally:
