@@ -976,6 +976,24 @@ def build_photostim_sequence_status_command(path_config: PathConfig) -> str:
     )
 
 
+def build_photostim_runtime_status_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "disp('PHOTOSTIM_ACTIVE');",
+            "disp(double(hPs.active));",
+            "disp('PHOTOSTIM_STATUS_TEXT');",
+            "disp(string(hPs.status));",
+            "disp('PHOTOSTIM_PRIMED_STIMULUS');",
+            "if isempty(hPs.primedStimulus); disp('NaN'); else; disp(double(hPs.primedStimulus)); end",
+            "disp('PHOTOSTIM_STATUS_READY');",
+        ]
+    )
+
+
 def build_abort_photostim_command(path_config: PathConfig) -> str:
     hsi = path_config.hsi_variable
     return "\n".join(
@@ -987,6 +1005,24 @@ def build_abort_photostim_command(path_config: PathConfig) -> str:
             "    hPs.abort();",
             "end",
             "disp('ABORT_PHOTOSTIM_READY');",
+        ]
+    )
+
+
+def build_prime_photostim_group_command(path_config: PathConfig, stimulus_group_idx: int) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "assert(hPs.active, 'Photostim must be active before priming a stimulus group.');",
+            "assert(strcmp(hPs.stimulusMode, 'onDemand'), 'Photostim must be in onDemand mode for within-group execution.');",
+            f"stimGroupIdx = {int(stimulus_group_idx)};",
+            "disp('PRIME_PHOTOSTIM_GROUP');",
+            "disp(stimGroupIdx);",
+            "hPs.onDemandStimNow(stimGroupIdx, false);",
+            "disp('PRIME_PHOTOSTIM_GROUP_READY');",
         ]
     )
 
@@ -1127,6 +1163,40 @@ def build_fire_leading_park_pulse_command(
             "end",
             "evalin('base', 'clear optoLeadingParkDoTask');",
             "disp('LEADING_PARK_TRIGGER_PULSE_DONE');",
+        ]
+    )
+
+
+def build_fire_trial_trigger_pulse_command(
+    path_config: PathConfig,
+    pulse_delay_s: float = 0.1,
+    task_var_name: str = "optoTrialPulseDoTask",
+    task_name: str = "Opto Trial Trigger Pulse",
+) -> str:
+    pulse_width_s = path_config.trial_waveform_pulse_width_ms / 1000.0
+    pulse_times_expr = "[" + repr(float(pulse_delay_s)) + "]"
+    total_duration_s = pulse_delay_s + pulse_width_s + 0.2
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"if evalin('base', 'exist(''{task_var_name}'',''var'')');",
+            f"    old_task = evalin('base', '{task_var_name}');",
+            "    if most.idioms.isValidObj(old_task);",
+            "        try; old_task.abort(); catch; end",
+            "        try; delete(old_task); catch; end",
+            "    end",
+            f"    evalin('base', 'clear {task_var_name}');",
+            "end",
+            "disp('TRIAL_TRIGGER_PULSE');",
+            f"disp({pulse_times_expr});",
+            f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', '', 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', {pulse_times_expr}, 'pulseWidth_s', {pulse_width_s!r}, 'taskName', {matlab_string(task_name)}, 'taskVarName', {matlab_string(task_var_name)});",
+            f"t0 = tic; while most.idioms.isValidObj(do_task) && double(do_task.active) && toc(t0) < {max(1.0, total_duration_s)!r}; pause(0.01); end",
+            "if most.idioms.isValidObj(do_task);",
+            "    try; do_task.abort(); catch; end",
+            "    try; delete(do_task); catch; end",
+            "end",
+            f"evalin('base', 'clear {task_var_name}');",
+            "disp('TRIAL_TRIGGER_PULSE_DONE');",
         ]
     )
 

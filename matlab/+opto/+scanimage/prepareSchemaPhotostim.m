@@ -70,9 +70,11 @@ for idx = 1:numel(patternNames)
     patternNumbers(end + 1, 1) = patternNumber; %#ok<AGROW>
 end
 
-hPs.stimulusMode = 'sequence';
-hPs.sequenceSelectedStimuli = 1:numel(hPs.stimRoiGroups);
+hPs.stimulusMode = 'onDemand';
+hPs.sequenceSelectedStimuli = [];
 hPs.numSequences = 1;
+hPs.allowMultipleOutputs = false;
+hPs.stimImmediately = false;
 if strlength(opts.TriggerTerm) > 0
     hPs.stimTriggerTerm = normalizePhotostimTriggerTerm(char(opts.TriggerTerm));
 end
