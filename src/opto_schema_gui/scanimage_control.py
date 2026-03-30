@@ -914,6 +914,17 @@ class ScanImageControlWidget(QWidget):
         path = entry[3:]
         return path.endswith(".pyc") and "__pycache__/" in path
 
+    def _discard_tracked_git_changes(self, entries: list[str]) -> bool:
+        tracked_paths = [entry[3:] for entry in entries if len(entry) >= 4]
+        if not tracked_paths:
+            return True
+        self.signals.log_message.emit("[update] Discarding tracked local changes before pull")
+        for entry in entries[:10]:
+            self.signals.log_message.emit(f"[update] reset {entry}")
+        restore_result = self._run_git_command(["restore", "--source=HEAD", "--", *tracked_paths])
+        self._log_process_output("[update]", restore_result)
+        return restore_result.returncode == 0
+
     def _update_and_restart(self) -> None:
         status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=no"])
         if status_result.returncode != 0:
@@ -930,19 +941,13 @@ class ScanImageControlWidget(QWidget):
             if line.strip() and not self._is_ignorable_git_status_entry(line.strip())
         ]
         if dirty_entries:
-            preview = "\n".join(dirty_entries[:10])
-            if len(dirty_entries) > 10:
-                preview = preview + "\n..."
-            self.signals.log_message.emit("[update] blocked: tracked local changes detected")
-            for entry in dirty_entries[:10]:
-                self.signals.log_message.emit(f"[update] dirty {entry}")
-            QMessageBox.warning(
-                self,
-                "Update blocked",
-                "Tracked local changes must be committed or discarded before pulling.\n\n"
-                f"{preview}",
-            )
-            return
+            if not self._discard_tracked_git_changes(dirty_entries):
+                QMessageBox.critical(
+                    self,
+                    "Update failed",
+                    "Could not discard tracked local changes before pulling. See debug log for details.",
+                )
+                return
 
         self.signals.log_message.emit("[update] Running git pull --ff-only")
         pull_result = self._run_git_command(["pull", "--ff-only"])
