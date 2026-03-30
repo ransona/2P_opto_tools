@@ -911,11 +911,11 @@ class ScanImageControlWidget(QWidget):
     def _is_ignorable_git_status_entry(entry: str) -> bool:
         if not entry or len(entry) < 4:
             return False
-        path = entry[3:]
+        path = entry[3:].strip().strip('"')
         return path.endswith(".pyc") and "__pycache__/" in path
 
     def _discard_tracked_git_changes(self, entries: list[str]) -> bool:
-        tracked_paths = [entry[3:] for entry in entries if len(entry) >= 4]
+        tracked_paths = [entry[3:].strip().strip('"') for entry in entries if len(entry) >= 4]
         if not tracked_paths:
             return True
         self.signals.log_message.emit("[update] Discarding tracked local changes before pull")
