@@ -53,7 +53,6 @@ from .matlab_bridge import (
     autodetect_machine_name,
     build_abort_photostim_command,
     build_experiment_context,
-    build_fire_leading_park_pulse_command,
     build_global_preamble,
     build_import_command,
     build_inspect_photostim_command,
@@ -103,12 +102,9 @@ class PreparedPhotostimState:
     triggered_seq_num: int | None = None
     triggered_sequence_name: str = ""
     triggered_stimulus_groups: list[int] = field(default_factory=list)
-    last_trigger_insert_position: int | None = None
-    expected_sequence_position: int | None = None
     remaining_expected_triggers: int | None = None
     ready_sequence_position: int | None = None
     ready_completed_sequences: int | None = None
-    leading_park_fired: bool = False
     waveform_expected_done_time_s: float | None = None
 
     def reset(self) -> None:
@@ -124,12 +120,9 @@ class PreparedPhotostimState:
         self.triggered_seq_num = None
         self.triggered_sequence_name = ""
         self.triggered_stimulus_groups = []
-        self.last_trigger_insert_position = None
-        self.expected_sequence_position = None
         self.remaining_expected_triggers = None
         self.ready_sequence_position = None
         self.ready_completed_sequences = None
-        self.leading_park_fired = False
         self.waveform_expected_done_time_s = None
 
 
@@ -2412,23 +2405,6 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
             return lines
 
-    def _apply_on_demand_group(self, path_name: str, stimulus_group_idx: int, software_trigger: bool) -> None:
-        runtime = self._ensure_session(path_name)
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_trigger_photostim_command(
-                    runtime.path_config,
-                    stimulus_group_idx,
-                    software_trigger=software_trigger,
-                ),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
-            runtime.status = "photostim triggered"
-            self.signals.path_status.emit(path_name, runtime.status)
-            self._emit_lines(path_name, lines)
-            return lines
-
     def _abort_photo_stim(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
@@ -2437,12 +2413,9 @@ class ScanImageControlWidget(QWidget):
                 build_abort_photostim_command(runtime.path_config),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
-            runtime.prepared_photostim.expected_sequence_position = None
-            runtime.prepared_photostim.last_trigger_insert_position = None
             runtime.prepared_photostim.remaining_expected_triggers = None
             runtime.prepared_photostim.ready_sequence_position = None
             runtime.prepared_photostim.ready_completed_sequences = None
-            runtime.prepared_photostim.leading_park_fired = False
             runtime.status = "photostim aborted"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
@@ -2522,106 +2495,12 @@ class ScanImageControlWidget(QWidget):
             )
         self._emit_lines(path_name, lines)
 
-    def _fire_leading_park_pulse(self, path_name: str) -> None:
-        runtime = self._ensure_session(path_name)
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_fire_leading_park_pulse_command(runtime.path_config),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
-        self._emit_lines(path_name, lines)
-
     def _cancel_software_trigger(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
         if runtime.software_trigger_stop is not None:
             runtime.software_trigger_stop.set()
         runtime.software_trigger_stop = None
         runtime.software_trigger_thread = None
-
-    def _wait_for_on_demand_output_start(self, path_name: str, timeout_s: float = 10.0) -> float:
-        deadline = time.monotonic() + timeout_s
-        last_status = ""
-        while time.monotonic() < deadline:
-            _, _, _, _, status_text = self._query_photostim_sequence_state(path_name)
-            last_status = status_text
-            if "Outputting stimulus" in status_text:
-                self.signals.log_message.emit(f"[{path_name}] On-demand photostim output started: {status_text}")
-                return time.monotonic()
-            time.sleep(0.02)
-        raise RuntimeError(f"Timed out waiting for external start of on-demand photostim. Last status: {last_status}")
-
-    def _start_on_demand_sequence_schedule(
-        self,
-        path_name: str,
-        sequence_name: str,
-        stimulus_group_nums: list[int],
-        trigger_times_s: list[float],
-        stimulus_pattern_numbers: list[int],
-        first_group_software_triggered: bool,
-        request_path_name: str | None = None,
-        reply_address: tuple[str, int] | None = None,
-        schema_name: str | None = None,
-        exp_id: str | None = None,
-        seq_num: int | None = None,
-    ) -> None:
-        self._cancel_software_trigger(path_name)
-        runtime = self._runtimes[path_name]
-        stop_event = threading.Event()
-        runtime.software_trigger_stop = stop_event
-
-        def worker() -> None:
-            try:
-                if first_group_software_triggered:
-                    start_time = time.monotonic()
-                else:
-                    start_time = self._wait_for_on_demand_output_start(path_name)
-                self.signals.log_message.emit(
-                    f"[{path_name}] on-demand sequence schedule started for '{sequence_name}' with {len(stimulus_group_nums)} group(s) including leading/trailing park"
-                )
-                emitted_stimuli: list[str] = []
-                for index in range(1, len(stimulus_group_nums)):
-                    trigger_time_s = trigger_times_s[index]
-                    while True:
-                        if stop_event.is_set():
-                            self.signals.log_message.emit(f"[{path_name}] on-demand sequence schedule cancelled")
-                            return
-                        remaining = start_time + trigger_time_s - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        time.sleep(min(remaining, 0.05))
-                    self._apply_on_demand_group(path_name, stimulus_group_nums[index], software_trigger=True)
-                    if 1 <= index <= len(stimulus_pattern_numbers):
-                        pattern_number = stimulus_pattern_numbers[index - 1]
-                        if pattern_number > 0:
-                            emitted_stimuli.append(str(pattern_number))
-                            if self._debug_category_enabled.get("stimuli", True):
-                                self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
-                    self.signals.log_message.emit(
-                        f"[{path_name}] triggered group {stimulus_group_nums[index]} at t={trigger_time_s:.4f}s"
-                    )
-                runtime.software_trigger_stop = None
-                runtime.software_trigger_thread = None
-            except Exception as exc:
-                runtime.software_trigger_stop = None
-                runtime.software_trigger_thread = None
-                self.signals.log_message.emit(f"[{path_name}] ERROR: on-demand sequence schedule failed: {exc}")
-                if request_path_name is not None and reply_address is not None:
-                    payload = {
-                        "action": "trigger_photo_stim",
-                        "status": "error",
-                        "phase": "runtime_schedule",
-                        "schema_name": schema_name,
-                        "expID": exp_id,
-                        "seq_num": seq_num,
-                        "sequence_name": sequence_name,
-                        "error": str(exc),
-                    }
-                    self._send_json_reply(request_path_name, reply_address, payload)
-
-        thread = threading.Thread(target=worker, daemon=True)
-        runtime.software_trigger_thread = thread
-        thread.start()
 
     def _cancel_waveform_monitor(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
@@ -2716,85 +2595,6 @@ class ScanImageControlWidget(QWidget):
                 timeout_s=runtime.path_config.command_timeout_s,
             )
         self._emit_lines(path_name, lines)
-
-    def _start_software_trigger_schedule(
-        self,
-        path_name: str,
-        sequence_name: str,
-        trigger_times_s: list[float],
-        stimulus_pattern_numbers: list[int],
-        request_path_name: str | None = None,
-        reply_address: tuple[str, int] | None = None,
-        schema_name: str | None = None,
-        exp_id: str | None = None,
-        seq_num: int | None = None,
-    ) -> None:
-        self._cancel_software_trigger(path_name)
-        runtime = self._runtimes[path_name]
-        stop_event = threading.Event()
-        runtime.software_trigger_stop = stop_event
-
-        def worker() -> None:
-            start_time = time.monotonic()
-            if self._debug_category_enabled.get("software_trigger_times", True):
-                self.signals.log_message.emit(
-                    f"[{path_name}] software trigger schedule started for sequence '{sequence_name}' with {len(trigger_times_s)} trigger(s)"
-                )
-                self.signals.log_message.emit(
-                    f"[{path_name}] software trigger times: "
-                    + ", ".join(f"{t:.4f}s" for t in trigger_times_s)
-                )
-            emitted_stimuli: list[str] = []
-            for index, trigger_time_s in enumerate(trigger_times_s, start=1):
-                while True:
-                    if stop_event.is_set():
-                        if self._debug_category_enabled.get("software_trigger_times", True):
-                            self.signals.log_message.emit(f"[{path_name}] software trigger schedule cancelled")
-                        return
-                    remaining = start_time + trigger_time_s - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    time.sleep(min(remaining, 0.05))
-                try:
-                    self._fire_software_trigger(path_name)
-                    if self._debug_category_enabled.get("stimuli", True) and index <= len(stimulus_pattern_numbers):
-                        pattern_number = stimulus_pattern_numbers[index - 1]
-                        if pattern_number > 0:
-                            emitted_stimuli.append(str(pattern_number))
-                            self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
-                    if self._debug_category_enabled.get("software_trigger_times", True):
-                        self.signals.log_message.emit(
-                            f"[{path_name}] software trigger fired {index}/{len(trigger_times_s)} at t={trigger_time_s:.4f}s"
-                        )
-                except Exception as exc:
-                    self.signals.log_message.emit(f"[{path_name}] ERROR: software trigger failed: {exc}")
-                    return
-            mismatch_message = self._finalize_pending_photostim_check(path_name, "Software trigger count check")
-            if self._debug_category_enabled.get("software_trigger_times", True):
-                self.signals.log_message.emit(f"[{path_name}] software trigger schedule completed")
-            runtime.software_trigger_stop = None
-            runtime.software_trigger_thread = None
-            if (
-                mismatch_message is not None
-                and self.ignore_incomplete_trigger_checkbox.isChecked()
-                and request_path_name is not None
-                and reply_address is not None
-            ):
-                payload = {
-                    "action": "trigger_photo_stim",
-                    "status": "error",
-                    "phase": "completion_check",
-                    "schema_name": schema_name,
-                    "expID": exp_id,
-                    "seq_num": seq_num,
-                    "sequence_name": sequence_name,
-                    "error": mismatch_message,
-                }
-                self._send_json_reply(request_path_name, reply_address, payload)
-
-        thread = threading.Thread(target=worker, daemon=True)
-        runtime.software_trigger_thread = thread
-        thread.start()
 
     def _start_waveform_software_playback(
         self,
@@ -2998,17 +2798,6 @@ class ScanImageControlWidget(QWidget):
             }
             self._send_json_reply(request_path_name, reply_address, payload)
 
-    def _parse_trigger_insert_position(self, lines: list[str]) -> int | None:
-        for index, raw_line in enumerate(lines):
-            if raw_line.strip() == "TRIGGER_PHOTOSTIM_INSERT_POSITION":
-                if index + 1 >= len(lines):
-                    return None
-                try:
-                    return int(float(lines[index + 1].strip()))
-                except ValueError:
-                    return None
-        return None
-
     def _wait_for_leading_park_advance(
         self,
         path_name: str,
@@ -3043,34 +2832,6 @@ class ScanImageControlWidget(QWidget):
             time.sleep(0.02)
         raise RuntimeError(
             "Leading park did not advance photostim sequence before ready. "
-            + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
-        )
-
-    def _wait_for_photostim_restart_ready(
-        self,
-        path_name: str,
-        timeout_s: float = 5.0,
-    ) -> tuple[int | None, int | None]:
-        deadline = time.monotonic() + timeout_s
-        last_active = False
-        last_position: int | None = None
-        last_completed: int | None = None
-        last_sequence: list[int] = []
-        while time.monotonic() < deadline:
-            active, current_position, sequence, completed_sequences, _ = self._query_photostim_sequence_state(path_name)
-            last_active = active
-            last_position = current_position
-            last_completed = completed_sequences
-            last_sequence = sequence
-            if active and current_position is not None:
-                self.signals.log_message.emit(
-                    f"[{path_name}] Photostim restart ready: "
-                    f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
-                )
-                return current_position, completed_sequences
-            time.sleep(0.02)
-        raise RuntimeError(
-            "Photostim did not reach a ready state after restart. "
             + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
         )
 
@@ -3142,9 +2903,6 @@ class ScanImageControlWidget(QWidget):
         prep_state.remaining_expected_triggers = None
         prep_state.ready_sequence_position = None
         prep_state.ready_completed_sequences = None
-        prep_state.leading_park_fired = False
-        prep_state.expected_sequence_position = None
-        prep_state.last_trigger_insert_position = None
         prep_state.waveform_expected_done_time_s = None
         if delivered_triggers != expected_remaining:
             return f"{delivered_triggers} stimuli delivered, {expected_remaining} expected"
@@ -3173,12 +2931,9 @@ class ScanImageControlWidget(QWidget):
             raise ValueError("Trigger timing does not match the planned stimulus sequence.")
         self._apply_trigger_sequence(path_name, stimulus_group_nums)
 
-        prep_state.last_trigger_insert_position = 1
-        prep_state.expected_sequence_position = None
         prep_state.remaining_expected_triggers = None
         prep_state.ready_sequence_position = None
         prep_state.ready_completed_sequences = None
-        prep_state.leading_park_fired = False
         prep_state.waveform_expected_done_time_s = None
 
         baseline_active, baseline_position, _, baseline_completed, _ = self._query_photostim_sequence_state(path_name)
@@ -3198,7 +2953,6 @@ class ScanImageControlWidget(QWidget):
             else:
                 remaining_trigger_times_s = []
             self._fire_software_trigger(path_name)
-            prep_state.leading_park_fired = True
             ready_position, ready_completed = self._wait_for_leading_park_advance(
                 path_name,
                 baseline_position,
