@@ -2360,8 +2360,8 @@ class ScanImageControlWidget(QWidget):
         if block_duration_s <= 0:
             raise ValueError("Configured sequence block duration must be positive.")
 
-        planned_group_nums: list[int] = [2]
-        trigger_times_s: list[float] = [0.0]
+        planned_group_nums: list[int] = []
+        trigger_times_s: list[float] = []
         stimulus_pattern_numbers: list[int] = []
         schema_pattern_names = list(project.patterns.keys())
         sequence_end_s = 0.0
@@ -2378,7 +2378,6 @@ class ScanImageControlWidget(QWidget):
             block_start_s = block_idx * block_duration_s
             block_end_s = block_start_s + block_duration_s
             planned_group_nums.append(stimulus_group_num)
-            trigger_times_s.append(block_duration_s + block_start_s)
 
             representative_pattern_num = 0
             for step in sequence.steps:
@@ -2391,8 +2390,8 @@ class ScanImageControlWidget(QWidget):
             stimulus_pattern_numbers.append(representative_pattern_num)
 
         planned_group_nums.append(2)
-        trigger_times_s.append(block_duration_s + (len(stimulus_group_nums) * block_duration_s))
         planned_group_nums.append(2)
+        trigger_times_s = [block_duration_s * idx for idx in range(len(planned_group_nums))]
         return sequence_name, planned_group_nums, trigger_times_s, stimulus_pattern_numbers
 
     def _apply_trigger_sequence(self, path_name: str, stimulus_group_nums: list[int]) -> None:
@@ -2933,7 +2932,7 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         self._cancel_software_trigger(path_name)
         self._cancel_waveform_monitor(path_name)
-        if len(trigger_times_s) != max(0, len(stimulus_group_nums) - 1):
+        if len(trigger_times_s) != len(stimulus_group_nums):
             raise ValueError("Trigger timing does not match the planned triggered stimulus sequence.")
         self._apply_trigger_sequence(path_name, stimulus_group_nums)
 
