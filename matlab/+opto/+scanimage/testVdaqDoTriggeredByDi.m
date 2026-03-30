@@ -44,7 +44,7 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
 
     assert(isfinite(sampleRate_Hz) && sampleRate_Hz > 0, 'sampleRate_Hz must be positive.');
     assert(all(isfinite(pulseTimes_s)) && all(pulseTimes_s >= 0), 'pulseTimes_s must be non-negative.');
-    assert(isfinite(pulseWidth_s) && pulseWidth_s > 0, 'pulseWidth_s must be positive.');
+    assert(isfinite(pulseWidth_s) && pulseWidth_s >= 0, 'pulseWidth_s must be non-negative.');
 
     resourceStore = dabs.resources.ResourceStore();
     vDAQ = resourceStore.filterByName('vDAQ0');
@@ -53,15 +53,17 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
     end
     assert(most.idioms.isValidObj(vDAQ), 'vDAQ0 resource was not found.');
 
-    totalDuration_s = max(pulseTimes_s) + pulseWidth_s + 0.1;
+    totalDuration_s = max(pulseTimes_s) + max(pulseWidth_s, 0) + 0.1;
     totalSamples = max(1, ceil(totalDuration_s * sampleRate_Hz));
-    pulseWidth_samples = max(1, round(pulseWidth_s * sampleRate_Hz));
+    pulseWidth_samples = max(0, round(pulseWidth_s * sampleRate_Hz));
 
     outputWaveform = zeros(totalSamples, 1);
-    for idx = 1:numel(pulseTimes_s)
-        startIdx = min(totalSamples, max(1, round(pulseTimes_s(idx) * sampleRate_Hz) + 1));
-        endIdx = min(totalSamples, startIdx + pulseWidth_samples - 1);
-        outputWaveform(startIdx:endIdx) = 1;
+    if pulseWidth_samples > 0
+        for idx = 1:numel(pulseTimes_s)
+            startIdx = min(totalSamples, max(1, round(pulseTimes_s(idx) * sampleRate_Hz) + 1));
+            endIdx = min(totalSamples, startIdx + pulseWidth_samples - 1);
+            outputWaveform(startIdx:endIdx) = 1;
+        end
     end
 
     if evalin('base', sprintf("exist('%s','var')", taskVarName))
