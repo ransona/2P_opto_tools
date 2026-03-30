@@ -7,6 +7,7 @@ arguments
     opts.BlankDuration (1,1) double = 0.001
     opts.ParkDuration (1,1) double = 0.001
     opts.BlockDuration (1,1) double = 0.25
+    opts.BlockSettleMargin (1,1) double = 0.05
     opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
@@ -125,6 +126,10 @@ end
 function appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams)
 blockStart_s = (double(blockIdx) - 1.0) * double(opts.BlockDuration);
 blockEnd_s = blockStart_s + double(opts.BlockDuration);
+contentEnd_s = blockEnd_s - double(opts.BlockSettleMargin);
+if contentEnd_s < blockStart_s
+    error('BlockSettleMargin %.6fs is larger than BlockDuration %.6fs.', opts.BlockSettleMargin, opts.BlockDuration);
+end
 cursor_s = blockStart_s;
 
 for stepIdx = 1:numel(sequenceSteps)
@@ -142,7 +147,7 @@ for stepIdx = 1:numel(sequenceSteps)
     stepStart_s = double(step.start_s);
     stepEnd_s = stepStart_s + double(pattern.duration_s);
     overlapStart_s = max(blockStart_s, stepStart_s);
-    overlapEnd_s = min(blockEnd_s, stepEnd_s);
+    overlapEnd_s = min(contentEnd_s, stepEnd_s);
     if overlapEnd_s <= overlapStart_s
         continue;
     end
