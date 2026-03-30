@@ -1,6 +1,5 @@
 clearvars -global hSI hSICtl;
 global hSI
-hSI.hScan2D.logFramesPerFile=5000;
 global hSICtl
 configDir = fileparts(mfilename('fullpath'));
 mdfPath = fullfile(configDir, '250710_MDF_RGG-RGG - all except SLM.m');
@@ -10,6 +9,7 @@ addpath(genpath(scanimageRoot), '-begin');
 while or(~exist('hSI'),~exist('hSICtl'))
     drawnow
 end
+hSI.hScan2D.logFramesPerFile=5000;
 
 load(fullfile(configDir, 'GGtoP1_working.mat'))
 hSI.hScan_RGG_P2.scannerToRefTransform=tf;
