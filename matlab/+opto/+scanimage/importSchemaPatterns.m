@@ -26,7 +26,7 @@ if ~isfield(schema, 'patterns')
     error('Schema file does not contain a patterns block: %s', schemaPath);
 end
 
-patternNames = string(fieldnames(schema.patterns));
+patternNames = getNamedStructKeys(schema.patterns);
 if ~isempty(opts.PatternNames)
     patternNames = string(opts.PatternNames(:));
 end
@@ -38,14 +38,9 @@ end
 importedPatternNames = strings(0, 1);
 for idx = 1:numel(patternNames)
     patternName = patternNames(idx);
-    patternField = char(patternName);
-    if ~isfield(schema.patterns, patternField)
-        error('Pattern "%s" was requested but is not present in schema %s.', patternName, schemaPath);
-    end
-
-    pattern = schema.patterns.(patternField);
+    pattern = getStructByOriginalName(schema.patterns, patternName, schemaPath, "Pattern");
     if ~isfield(pattern, 'name') || strlength(string(pattern.name)) == 0
-        pattern.name = patternField;
+        pattern.name = patternName;
     end
 
     hGroup = opto.scanimage.buildStimRoiGroupFromPattern(pattern, ...
@@ -62,4 +57,25 @@ for idx = 1:numel(patternNames)
     hSI.hPhotostim.stimRoiGroups(end + 1) = hGroup;
     importedPatternNames(end + 1, 1) = patternName; %#ok<AGROW>
 end
+end
+
+function names = getNamedStructKeys(s)
+fields = string(fieldnames(s));
+names = strings(numel(fields), 1);
+for i = 1:numel(fields)
+    value = s.(fields(i));
+    if isstruct(value) && isfield(value, 'name') && strlength(string(value.name)) > 0
+        names(i) = string(value.name);
+    else
+        names(i) = fields(i);
+    end
+end
+end
+
+function value = getStructByOriginalName(s, originalName, context, label)
+fieldName = string(matlab.lang.makeValidName(char(string(originalName))));
+if ~isfield(s, char(fieldName))
+    error('%s "%s" was requested but is not present in schema %s.', label, string(originalName), context);
+end
+value = s.(char(fieldName));
 end

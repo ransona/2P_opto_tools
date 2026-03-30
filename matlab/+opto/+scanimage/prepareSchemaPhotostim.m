@@ -30,8 +30,8 @@ if ~isfield(schema, 'patterns') || ~isfield(schema, 'sequences')
     error('Schema data must contain patterns and sequences blocks.');
 end
 
-patternNames = string(fieldnames(schema.patterns));
-sequenceNames = string(fieldnames(schema.sequences));
+patternNames = getNamedStructKeys(schema.patterns);
+sequenceNames = getNamedStructKeys(schema.sequences);
 
 hPs = hSI.hPhotostim;
 disp('prepareSchemaPhotostim: photostim handle ready');
@@ -56,14 +56,13 @@ hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration, nBeams
 importedPatternNames = strings(0, 1);
 patternNumbers = zeros(0, 1);
 
-schemaPatternNames = string(fieldnames(schema.patterns));
+schemaPatternNames = getNamedStructKeys(schema.patterns);
 usedPatternNames = strings(0, 1);
 usedPatternNumbers = zeros(0, 1);
 
 for idx = 1:numel(sequenceNames)
     sequenceName = sequenceNames(idx);
-    sequenceField = char(sequenceName);
-    sequence = schema.sequences.(sequenceField);
+    sequence = getStructByOriginalName(schema.sequences, sequenceName, "Sequence");
     sequenceSteps = getStructArrayField(sequence, 'steps');
     disp("Preparing schema sequence:");
     disp(sequenceName);
@@ -78,9 +77,6 @@ for idx = 1:numel(sequenceNames)
 
     for stepIdx = 1:numel(sequenceSteps)
         stepPatternName = string(sequenceSteps(stepIdx).pattern);
-        if ~isfield(schema.patterns, char(stepPatternName))
-            error('Sequence "%s" references unknown pattern "%s".', sequenceName, stepPatternName);
-        end
         patternNumber = find(schemaPatternNames == stepPatternName, 1, 'first');
         if isempty(patternNumber)
             error('Could not resolve schema pattern number for pattern "%s".', stepPatternName);
@@ -130,10 +126,7 @@ cursor_s = blockStart_s;
 for stepIdx = 1:numel(sequenceSteps)
     step = sequenceSteps(stepIdx);
     patternName = string(step.pattern);
-    if ~isfield(patterns, char(patternName))
-        error('Sequence block builder references unknown pattern "%s".', patternName);
-    end
-    pattern = patterns.(char(patternName));
+    pattern = getStructByOriginalName(patterns, patternName, "Pattern");
     patternNumber = find(schemaPatternNames == patternName, 1, 'first');
     if isempty(patternNumber)
         error('Could not resolve schema pattern number for pattern "%s".', patternName);
@@ -273,10 +266,7 @@ sequenceDuration_s = 0.0;
 for stepIdx = 1:numel(sequenceSteps)
     step = sequenceSteps(stepIdx);
     patternName = string(step.pattern);
-    if ~isfield(patterns, char(patternName))
-        error('Sequence references unknown pattern "%s".', patternName);
-    end
-    pattern = patterns.(char(patternName));
+    pattern = getStructByOriginalName(patterns, patternName, "Pattern");
     sequenceDuration_s = max(sequenceDuration_s, double(step.start_s) + double(pattern.duration_s));
 end
 end
@@ -423,6 +413,29 @@ if iscell(raw)
     return;
 end
 values = raw;
+end
+
+
+function names = getNamedStructKeys(s)
+fields = string(fieldnames(s));
+names = strings(numel(fields), 1);
+for i = 1:numel(fields)
+    value = s.(fields(i));
+    if isstruct(value) && isfield(value, 'name') && strlength(string(value.name)) > 0
+        names(i) = string(value.name);
+    else
+        names(i) = fields(i);
+    end
+end
+end
+
+
+function value = getStructByOriginalName(s, originalName, label)
+fieldName = string(matlab.lang.makeValidName(char(string(originalName))));
+if ~isfield(s, char(fieldName))
+    error('%s references unknown %s "%s".', mfilename, label, string(originalName));
+end
+value = s.(char(fieldName));
 end
 
 
