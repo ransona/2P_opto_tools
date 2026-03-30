@@ -1006,7 +1006,6 @@ def build_trigger_photostim_command(
     stimulus_group_indices: list[int],
 ) -> str:
     hsi = path_config.hsi_variable
-    trigger_term = matlab_string(path_config.trial_waveform_photostim_trigger_term)
     sequence_expr = "[" + " ".join(str(int(idx)) for idx in stimulus_group_indices) + "]"
 
     lines = [
@@ -1016,11 +1015,8 @@ def build_trigger_photostim_command(
         f"triggerSequence = {sequence_expr};",
         "assert(~isempty(triggerSequence), 'Trigger sequence must contain at least one prepared stimulus group.');",
         "assert(all(triggerSequence >= 1) && all(triggerSequence <= numel(hPs.stimRoiGroups)), 'Trigger sequence references an invalid stimulus group.');",
-        "hPs.stimulusMode = 'sequence';",
-        f"hPs.stimTriggerTerm = {trigger_term};",
         "hPs.sequenceSelectedStimuli = triggerSequence;",
         "hPs.numSequences = 1;",
-        "if isprop(hPs,'autoTriggerPeriod'); hPs.autoTriggerPeriod = 0; end",
         "if isprop(hPs,'stimImmediately'); hPs.stimImmediately = false; end",
         "if ~hPs.active;",
         "    hPs.start();",
