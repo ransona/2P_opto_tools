@@ -2387,6 +2387,7 @@ class ScanImageControlWidget(QWidget):
 
         planned_group_nums.append(2)
         trigger_times_s.append(block_duration_s + (len(stimulus_group_nums) * block_duration_s))
+        planned_group_nums.append(2)
         return sequence_name, planned_group_nums, trigger_times_s, stimulus_pattern_numbers
 
     def _apply_trigger_sequence(self, path_name: str, stimulus_group_nums: list[int]) -> None:
@@ -2927,8 +2928,8 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         self._cancel_software_trigger(path_name)
         self._cancel_waveform_monitor(path_name)
-        if len(trigger_times_s) != len(stimulus_group_nums):
-            raise ValueError("Trigger timing does not match the planned stimulus sequence.")
+        if len(trigger_times_s) != max(0, len(stimulus_group_nums) - 1):
+            raise ValueError("Trigger timing does not match the planned triggered stimulus sequence.")
         self._apply_trigger_sequence(path_name, stimulus_group_nums)
 
         prep_state.remaining_expected_triggers = None
@@ -2961,7 +2962,7 @@ class ScanImageControlWidget(QWidget):
             )
             prep_state.ready_sequence_position = ready_position
             prep_state.ready_completed_sequences = ready_completed
-            prep_state.remaining_expected_triggers = max(0, len(stimulus_group_nums) - 1)
+            prep_state.remaining_expected_triggers = max(0, len(trigger_times_s) - 1)
             if remaining_trigger_times_s:
                 self._start_waveform_software_playback(
                     path_name,
@@ -2978,7 +2979,7 @@ class ScanImageControlWidget(QWidget):
         else:
             prep_state.ready_sequence_position = baseline_position
             prep_state.ready_completed_sequences = baseline_completed
-            prep_state.remaining_expected_triggers = len(stimulus_group_nums)
+            prep_state.remaining_expected_triggers = len(trigger_times_s)
             prep_state.waveform_expected_done_time_s = trigger_times_s[-1] if trigger_times_s else 0.0
             self._prepare_trial_waveform(path_name, trigger_times_s, external_start=True)
             self._start_waveform_external_monitor(
