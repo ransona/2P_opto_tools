@@ -6,7 +6,7 @@ arguments
     opts.PreStimPauseDuration (1,1) double = 0.001
     opts.BlankDuration (1,1) double = 0.001
     opts.ParkDuration (1,1) double = 0.001
-    opts.BlockDuration (1,1) double = 0.05
+    opts.BlockDuration (1,1) double = 0.25
     opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
@@ -69,23 +69,22 @@ for idx = 1:numel(sequenceNames)
     disp(sequenceName);
     disp(idx);
 
+    sequenceDuration_s = computeSequenceDuration(sequenceSteps, schema.patterns);
+    blockCount = max(1, ceil(double(sequenceDuration_s) ./ double(opts.BlockDuration)));
+    for blockIdx = 1:blockCount
+        hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, schema.patterns, schemaPatternNames, blockIdx, hSI, opts);
+        hPs.stimRoiGroups(end + 1) = hGroup;
+    end
+
     for stepIdx = 1:numel(sequenceSteps)
         stepPatternName = string(sequenceSteps(stepIdx).pattern);
         if ~isfield(schema.patterns, char(stepPatternName))
             error('Sequence "%s" references unknown pattern "%s".', sequenceName, stepPatternName);
         end
-        pattern = schema.patterns.(char(stepPatternName));
         patternNumber = find(schemaPatternNames == stepPatternName, 1, 'first');
         if isempty(patternNumber)
             error('Could not resolve schema pattern number for pattern "%s".', stepPatternName);
         end
-
-        blockCount = max(1, ceil(double(pattern.duration_s) ./ double(opts.BlockDuration)));
-        for blockIdx = 1:blockCount
-            hGroup = buildSequenceStepBlockStimGroup(sequenceName, stepIdx, blockIdx, pattern, patternNumber, hSI, opts);
-            hPs.stimRoiGroups(end + 1) = hGroup;
-        end
-
         if any(usedPatternNames == stepPatternName)
             continue;
         end
@@ -116,14 +115,62 @@ disp('Photostim mask generation ready');
 end
 
 
-function hGroup = buildSequenceStepBlockStimGroup(sequenceName, stepIdx, blockIdx, pattern, patternNumber, hSI, opts)
+function hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts)
 nBeams = getPhotostimBeamCount(hSI);
-hGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__step_%03d__block_%03d', sequenceName, stepIdx, blockIdx)));
-appendPatternBlockSliceToGroup(hGroup, pattern, patternNumber, blockIdx, hSI, opts, nBeams);
+hGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__block_%03d', sequenceName, blockIdx)));
+appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams);
 end
 
 
-function appendPatternBlockSliceToGroup(hGroup, pattern, patternNumber, blockIdx, hSI, opts, nBeams)
+function appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams)
+blockStart_s = (double(blockIdx) - 1.0) * double(opts.BlockDuration);
+blockEnd_s = blockStart_s + double(opts.BlockDuration);
+cursor_s = blockStart_s;
+
+for stepIdx = 1:numel(sequenceSteps)
+    step = sequenceSteps(stepIdx);
+    patternName = string(step.pattern);
+    if ~isfield(patterns, char(patternName))
+        error('Sequence block builder references unknown pattern "%s".', patternName);
+    end
+    pattern = patterns.(char(patternName));
+    patternNumber = find(schemaPatternNames == patternName, 1, 'first');
+    if isempty(patternNumber)
+        error('Could not resolve schema pattern number for pattern "%s".', patternName);
+    end
+
+    stepStart_s = double(step.start_s);
+    stepEnd_s = stepStart_s + double(pattern.duration_s);
+    overlapStart_s = max(blockStart_s, stepStart_s);
+    overlapEnd_s = min(blockEnd_s, stepEnd_s);
+    if overlapEnd_s <= overlapStart_s
+        continue;
+    end
+
+    if overlapStart_s > cursor_s
+        hGroup.add(makePauseRoi([0 0], [0 0], overlapStart_s - cursor_s, nBeams));
+    end
+
+    appendPatternSliceToGroup( ...
+        hGroup, ...
+        pattern, ...
+        patternNumber, ...
+        overlapStart_s - stepStart_s, ...
+        overlapEnd_s - overlapStart_s, ...
+        hSI, ...
+        opts, ...
+        nBeams ...
+    );
+    cursor_s = overlapEnd_s;
+end
+
+if cursor_s < blockEnd_s
+    hGroup.add(makePauseRoi([0 0], [0 0], blockEnd_s - cursor_s, nBeams));
+end
+end
+
+
+function appendPatternSliceToGroup(hGroup, pattern, patternNumber, patternOffset_s, segmentDuration_s, hSI, opts, nBeams)
 validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
 validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
 validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
@@ -178,17 +225,15 @@ end
 spiralWidth = getfieldwithdefault(pattern, 'spiral_width', 10); %#ok<GFLD>
 spiralHeight = getfieldwithdefault(pattern, 'spiral_height', 10); %#ok<GFLD>
 sizeRef = [double(spiralWidth) ./ resX, double(spiralHeight) ./ resY];
-blockStart_s = (double(blockIdx) - 1.0) * double(opts.BlockDuration);
 totalDuration_s = double(pattern.duration_s);
-blockDuration_s = min(double(opts.BlockDuration), max(0.0, totalDuration_s - blockStart_s));
-if blockDuration_s <= 0
-    error('Pattern P%d block %d is out of range for pattern duration %.6fs.', patternNumber, blockIdx, totalDuration_s);
+if segmentDuration_s <= 0
+    error('Pattern P%d segment is out of range for pattern duration %.6fs.', patternNumber, totalDuration_s);
 end
 
 stimField = scanimage.mroi.scanfield.fields.StimulusField();
 stimField.centerXY = centerRef;
 stimField.sizeXY = sizeRef;
-stimField.duration = blockDuration_s;
+stimField.duration = segmentDuration_s;
 stimField.repetitions = 1;
 stimField.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;
 stimField.stimparams = {'revolutions', opts.Revolutions, 'direction', 'outward'};
@@ -206,20 +251,34 @@ end
 beamPowers = zeros(1, nBeams);
 beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
-stimField.duration = blockDuration_s;
+stimField.duration = segmentDuration_s;
 stimField.repetitions = 1;
 stimField.stimfcnhdl = @opto.scanimage.pulsedStimulusPath;
 stimField.stimparams = { ...
     'prePause_s', opts.PreStimPauseDuration, ...
     'stimActive_s', stimDuration, ...
     'cycleDuration_s', cycleDuration, ...
-    'patternOffset_s', blockStart_s, ...
+    'patternOffset_s', patternOffset_s, ...
     'totalPatternDuration_s', totalDuration_s, ...
     'delegateFunction', 'scanimage.mroi.stimulusfunctions.logspiral', ...
     'delegateParams', {'revolutions', opts.Revolutions, 'direction', 'outward'} ...
 };
 stimField.beamsfcnhdl = @opto.scanimage.pulsedBeamPowers;
 hGroup.add(makeStimRoi(stimField));
+end
+
+
+function sequenceDuration_s = computeSequenceDuration(sequenceSteps, patterns)
+sequenceDuration_s = 0.0;
+for stepIdx = 1:numel(sequenceSteps)
+    step = sequenceSteps(stepIdx);
+    patternName = string(step.pattern);
+    if ~isfield(patterns, char(patternName))
+        error('Sequence references unknown pattern "%s".', patternName);
+    end
+    pattern = patterns.(char(patternName));
+    sequenceDuration_s = max(sequenceDuration_s, double(step.start_s) + double(pattern.duration_s));
+end
 end
 
 

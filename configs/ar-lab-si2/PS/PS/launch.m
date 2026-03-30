@@ -4,6 +4,8 @@ hSI.hScan2D.logFramesPerFile=5000;
 global hSICtl
 configDir = fileparts(mfilename('fullpath'));
 mdfPath = fullfile(configDir, '250710_MDF_RGG-RGG - all except SLM.m');
+scanimageRoot = 'C:\Program Files\Vidrio\SI-Premium_2023.1.1_(2025-06-27)_d280f351';
+addpath(genpath(scanimageRoot), '-begin');
 [hSI,hSICtl] = scanimage(mdfPath);
 while or(~exist('hSI'),~exist('hSICtl'))
     drawnow

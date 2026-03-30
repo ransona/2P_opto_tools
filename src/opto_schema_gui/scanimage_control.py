@@ -2190,10 +2190,11 @@ class ScanImageControlWidget(QWidget):
                 photostim_block_duration_s = self._runtimes[photostim_path].path_config.sequence_block_duration_s
                 for sequence_name in prepared_sequence_names:
                     sequence = project.sequences[sequence_name]
-                    block_group_count = 0
+                    sequence_end_s = 0.0
                     for step in sequence.steps:
                         pattern = project.patterns[step.pattern]
-                        block_group_count += max(1, int(math.ceil(float(pattern.duration_s) / photostim_block_duration_s)))
+                        sequence_end_s = max(sequence_end_s, float(step.start_s) + float(pattern.duration_s))
+                    block_group_count = max(1, int(math.ceil(sequence_end_s / photostim_block_duration_s)))
                     step_groups = list(range(next_group_num, next_group_num + block_group_count))
                     prep_state_local.sequence_to_stimulus_groups[sequence_name] = step_groups
                     prep_state_local.sequence_to_stimulus_group[sequence_name] = step_groups[0]
@@ -2206,7 +2207,7 @@ class ScanImageControlWidget(QWidget):
                     }
                     for index, sequence_name in enumerate(prepared_sequence_names)
                 ]
-                self.signals.log_message.emit(f"[{photostim_path}] prepared step stimulus groups for {len(prepared_sequence_names)} sequence(s)")
+                self.signals.log_message.emit(f"[{photostim_path}] prepared sequence block stimulus groups for {len(prepared_sequence_names)} sequence(s)")
             if not ok:
                 payload["error"] = "prep_patterns failed"
 
@@ -2365,32 +2366,34 @@ class ScanImageControlWidget(QWidget):
         trigger_times_s: list[float] = [0.0]
         stimulus_pattern_numbers: list[int] = []
         schema_pattern_names = list(project.patterns.keys())
-        group_cursor = 0
-        sequence_end_s = block_duration_s
+        sequence_end_s = 0.0
         for step in sequence.steps:
             pattern = project.patterns[step.pattern]
-            block_count = max(1, int(math.ceil(float(pattern.duration_s) / block_duration_s)))
-            if group_cursor + block_count > len(stimulus_group_nums):
-                raise ValueError(
-                    f"Prepared block count for sequence '{sequence_name}' does not match schema step count."
-                )
-            for block_idx in range(block_count):
-                planned_group_nums.append(stimulus_group_nums[group_cursor])
-                trigger_times_s.append(block_duration_s + float(step.start_s) + (block_idx * block_duration_s))
-                stimulus_pattern_numbers.append(schema_pattern_names.index(step.pattern) + 1)
-                group_cursor += 1
-            sequence_end_s = max(
-                sequence_end_s,
-                block_duration_s + float(step.start_s) + float(pattern.duration_s),
+            sequence_end_s = max(sequence_end_s, float(step.start_s) + float(pattern.duration_s))
+        expected_block_count = max(1, int(math.ceil(sequence_end_s / block_duration_s)))
+        if expected_block_count != len(stimulus_group_nums):
+            raise ValueError(
+                f"Prepared block mapping for sequence '{sequence_name}' contains {len(stimulus_group_nums)} groups but {expected_block_count} are required."
             )
 
-        if group_cursor != len(stimulus_group_nums):
-            raise ValueError(
-                f"Prepared block mapping for sequence '{sequence_name}' contains {len(stimulus_group_nums)} groups but only {group_cursor} were consumed."
-            )
+        for block_idx, stimulus_group_num in enumerate(stimulus_group_nums):
+            block_start_s = block_idx * block_duration_s
+            block_end_s = block_start_s + block_duration_s
+            planned_group_nums.append(stimulus_group_num)
+            trigger_times_s.append(block_duration_s + block_start_s)
+
+            representative_pattern_num = 0
+            for step in sequence.steps:
+                pattern = project.patterns[step.pattern]
+                step_start_s = float(step.start_s)
+                step_end_s = step_start_s + float(pattern.duration_s)
+                if min(block_end_s, step_end_s) > max(block_start_s, step_start_s):
+                    representative_pattern_num = schema_pattern_names.index(step.pattern) + 1
+                    break
+            stimulus_pattern_numbers.append(representative_pattern_num)
 
         planned_group_nums.append(2)
-        trigger_times_s.append(sequence_end_s)
+        trigger_times_s.append(block_duration_s + (len(stimulus_group_nums) * block_duration_s))
         return sequence_name, planned_group_nums, trigger_times_s, stimulus_pattern_numbers
 
     def _apply_trigger_sequence(self, path_name: str, stimulus_group_nums: list[int]) -> None:
@@ -2589,9 +2592,11 @@ class ScanImageControlWidget(QWidget):
                         time.sleep(min(remaining, 0.05))
                     self._apply_on_demand_group(path_name, stimulus_group_nums[index], software_trigger=True)
                     if 1 <= index <= len(stimulus_pattern_numbers):
-                        emitted_stimuli.append(str(stimulus_pattern_numbers[index - 1]))
-                        if self._debug_category_enabled.get("stimuli", True):
-                            self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
+                        pattern_number = stimulus_pattern_numbers[index - 1]
+                        if pattern_number > 0:
+                            emitted_stimuli.append(str(pattern_number))
+                            if self._debug_category_enabled.get("stimuli", True):
+                                self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
                     self.signals.log_message.emit(
                         f"[{path_name}] triggered group {stimulus_group_nums[index]} at t={trigger_time_s:.4f}s"
                     )
@@ -2753,8 +2758,10 @@ class ScanImageControlWidget(QWidget):
                 try:
                     self._fire_software_trigger(path_name)
                     if self._debug_category_enabled.get("stimuli", True) and index <= len(stimulus_pattern_numbers):
-                        emitted_stimuli.append(str(stimulus_pattern_numbers[index - 1]))
-                        self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
+                        pattern_number = stimulus_pattern_numbers[index - 1]
+                        if pattern_number > 0:
+                            emitted_stimuli.append(str(pattern_number))
+                            self.signals.log_message.emit(f"[{path_name}] Stimuli: {''.join(emitted_stimuli)}")
                     if self._debug_category_enabled.get("software_trigger_times", True):
                         self.signals.log_message.emit(
                             f"[{path_name}] software trigger fired {index}/{len(trigger_times_s)} at t={trigger_time_s:.4f}s"

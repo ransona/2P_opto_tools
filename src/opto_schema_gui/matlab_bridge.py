@@ -676,7 +676,7 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             ignore_frequency=_get_bool(section, None, "ignore_frequency", True),
             stimulus_function=_get_string(section, None, "stimulus_function", "point"),
             power_scale_mode=_get_string(section, None, "power_scale_mode", "multiply"),
-            sequence_block_duration_s=_get_float(section, None, "sequence_block_duration_s", 0.05),
+            sequence_block_duration_s=_get_float(section, None, "sequence_block_duration_s", 0.25),
             trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D1.7"),
             trial_waveform_photostim_trigger_term=_get_string(
                 section, None, "trial_waveform_photostim_trigger_term", "D1.7"
