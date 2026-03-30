@@ -2736,6 +2736,13 @@ class ScanImageControlWidget(QWidget):
 
         def worker() -> None:
             start_time = time.monotonic()
+            block_duration_s = max(
+                0.001,
+                float(self._runtimes[path_name].path_config.sequence_block_duration_s),
+            )
+            prep_state = runtime.prepared_photostim
+            last_position = prep_state.ready_sequence_position
+            last_completed = prep_state.ready_completed_sequences
             if self._debug_category_enabled.get("software_trigger_times", True):
                 self.signals.log_message.emit(
                     f"[{path_name}] software trigger schedule started for sequence '{sequence_name}' with {len(trigger_times_s)} trigger(s)"
@@ -2746,15 +2753,52 @@ class ScanImageControlWidget(QWidget):
                 )
             emitted_stimuli: list[str] = []
             for index, trigger_time_s in enumerate(trigger_times_s, start=1):
-                while True:
-                    if stop_event.is_set():
+                if index > 1:
+                    try:
+                        last_position, last_completed = self._wait_for_next_photostim_advance(
+                            path_name,
+                            last_position,
+                            last_completed,
+                            stop_event=stop_event,
+                            timeout_s=max(5.0, 8.0 * block_duration_s),
+                        )
+                    except Exception as exc:
+                        self.signals.log_message.emit(
+                            f"[{path_name}] ERROR: software trigger schedule stalled before trigger {index}/{len(trigger_times_s)}: {exc}"
+                        )
+                        mismatch_message = self._finalize_pending_photostim_check(path_name, "Software trigger count check")
                         if self._debug_category_enabled.get("software_trigger_times", True):
-                            self.signals.log_message.emit(f"[{path_name}] software trigger schedule cancelled")
+                            self.signals.log_message.emit(f"[{path_name}] software trigger schedule completed")
+                        runtime.software_trigger_stop = None
+                        runtime.software_trigger_thread = None
+                        if (
+                            mismatch_message is not None
+                            and self.ignore_incomplete_trigger_checkbox.isChecked()
+                            and request_path_name is not None
+                            and reply_address is not None
+                        ):
+                            payload = {
+                                "action": "trigger_photo_stim",
+                                "status": "error",
+                                "phase": "completion_check",
+                                "schema_name": schema_name,
+                                "expID": exp_id,
+                                "seq_num": seq_num,
+                                "sequence_name": sequence_name,
+                                "error": mismatch_message,
+                            }
+                            self._send_json_reply(request_path_name, reply_address, payload)
                         return
-                    remaining = start_time + trigger_time_s - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    time.sleep(min(remaining, 0.05))
+                else:
+                    while True:
+                        if stop_event.is_set():
+                            if self._debug_category_enabled.get("software_trigger_times", True):
+                                self.signals.log_message.emit(f"[{path_name}] software trigger schedule cancelled")
+                            return
+                        remaining = start_time + trigger_time_s - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(remaining, 0.05))
                 try:
                     self._fire_software_trigger(path_name)
                     if self._debug_category_enabled.get("stimuli", True) and index <= len(stimulus_pattern_numbers):
@@ -3107,6 +3151,46 @@ class ScanImageControlWidget(QWidget):
                 return active, current_position, completed_sequences, max_delivered
             time.sleep(0.02)
         return last_active, last_position, last_completed, max_delivered
+
+    def _wait_for_next_photostim_advance(
+        self,
+        path_name: str,
+        previous_position: int | None,
+        previous_completed_sequences: int | None,
+        *,
+        stop_event: threading.Event | None = None,
+        timeout_s: float = 5.0,
+    ) -> tuple[int | None, int | None]:
+        deadline = time.monotonic() + timeout_s
+        last_active = False
+        last_position = previous_position
+        last_completed = previous_completed_sequences
+        last_sequence: list[int] = []
+        while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("schedule cancelled")
+            active, current_position, sequence, completed_sequences, _ = self._query_photostim_sequence_state(path_name)
+            last_active = active
+            last_position = current_position
+            last_completed = completed_sequences
+            last_sequence = sequence
+            if (
+                previous_completed_sequences is not None
+                and completed_sequences is not None
+                and completed_sequences > previous_completed_sequences
+            ):
+                return current_position, completed_sequences
+            if (
+                previous_position is not None
+                and current_position is not None
+                and current_position > previous_position
+            ):
+                return current_position, completed_sequences
+            time.sleep(0.01)
+        raise RuntimeError(
+            "photostim sequence did not advance in time. "
+            + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
+        )
 
     def _finalize_pending_photostim_check(self, path_name: str, label: str) -> str | None:
         runtime = self._ensure_session(path_name)
