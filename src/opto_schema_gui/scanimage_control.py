@@ -3191,6 +3191,12 @@ class ScanImageControlWidget(QWidget):
                 f"[{path_name}] Leading park baseline: "
                 + self._format_photostim_state(baseline_active, baseline_position, baseline_completed, stimulus_group_nums)
             )
+            if len(trigger_times_s) > 1:
+                remaining_trigger_times_s = [max(0.0, t) for t in trigger_times_s[1:]]
+                prep_state.waveform_expected_done_time_s = remaining_trigger_times_s[-1]
+                self._prepare_trial_waveform(path_name, remaining_trigger_times_s, external_start=False)
+            else:
+                remaining_trigger_times_s = []
             self._fire_software_trigger(path_name)
             prep_state.leading_park_fired = True
             ready_position, ready_completed = self._wait_for_leading_park_advance(
@@ -3202,22 +3208,16 @@ class ScanImageControlWidget(QWidget):
             prep_state.ready_sequence_position = ready_position
             prep_state.ready_completed_sequences = ready_completed
             prep_state.remaining_expected_triggers = max(0, len(stimulus_group_nums) - 1)
-            if len(trigger_times_s) > 1:
-                first_step_time_s = trigger_times_s[1]
-                remaining_trigger_times_s = [max(0.0, t - first_step_time_s) for t in trigger_times_s[1:]]
-            else:
-                remaining_trigger_times_s = []
-            self._start_software_trigger_schedule(
-                path_name,
-                sequence_name,
-                remaining_trigger_times_s,
-                stimulus_pattern_numbers,
-                request_path_name=request_path_name,
-                reply_address=reply_address,
-                schema_name=schema_name,
-                exp_id=exp_id,
-                seq_num=seq_num,
-            )
+            if remaining_trigger_times_s:
+                self._start_waveform_software_playback(
+                    path_name,
+                    sequence_name,
+                    request_path_name=request_path_name,
+                    reply_address=reply_address,
+                    schema_name=schema_name,
+                    exp_id=exp_id,
+                    seq_num=seq_num,
+                )
             self.signals.log_message.emit(
                 f"[{path_name}] leading park software-triggered before ready"
             )
