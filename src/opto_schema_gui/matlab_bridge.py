@@ -1119,6 +1119,13 @@ def build_prepare_trial_waveform_command(
             f"trialTriggerTimesSec = {trigger_times_expr};",
             f"trialPulseWidthSec = {path_config.trial_waveform_pulse_width_ms / 1000.0!r};",
             f"trialTotalDurationSec = {total_duration_s!r};",
+            "trialWaveformMode = "
+            + matlab_string("external trigger" if external_start else "software start")
+            + ";",
+            "disp(['Preparing waveform to advance stimulus groups: mode=' trialWaveformMode "
+            + "', pulses=' num2str(numel(trialTriggerTimesSec)) "
+            + "', pulse_width_s=' num2str(trialPulseWidthSec, '%.4f') "
+            + "', total_duration_s=' num2str(trialTotalDurationSec, '%.4f')]);",
             "do_task = opto.scanimage.testVdaqDoTriggeredByDi("
             + f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
             + f"'startTrigger', {start_trigger_expr}, "
@@ -1130,8 +1137,6 @@ def build_prepare_trial_waveform_command(
             + f"'startTriggerEdge', {matlab_string(path_config.trial_waveform_start_trigger_edge)}, "
             + "'autoStart', false);",
             "disp('TRIAL_WAVEFORM_READY');",
-            "disp(trialTriggerTimesSec);",
-            "disp(trialTotalDurationSec);",
         ]
     )
 
@@ -1143,6 +1148,7 @@ def build_start_trial_waveform_command(path_config: PathConfig) -> str:
             "assert(evalin('base', 'exist(''optoPhotostimTrialDoTask'',''var'')'), 'Prepared trial waveform task was not found.');",
             "do_task = evalin('base', 'optoPhotostimTrialDoTask');",
             "assert(most.idioms.isValidObj(do_task), 'Prepared trial waveform task is invalid.');",
+            "disp('Starting waveform playback to advance remaining stimulus groups');",
             "do_task.start();",
             "disp('TRIAL_WAVEFORM_STARTED');",
         ]
@@ -1156,6 +1162,7 @@ def build_arm_trial_waveform_command(path_config: PathConfig) -> str:
             "assert(evalin('base', 'exist(''optoPhotostimTrialDoTask'',''var'')'), 'Prepared trial waveform task was not found.');",
             "do_task = evalin('base', 'optoPhotostimTrialDoTask');",
             "assert(most.idioms.isValidObj(do_task), 'Prepared trial waveform task is invalid.');",
+            "disp('Arming waveform to advance stimulus groups from external start');",
             "do_task.start();",
             "disp('TRIAL_WAVEFORM_ARMED');",
         ]
