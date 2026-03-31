@@ -82,6 +82,42 @@ def _selected_or_last_row(table: QTableWidget) -> int | None:
     return None
 
 
+def _step_end_s(step: SequenceStep, patterns: dict[str, Pattern]) -> float:
+    return float(step.start_s) + float(patterns[step.pattern].duration_s)
+
+
+def _sorted_steps(steps: list[SequenceStep]) -> list[SequenceStep]:
+    return sorted(steps, key=lambda step: step.start_s)
+
+
+def _sequence_overlap_pairs(sequence: Sequence, patterns: dict[str, Pattern]) -> list[tuple[SequenceStep, SequenceStep]]:
+    overlaps: list[tuple[SequenceStep, SequenceStep]] = []
+    last_step: SequenceStep | None = None
+    last_end_s: float | None = None
+    for step in _sorted_steps(sequence.steps):
+        if step.pattern not in patterns:
+            continue
+        if last_step is not None and last_end_s is not None and step.start_s < last_end_s:
+            overlaps.append((last_step, step))
+        last_step = step
+        last_end_s = _step_end_s(step, patterns)
+    return overlaps
+
+
+def _shift_steps_to_avoid_overlap(steps: list[SequenceStep], patterns: dict[str, Pattern]) -> list[SequenceStep]:
+    shifted: list[SequenceStep] = []
+    last_end_s: float | None = None
+    for step in _sorted_steps([SequenceStep(pattern=s.pattern, start_s=s.start_s) for s in steps]):
+        if step.pattern not in patterns:
+            shifted.append(step)
+            continue
+        if last_end_s is not None and step.start_s < last_end_s:
+            step.start_s = last_end_s
+        last_end_s = _step_end_s(step, patterns)
+        shifted.append(step)
+    return shifted
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -246,11 +282,19 @@ class TimelinePreview(QWidget):
 
 
 class PatternEditor(QWidget):
-    def __init__(self, project: ExperimentProject, on_dirty, on_commit=None, parent: QWidget | None = None):
+    def __init__(
+        self,
+        project: ExperimentProject,
+        on_dirty,
+        on_commit=None,
+        resolve_sequence_overlaps=None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.project = project
         self.on_dirty = on_dirty
         self.on_commit = on_commit
+        self.resolve_sequence_overlaps = resolve_sequence_overlaps
         self.current_name = ""
         self._loading = False
         self._build_ui()
@@ -509,7 +553,11 @@ class PatternEditor(QWidget):
         return True
 
     def save_current_pattern(self) -> bool:
-        return self.commit_current_pattern(silent=False)
+        if not self.commit_current_pattern(silent=False):
+            return False
+        if self.resolve_sequence_overlaps is not None:
+            return bool(self.resolve_sequence_overlaps())
+        return True
 
     def _has_duplicate_coordinates(self) -> bool:
         coords = set()
@@ -591,7 +639,7 @@ class SequenceEditor(QWidget):
         self.name_edit.editingFinished.connect(self._on_form_changed)
         self.notes_edit.editingFinished.connect(self._on_form_changed)
         self.start_spin.valueChanged.connect(self._on_form_changed)
-        self.steps_table.itemChanged.connect(self._on_form_changed)
+        self.steps_table.itemChanged.connect(self._on_steps_table_item_changed)
         self.save_btn.clicked.connect(self.save_current_sequence)
 
         splitter.addWidget(editor_panel)
@@ -636,7 +684,10 @@ class SequenceEditor(QWidget):
             QTableWidgetItem(f"{pattern.duration_s:.4f}"),
         ]
         for col, widget in enumerate(values):
-            widget.setFlags(widget.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if col == 1:
+                widget.setData(Qt.ItemDataRole.UserRole, float(step.start_s))
+            else:
+                widget.setFlags(widget.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.steps_table.setItem(row, col, widget)
         self.steps_table.selectRow(row)
 
@@ -644,13 +695,43 @@ class SequenceEditor(QWidget):
         pattern_name = self.pattern_select.currentText().strip()
         if not pattern_name:
             return
-        start_s = self._current_end_time()
-        step = SequenceStep(pattern=pattern_name, start_s=start_s)
+        start_s = self.start_spin.value()
         existing = self.gather_sequence(allow_partial=True)
-        existing.steps.append(step)
-        existing.steps.sort(key=lambda s: s.start_s)
+        steps = [SequenceStep(pattern=step.pattern, start_s=step.start_s) for step in existing.steps]
+        inserted_start_s = start_s
+        insert_priority = 0
+        overlapping_step = self._find_step_covering_time(steps, start_s)
+        if overlapping_step is not None:
+            pattern = self.project.patterns[overlapping_step.pattern]
+            end_s = overlapping_step.start_s + pattern.duration_s
+            prompt = QMessageBox(self)
+            prompt.setIcon(QMessageBox.Icon.Question)
+            prompt.setWindowTitle("Insert overlapping step")
+            prompt.setText(
+                f"New step at {start_s:.3f}s overlaps existing pattern '{overlapping_step.pattern}' "
+                f"({overlapping_step.start_s:.3f}s to {end_s:.3f}s)."
+            )
+            before_btn = prompt.addButton("Insert Before", QMessageBox.ButtonRole.AcceptRole)
+            after_btn = prompt.addButton("Insert After", QMessageBox.ButtonRole.ActionRole)
+            cancel_btn = prompt.addButton(QMessageBox.StandardButton.Cancel)
+            prompt.setDefaultButton(before_btn)
+            prompt.exec()
+            clicked = prompt.clickedButton()
+            if clicked == cancel_btn:
+                return
+            if clicked == before_btn:
+                inserted_start_s = overlapping_step.start_s
+                insert_priority = -1
+            else:
+                inserted_start_s = end_s
+                insert_priority = 0
+        steps = self._insert_step_with_shift(
+            steps,
+            SequenceStep(pattern=pattern_name, start_s=inserted_start_s),
+            insert_priority=insert_priority,
+        )
         self._loading = True
-        self._set_sequence_steps(existing.steps)
+        self._set_sequence_steps(steps)
         self._loading = False
         self.commit_current_sequence(silent=True)
         self._sync_start_spin_to_end()
@@ -684,6 +765,63 @@ class SequenceEditor(QWidget):
         self.commit_current_sequence(silent=True)
         self.on_dirty()
 
+    def _on_steps_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._loading:
+            return
+        if item.column() != 1:
+            self._on_form_changed()
+            return
+        old_start_s = item.data(Qt.ItemDataRole.UserRole)
+        try:
+            start_s = float(item.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid start time", "Sequence step start time must be numeric.")
+            self._restore_step_start(item, old_start_s)
+            return
+        if start_s < 0:
+            QMessageBox.warning(self, "Invalid start time", "Sequence step start time cannot be negative.")
+            self._restore_step_start(item, old_start_s)
+            return
+        grid_ms = SCHEMA_TIME_QUANTUM_S * 1000.0
+        snapped_steps = round(start_s / SCHEMA_TIME_QUANTUM_S)
+        if abs(start_s - snapped_steps * SCHEMA_TIME_QUANTUM_S) > 1e-9:
+            QMessageBox.warning(
+                self,
+                "Invalid start time",
+                f"Sequence step start time must be on the {grid_ms:.0f} ms grid.",
+            )
+            self._restore_step_start(item, old_start_s)
+            return
+        try:
+            sequence = self.gather_sequence()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid sequence", str(exc))
+            self._restore_step_start(item, old_start_s)
+            return
+        overlaps = _sequence_overlap_pairs(sequence, self.project.patterns)
+        if overlaps:
+            previous_step, overlapping_step = overlaps[0]
+            choice = QMessageBox.question(
+                self,
+                "Overlapping sequence items",
+                "This change creates overlapping sequence items.\n\n"
+                f"'{previous_step.pattern}' overlaps '{overlapping_step.pattern}'.\n\n"
+                "Fix by shifting each subsequent item forward enough to remove overlap?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                self._restore_step_start(item, old_start_s)
+                return
+            sequence.steps = _shift_steps_to_avoid_overlap(sequence.steps, self.project.patterns)
+        else:
+            sequence.steps = _sorted_steps(sequence.steps)
+        self._loading = True
+        self._set_sequence_steps(sequence.steps)
+        self._loading = False
+        self.commit_current_sequence(silent=True)
+        self.on_dirty()
+
     def _current_end_time(self) -> float:
         end_time = 0.0
         for row in range(self.steps_table.rowCount()):
@@ -700,6 +838,35 @@ class SequenceEditor(QWidget):
                 continue
             end_time = max(end_time, start_s + pattern.duration_s)
         return end_time
+
+    def _restore_step_start(self, item: QTableWidgetItem, start_s: object) -> None:
+        self._loading = True
+        if isinstance(start_s, (int, float)):
+            item.setText(f"{float(start_s):.4f}")
+        else:
+            item.setText("0.0000")
+        self._loading = False
+
+    def _find_step_covering_time(self, steps: list[SequenceStep], start_s: float) -> SequenceStep | None:
+        for step in _sorted_steps(steps):
+            pattern = self.project.patterns.get(step.pattern)
+            if pattern is None:
+                continue
+            end_s = step.start_s + pattern.duration_s
+            if step.start_s <= start_s < end_s:
+                return step
+        return None
+
+    def _insert_step_with_shift(
+        self,
+        steps: list[SequenceStep],
+        new_step: SequenceStep,
+        insert_priority: int = 0,
+    ) -> list[SequenceStep]:
+        tagged_steps = [(step.start_s, 1, idx, SequenceStep(pattern=step.pattern, start_s=step.start_s)) for idx, step in enumerate(steps)]
+        tagged_steps.append((new_step.start_s, insert_priority, len(tagged_steps), SequenceStep(pattern=new_step.pattern, start_s=new_step.start_s)))
+        ordered_steps = [step for _, _, _, step in sorted(tagged_steps, key=lambda entry: (entry[0], entry[1], entry[2]))]
+        return _shift_steps_to_avoid_overlap(ordered_steps, self.project.patterns)
 
     def gather_sequence(self, allow_partial: bool = False) -> Sequence:
         steps: list[SequenceStep] = []
@@ -749,6 +916,30 @@ class SequenceEditor(QWidget):
         return True
 
     def save_current_sequence(self) -> bool:
+        try:
+            sequence = self.gather_sequence()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid sequence", str(exc))
+            return False
+        overlaps = _sequence_overlap_pairs(sequence, self.project.patterns)
+        if overlaps:
+            previous_step, overlapping_step = overlaps[0]
+            choice = QMessageBox.question(
+                self,
+                "Overlapping sequence items",
+                "This sequence contains overlapping items.\n\n"
+                f"'{previous_step.pattern}' overlaps '{overlapping_step.pattern}'.\n\n"
+                "Fix by shifting each subsequent item forward enough to remove overlap?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return False
+            sequence.steps = _shift_steps_to_avoid_overlap(sequence.steps, self.project.patterns)
+            self._loading = True
+            self._set_sequence_steps(sequence.steps)
+            self._loading = False
+            self.on_dirty()
         return self.commit_current_sequence(silent=False)
 
     def _refresh_preview(self) -> None:
@@ -804,7 +995,12 @@ class MainWindow(QMainWindow):
         self._suppress_dirty_updates = False
 
         self.preview = TimelinePreview(self.project)
-        self.pattern_editor = PatternEditor(self.project, self.mark_pattern_dirty, self.refresh_lists)
+        self.pattern_editor = PatternEditor(
+            self.project,
+            self.mark_pattern_dirty,
+            self.refresh_lists,
+            self._resolve_sequence_overlaps_after_pattern_edit,
+        )
         self.sequence_editor = SequenceEditor(self.project, self.preview, self.mark_sequence_dirty, self.refresh_lists)
         self.scanimage_control = ScanImageControlWidget(self.ensure_schema_path_for_external_use)
 
@@ -1155,6 +1351,42 @@ class MainWindow(QMainWindow):
         self.pattern_dirty = False
         self.sequence_dirty = False
         self.update_status()
+
+    def _resolve_sequence_overlaps_after_pattern_edit(self) -> bool:
+        affected_sequences: list[tuple[str, SequenceStep, SequenceStep]] = []
+        for sequence_name, sequence in self.project.sequences.items():
+            overlaps = _sequence_overlap_pairs(sequence, self.project.patterns)
+            if overlaps:
+                affected_sequences.append((sequence_name, overlaps[0][0], overlaps[0][1]))
+        if not affected_sequences:
+            return True
+
+        preview_lines = [
+            f"{sequence_name}: '{previous_step.pattern}' overlaps '{overlapping_step.pattern}'"
+            for sequence_name, previous_step, overlapping_step in affected_sequences[:5]
+        ]
+        if len(affected_sequences) > 5:
+            preview_lines.append(f"... and {len(affected_sequences) - 5} more")
+        choice = QMessageBox.question(
+            self,
+            "Pattern edit causes sequence overlap",
+            "This pattern edit causes overlapping sequence items.\n\n"
+            + "\n".join(preview_lines)
+            + "\n\nFix by shifting each subsequent item forward enough to remove overlap?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return False
+
+        for sequence_name, sequence in list(self.project.sequences.items()):
+            if _sequence_overlap_pairs(sequence, self.project.patterns):
+                sequence.steps = _shift_steps_to_avoid_overlap(sequence.steps, self.project.patterns)
+                self.project.sequences[sequence_name] = sequence
+        self.sequence_dirty = True
+        self.refresh_lists()
+        self.update_status()
+        return True
 
     def _pattern_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
         if not current:

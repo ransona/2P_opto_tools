@@ -787,7 +787,7 @@ class ScanImageControlWidget(QWidget):
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
         self.test_stim_waveform_btn.clicked.connect(self._run_test_stim_waveform)
         self.test_stim_waveform_external_btn.clicked.connect(self._run_test_stim_waveform_external)
-        self.clear_log_btn.clicked.connect(self.log_text.clear)
+        self.clear_log_btn.clicked.connect(self._clear_all_logs)
         self.clear_all_logs_btn.clicked.connect(self._clear_all_logs)
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
 
