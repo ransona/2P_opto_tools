@@ -1026,6 +1026,8 @@ def build_trigger_photostim_command(
         "triggerSequence = [preservedPrefix(:).' trialTail(:).'];",
         "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
         "disp(double(currentPosition + 1));",
+        "disp('TRIGGER_PHOTOSTIM_IDLE_POSITION');",
+        "disp(double(currentPosition + numel(trialTail)));",
         "hPs.sequenceSelectedStimuli = triggerSequence;",
         "hPs.numSequences = 1;",
         "if isprop(hPs,'stimImmediately'); hPs.stimImmediately = false; end",

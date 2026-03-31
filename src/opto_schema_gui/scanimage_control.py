@@ -102,6 +102,8 @@ class PreparedPhotostimState:
     triggered_seq_num: int | None = None
     triggered_sequence_name: str = ""
     triggered_stimulus_groups: list[int] = field(default_factory=list)
+    triggered_insert_position: int | None = None
+    triggered_idle_position: int | None = None
     remaining_expected_triggers: int | None = None
     ready_sequence_position: int | None = None
     ready_completed_sequences: int | None = None
@@ -120,6 +122,8 @@ class PreparedPhotostimState:
         self.triggered_seq_num = None
         self.triggered_sequence_name = ""
         self.triggered_stimulus_groups = []
+        self.triggered_insert_position = None
+        self.triggered_idle_position = None
         self.remaining_expected_triggers = None
         self.ready_sequence_position = None
         self.ready_completed_sequences = None
@@ -2074,6 +2078,23 @@ class ScanImageControlWidget(QWidget):
                     },
                 )
             return
+        if action == "check_idle":
+            try:
+                self._handle_check_idle_request(
+                    request_path_name=path_name,
+                    reply_address=address,
+                )
+            except Exception as exc:
+                self._send_json_reply(
+                    path_name,
+                    address,
+                    {
+                        "action": "check_idle",
+                        "status": "error",
+                        "error": str(exc),
+                    },
+                )
+            return
         if action == "abort_photo_stim":
             try:
                 self._handle_abort_photo_stim_request(
@@ -2282,11 +2303,14 @@ class ScanImageControlWidget(QWidget):
                 "stimulus_groups": list(stimulus_group_nums),
             }
             if ok:
+                insert_position = prep_state_local.triggered_insert_position
+                idle_position = prep_state_local.triggered_idle_position
                 prep_state_local.triggered_seq_num = seq_num
                 prep_state_local.triggered_sequence_name = sequence_name
                 prep_state_local.triggered_stimulus_groups = list(stimulus_group_nums)
                 self.signals.log_message.emit(
-                    f"[{photostim_path}] triggered sequence '{sequence_name}' via stimulus groups {stimulus_group_nums}"
+                    f"[{photostim_path}] triggered sequence '{sequence_name}' via stimulus groups {stimulus_group_nums} "
+                    f"(insert_position={insert_position}, idle_position={idle_position})"
                 )
             else:
                 payload["error"] = "trigger_photo_stim failed"
@@ -2333,6 +2357,35 @@ class ScanImageControlWidget(QWidget):
                 self._send_json_reply(request_path_name, reply_address, payload)
             else:
                 self.signals.log_message.emit(f"[config] gui abort_photo_stim result={payload}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_check_idle_request(
+        self,
+        request_path_name: str,
+        reply_address: tuple[str, int] | None,
+    ) -> None:
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if not photostim_path:
+            payload = {
+                "action": "check_idle",
+                "status": "error",
+                "error": "No photostim path configured",
+            }
+            if reply_address is not None:
+                self._send_json_reply(request_path_name, reply_address, payload)
+            else:
+                self.signals.log_message.emit("[config] check_idle skipped: no photostim path configured")
+            return
+
+        def worker() -> None:
+            ok = self._run_action(
+                photostim_path,
+                "json check_idle" if reply_address is not None else "gui check_idle",
+                lambda name: self._check_photostim_idle(name, request_path_name, reply_address),
+            )
+            if not ok and reply_address is None:
+                self.signals.log_message.emit("[config] gui check_idle failed")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2410,6 +2463,22 @@ class ScanImageControlWidget(QWidget):
             self._emit_lines(path_name, lines)
             return lines
 
+    def _extract_marker_int(self, lines: list[str], marker_name: str) -> int | None:
+        marker = None
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line == marker_name:
+                marker = marker_name
+                continue
+            if marker == marker_name:
+                try:
+                    return int(float(line))
+                except ValueError:
+                    return None
+        return None
+
     def _abort_photo_stim(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
@@ -2418,6 +2487,11 @@ class ScanImageControlWidget(QWidget):
                 build_abort_photostim_command(runtime.path_config),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
+            runtime.prepared_photostim.triggered_seq_num = None
+            runtime.prepared_photostim.triggered_sequence_name = ""
+            runtime.prepared_photostim.triggered_stimulus_groups = []
+            runtime.prepared_photostim.triggered_insert_position = None
+            runtime.prepared_photostim.triggered_idle_position = None
             runtime.prepared_photostim.remaining_expected_triggers = None
             runtime.prepared_photostim.ready_sequence_position = None
             runtime.prepared_photostim.ready_completed_sequences = None
@@ -2485,6 +2559,65 @@ class ScanImageControlWidget(QWidget):
             elif marker == "PHOTOSTIM_STATUS_TEXT":
                 status_text = line
         return active, position, sequence, completed_sequences, status_text
+
+    def _check_photostim_idle(
+        self,
+        path_name: str,
+        request_path_name: str | None = None,
+        reply_address: tuple[str, int] | None = None,
+    ) -> None:
+        runtime = self._ensure_session(path_name)
+        prep_state = runtime.prepared_photostim
+        active, position, sequence, completed_sequences, status_text = self._query_photostim_sequence_state(path_name)
+        idle_position = prep_state.triggered_idle_position
+        insert_position = prep_state.triggered_insert_position
+        has_pending_trial = idle_position is not None and insert_position is not None
+        if not active:
+            idle = True
+            running = False
+            reason = "photostim_inactive"
+        elif not has_pending_trial:
+            idle = True
+            running = False
+            reason = "no_pending_trial"
+        elif position is None:
+            idle = False
+            running = True
+            reason = "pending_trial_unknown_position"
+        elif position >= idle_position:
+            idle = True
+            running = False
+            reason = "terminal_idle_park_reached"
+        else:
+            idle = False
+            running = True
+            reason = "trial_running_or_armed"
+
+        payload: dict[str, object] = {
+            "action": "check_idle",
+            "status": "ready",
+            "idle": idle,
+            "running": running,
+            "reason": reason,
+            "photostim_active": active,
+            "sequence_position": position,
+            "completed_sequences": completed_sequences,
+            "sequence_selected_stimuli": list(sequence),
+            "photostim_status": status_text,
+            "triggered_seq_num": prep_state.triggered_seq_num,
+            "triggered_sequence_name": prep_state.triggered_sequence_name,
+            "triggered_insert_position": insert_position,
+            "triggered_idle_position": idle_position,
+            "triggered_stimulus_groups": list(prep_state.triggered_stimulus_groups),
+        }
+        self.signals.log_message.emit(
+            f"[{path_name}] check_idle -> idle={int(idle)} running={int(running)} "
+            f"position={'NaN' if position is None else position} "
+            f"idle_position={'NaN' if idle_position is None else idle_position} "
+            f"reason={reason}"
+        )
+        if reply_address is not None and request_path_name is not None:
+            self._send_json_reply(request_path_name, reply_address, payload)
 
     def _get_waveform_test_preview(self, path_name: str) -> tuple[bool, int | None, list[int]]:
         active, position, sequence, _, _ = self._query_photostim_sequence_state(path_name)
@@ -2934,7 +3067,9 @@ class ScanImageControlWidget(QWidget):
         self._cancel_waveform_monitor(path_name)
         if len(trigger_times_s) != len(stimulus_group_nums):
             raise ValueError("Trigger timing does not match the planned triggered stimulus sequence.")
-        self._apply_trigger_sequence(path_name, stimulus_group_nums)
+        trigger_lines = self._apply_trigger_sequence(path_name, stimulus_group_nums)
+        prep_state.triggered_insert_position = self._extract_marker_int(trigger_lines, "TRIGGER_PHOTOSTIM_INSERT_POSITION")
+        prep_state.triggered_idle_position = self._extract_marker_int(trigger_lines, "TRIGGER_PHOTOSTIM_IDLE_POSITION")
 
         prep_state.remaining_expected_triggers = None
         prep_state.ready_sequence_position = None
