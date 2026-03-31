@@ -9,8 +9,8 @@ addpath(genpath(scanimageRoot), '-begin');
 while or(~exist('hSI'),~exist('hSICtl'))
     drawnow
 end
+seedConfigDialogPathsAndLoadDefaultCfg(hSI, configDir);
 hSI.hScan2D.logFramesPerFile=5000;
-seedConfigDialogPaths(hSI, configDir);
 
 load(fullfile(configDir, 'GGtoP1_working.mat'))
 hSI.hScan_RGG_P2.scannerToRefTransform=tf;
@@ -31,7 +31,7 @@ w = wg.computeWaveform();
 fprintf('N=%d, high_frac=%.3f\n', numel(w), mean(w>0));
 wg.startTask();
 
-function seedConfigDialogPaths(hSiObj, configDir)
+function seedConfigDialogPathsAndLoadDefaultCfg(hSiObj, configDir)
 if isempty(hSiObj) || ~isprop(hSiObj, 'hConfigurationSaver')
     return;
 end
@@ -47,6 +47,6 @@ end
 
 cfgCandidates = dir(fullfile(configDir, 'cfg_path*.cfg'));
 if ~isempty(cfgCandidates)
-    hCfg.cfgFilename = fullfile(configDir, cfgCandidates(1).name);
+    hCfg.cfgLoadConfig(fullfile(configDir, cfgCandidates(1).name));
 end
 end

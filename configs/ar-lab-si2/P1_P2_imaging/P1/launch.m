@@ -5,13 +5,13 @@ configDir = fileparts(mfilename('fullpath'));
 mdfPath = fullfile(configDir, '250707_MDF_P1.m');
 usrPath = fullfile(configDir, 'usr_path1.usr');
 [hSI,hSICtl] = scanimage(mdfPath, usrPath);
-hSI.hScan2D.logFramesPerFile=5000;
 while or(~exist('hSI'),~exist('hSICtl'))
     drawnow
 end
-seedConfigDialogPaths(hSI, configDir);
+seedConfigDialogPathsAndLoadDefaultCfg(hSI, configDir);
+hSI.hScan2D.logFramesPerFile=5000;
 
-function seedConfigDialogPaths(hSiObj, configDir)
+function seedConfigDialogPathsAndLoadDefaultCfg(hSiObj, configDir)
 if isempty(hSiObj) || ~isprop(hSiObj, 'hConfigurationSaver')
     return;
 end
@@ -27,6 +27,6 @@ end
 
 cfgCandidates = dir(fullfile(configDir, 'cfg_path*.cfg'));
 if ~isempty(cfgCandidates)
-    hCfg.cfgFilename = fullfile(configDir, cfgCandidates(1).name);
+    hCfg.cfgLoadConfig(fullfile(configDir, cfgCandidates(1).name));
 end
 end
