@@ -1355,6 +1355,8 @@ class MainWindow(QMainWindow):
         finally:
             self._suppress_dirty_updates = False
         self.clear_dirty()
+        self.main_tabs.setCurrentIndex(1)
+        self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def save_schema_dialog(self) -> bool:
         default_path = self.schema_save_path()
