@@ -1919,9 +1919,9 @@ class ScanImageControlWidget(QWidget):
             return
 
         message = payload.decode("utf-8", errors="replace").strip()
-        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] text command={message}"
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received text command={message}"
         self.signals.path_udp_log.emit(path_name, udp_line)
-        self.signals.log_message.emit(udp_line)
+        self.signals.log_message.emit(f"[{path_name}] received text UDP command '{message}'")
         if not message:
             return
 
@@ -1971,9 +1971,9 @@ class ScanImageControlWidget(QWidget):
 
     def _handle_json_udp_message(self, path_name: str, message: dict[str, object], address: tuple[str, int]) -> None:
         action = str(message.get("action", "")).strip()
-        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] json action={action} payload={message}"
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received action={action}"
         self.signals.path_udp_log.emit(path_name, udp_line)
-        self.signals.log_message.emit(udp_line)
+        self.signals.log_message.emit(f"[{path_name}] received UDP action '{action}'")
 
         if action == "prep_patterns":
             photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
@@ -2121,9 +2121,11 @@ class ScanImageControlWidget(QWidget):
             return
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         runtime.udp_listener.send(encoded, address)
-        line = f"[{path_name} udp {address[0]}:{address[1]}] send json {payload}"
+        action = str(payload.get("action", "")).strip() or "unknown"
+        status = str(payload.get("status", "")).strip() or "unknown"
+        line = f"[{path_name} udp {address[0]}:{address[1]}] sent action={action} status={status}"
         self.signals.path_udp_log.emit(path_name, line)
-        self.signals.log_message.emit(line)
+        self.signals.log_message.emit(f"[{path_name}] sent UDP reply for '{action}' with status '{status}'")
 
     def _handle_prep_patterns_request(
         self,
@@ -2602,7 +2604,6 @@ class ScanImageControlWidget(QWidget):
             "photostim_active": active,
             "sequence_position": position,
             "completed_sequences": completed_sequences,
-            "sequence_selected_stimuli": list(sequence),
             "photostim_status": status_text,
             "triggered_seq_num": prep_state.triggered_seq_num,
             "triggered_sequence_name": prep_state.triggered_sequence_name,
@@ -3197,9 +3198,9 @@ class ScanImageControlWidget(QWidget):
             details.append(f"meta={meta}")
         if confirm_id not in (None, ""):
             details.append(f"confirmID={confirm_id}")
-        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] legacy " + " ".join(details)
+        udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received legacy command={command or 'UNKNOWN'}"
         self.signals.path_udp_log.emit(path_name, udp_line)
-        self.signals.log_message.emit(udp_line)
+        self.signals.log_message.emit(f"[{path_name}] received legacy UDP command '{command or 'UNKNOWN'}'")
         if str(message.get("messageType", "")) != "COM":
             self.signals.log_message.emit(f"[{path_name} udp] ignored legacy packet with unsupported messageType")
             return
@@ -3221,9 +3222,9 @@ class ScanImageControlWidget(QWidget):
                 reply_address = (cfg.reply_host, cfg.reply_port)
             if listener is not None:
                 listener.send(ready_payload, reply_address)
-            ready_line = f"[{path_name} udp {reply_address[0]}:{reply_address[1]}] send legacy READY"
+            ready_line = f"[{path_name} udp {reply_address[0]}:{reply_address[1]}] sent legacy READY"
             self.signals.path_udp_log.emit(path_name, ready_line)
-            self.signals.log_message.emit(ready_line)
+            self.signals.log_message.emit(f"[{path_name}] sent legacy READY reply")
 
         if command == "GOGO":
             meta = message.get("meta")
