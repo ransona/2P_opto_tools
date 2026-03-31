@@ -2007,7 +2007,6 @@ class ScanImageControlWidget(QWidget):
         action = str(message.get("action", "")).strip()
         udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received action={action}"
         self.signals.path_udp_log.emit(path_name, udp_line)
-        self.signals.log_message.emit(f"[{path_name}] received UDP action '{action}'")
 
         if action == "prep_patterns":
             photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
@@ -2026,6 +2025,9 @@ class ScanImageControlWidget(QWidget):
             schema_name = str(message.get("schema_name", "")).strip()
             exp_id = str(message.get("expID", "")).strip()
             seq_nums_raw = message.get("seq_nums")
+            self.signals.log_message.emit(
+                f"[{path_name}] requested photostim prep for schema='{schema_name}' expID='{exp_id}'"
+            )
             if isinstance(seq_nums_raw, list):
                 seq_nums = seq_nums_raw
             elif seq_nums_raw is None:
@@ -2075,6 +2077,9 @@ class ScanImageControlWidget(QWidget):
             schema_name = str(message.get("schema_name", "")).strip()
             exp_id = str(message.get("expID", "")).strip()
             seq_num_raw = message.get("seq_num")
+            self.signals.log_message.emit(
+                f"[{path_name}] requested photostim trigger for schema='{schema_name}' expID='{exp_id}' seq_num={seq_num_raw}"
+            )
             if not schema_name or not exp_id or seq_num_raw is None:
                 self._send_json_reply(
                     path_name,
@@ -2113,6 +2118,7 @@ class ScanImageControlWidget(QWidget):
                 )
             return
         if action == "check_idle":
+            self.signals.log_message.emit(f"[{path_name}] requested photostim idle check")
             try:
                 self._handle_check_idle_request(
                     request_path_name=path_name,
@@ -2130,6 +2136,7 @@ class ScanImageControlWidget(QWidget):
                 )
             return
         if action == "abort_photo_stim":
+            self.signals.log_message.emit(f"[{path_name}] requested photostim abort")
             try:
                 self._handle_abort_photo_stim_request(
                     request_path_name=path_name,
