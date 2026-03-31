@@ -10,6 +10,7 @@ while or(~exist('hSI'),~exist('hSICtl'))
     drawnow
 end
 hSI.hScan2D.logFramesPerFile=5000;
+seedConfigDialogPaths(hSI, configDir);
 
 load(fullfile(configDir, 'GGtoP1_working.mat'))
 hSI.hScan_RGG_P2.scannerToRefTransform=tf;
@@ -29,3 +30,23 @@ disp(wg.wvfmParams)
 w = wg.computeWaveform();
 fprintf('N=%d, high_frac=%.3f\n', numel(w), mean(w>0));
 wg.startTask();
+
+function seedConfigDialogPaths(hSiObj, configDir)
+if isempty(hSiObj) || ~isprop(hSiObj, 'hConfigurationSaver')
+    return;
+end
+
+hCfg = hSiObj.hConfigurationSaver;
+hCfg.setClassDataVar('lastConfigFilePath', configDir, hCfg.classDataFileName);
+hCfg.setClassDataVar('lastFastConfigFilePath', configDir, hCfg.classDataFileName);
+
+usrCandidates = dir(fullfile(configDir, 'usr_path*.usr'));
+if ~isempty(usrCandidates)
+    hCfg.setClassDataVar('lastUsrFile', fullfile(configDir, usrCandidates(1).name), hCfg.classDataFileName);
+end
+
+cfgCandidates = dir(fullfile(configDir, 'cfg_path*.cfg'));
+if ~isempty(cfgCandidates)
+    hCfg.cfgFilename = fullfile(configDir, cfgCandidates(1).name);
+end
+end
