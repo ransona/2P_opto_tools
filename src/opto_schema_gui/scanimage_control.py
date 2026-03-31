@@ -665,8 +665,10 @@ class ScanImageControlWidget(QWidget):
             "software_trigger_count": True,
             "stimuli": True,
         }
+        self._gui_state_path = self.repo_root / ".gui_state.ini"
         self.save_root, self.schema_root = self._load_path_roots()
         self._build_ui()
+        self._load_gui_state()
         self.reload_discovery()
 
     @staticmethod
@@ -766,6 +768,7 @@ class ScanImageControlWidget(QWidget):
         ):
             checkbox.setChecked(True)
             checkbox.toggled.connect(self._refresh_debug_log)
+            checkbox.toggled.connect(self._save_gui_state)
             filter_layout.addWidget(checkbox)
         filter_layout.addWidget(self.clear_log_btn)
         filter_layout.addStretch(1)
@@ -823,6 +826,37 @@ class ScanImageControlWidget(QWidget):
         if not schema_root.is_absolute():
             schema_root = (self.repo_root / schema_root).resolve()
         return save_root, schema_root
+
+    def _load_gui_state(self) -> None:
+        parser = configparser.ConfigParser()
+        if not self._gui_state_path.is_file():
+            return
+        parser.read(self._gui_state_path)
+        if not parser.has_section("debug"):
+            return
+        section = parser["debug"]
+        mapping = (
+            ("general", self.show_general_debug_checkbox),
+            ("udp", self.show_udp_debug_checkbox),
+            ("software_trigger_times", self.show_trigger_times_debug_checkbox),
+            ("software_trigger_count", self.show_trigger_count_debug_checkbox),
+            ("stimuli", self.show_stimuli_debug_checkbox),
+        )
+        for key, checkbox in mapping:
+            if key in section:
+                checkbox.setChecked(section.getboolean(key, fallback=checkbox.isChecked()))
+
+    def _save_gui_state(self, *_args) -> None:
+        parser = configparser.ConfigParser()
+        parser["debug"] = {
+            "general": str(self.show_general_debug_checkbox.isChecked()).lower(),
+            "udp": str(self.show_udp_debug_checkbox.isChecked()).lower(),
+            "software_trigger_times": str(self.show_trigger_times_debug_checkbox.isChecked()).lower(),
+            "software_trigger_count": str(self.show_trigger_count_debug_checkbox.isChecked()).lower(),
+            "stimuli": str(self.show_stimuli_debug_checkbox.isChecked()).lower(),
+        }
+        with self._gui_state_path.open("w", encoding="utf-8") as handle:
+            parser.write(handle)
 
     def _on_force_simulated_toggled(self, checked: bool) -> None:
         mode = "enabled" if checked else "disabled"
@@ -2302,7 +2336,7 @@ class ScanImageControlWidget(QWidget):
                 "expID": exp_id,
                 "seq_num": seq_num,
                 "sequence_name": sequence_name,
-                "stimulus_groups": list(stimulus_group_nums),
+                "stimulus_group_count": len(stimulus_group_nums),
             }
             if ok:
                 insert_position = prep_state_local.triggered_insert_position
@@ -2311,7 +2345,7 @@ class ScanImageControlWidget(QWidget):
                 prep_state_local.triggered_sequence_name = sequence_name
                 prep_state_local.triggered_stimulus_groups = list(stimulus_group_nums)
                 self.signals.log_message.emit(
-                    f"[{photostim_path}] triggered sequence '{sequence_name}' via stimulus groups {stimulus_group_nums} "
+                    f"[{photostim_path}] triggered sequence '{sequence_name}' via {len(stimulus_group_nums)} stimulus groups "
                     f"(insert_position={insert_position}, idle_position={idle_position})"
                 )
             else:
@@ -2609,7 +2643,7 @@ class ScanImageControlWidget(QWidget):
             "triggered_sequence_name": prep_state.triggered_sequence_name,
             "triggered_insert_position": insert_position,
             "triggered_idle_position": idle_position,
-            "triggered_stimulus_groups": list(prep_state.triggered_stimulus_groups),
+            "triggered_stimulus_group_count": len(prep_state.triggered_stimulus_groups),
         }
         self.signals.log_message.emit(
             f"[{path_name}] check_idle -> idle={int(idle)} running={int(running)} "
