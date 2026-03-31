@@ -2607,15 +2607,19 @@ class ScanImageControlWidget(QWidget):
         active, position, sequence, completed_sequences, status_text = self._query_photostim_sequence_state(path_name)
         idle_position = prep_state.triggered_idle_position
         insert_position = prep_state.triggered_insert_position
+        block_duration_s = float(runtime.path_config.sequence_block_duration_s)
         has_pending_trial = idle_position is not None and insert_position is not None
+        expected_idle_after_s: float | None = None
         if not active:
             idle = True
             running = False
             reason = "photostim_inactive"
+            expected_idle_after_s = 0.0
         elif not has_pending_trial:
             idle = True
             running = False
             reason = "no_pending_trial"
+            expected_idle_after_s = 0.0
         elif position is None:
             idle = False
             running = True
@@ -2624,10 +2628,16 @@ class ScanImageControlWidget(QWidget):
             idle = True
             running = False
             reason = "terminal_idle_park_reached"
+            expected_idle_after_s = 0.0
+        elif position < insert_position:
+            idle = False
+            running = True
+            reason = "waiting_for_trial_start"
         else:
             idle = False
             running = True
             reason = "trial_running_or_armed"
+            expected_idle_after_s = max(0, idle_position - position) * block_duration_s
 
         payload: dict[str, object] = {
             "action": "check_idle",
@@ -2635,6 +2645,7 @@ class ScanImageControlWidget(QWidget):
             "idle": idle,
             "running": running,
             "reason": reason,
+            "expected_idle_after_s": expected_idle_after_s,
             "photostim_active": active,
             "sequence_position": position,
             "completed_sequences": completed_sequences,
@@ -2649,7 +2660,8 @@ class ScanImageControlWidget(QWidget):
             f"[{path_name}] check_idle -> idle={int(idle)} running={int(running)} "
             f"position={'NaN' if position is None else position} "
             f"idle_position={'NaN' if idle_position is None else idle_position} "
-            f"reason={reason}"
+            f"reason={reason} "
+            f"expected_idle_after_s={'NaN' if expected_idle_after_s is None else f'{expected_idle_after_s:.3f}'}"
         )
         if reply_address is not None and request_path_name is not None:
             self._send_json_reply(request_path_name, reply_address, payload)
