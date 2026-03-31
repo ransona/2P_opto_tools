@@ -454,8 +454,6 @@ class MatlabSession:
                     str(self.config.trial_waveform_pulse_width_ms / 1000.0),
                     "Waveform task total duration sec:",
                     "0.61",
-                    "Waveform external-start trigger times sec:",
-                    "[0.1 0.2 0.3 0.4 0.5]",
                     "TRIAL_WAVEFORM_READY_FOR_EXTERNAL_START",
                 ]
             )
@@ -1241,8 +1239,6 @@ def build_test_stim_waveform_command(
             f"disp({pulse_width_s!r});",
             "disp('Waveform task total duration sec:');",
             f"disp({total_duration_s!r});",
-            "disp('Waveform trigger times sec:');",
-            f"disp({pulse_times_expr});",
             f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', '', 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', {pulse_times_expr}, 'pulseWidth_s', {pulse_width_s!r});",
             "t0 = tic;",
             f"while most.idioms.isValidObj(do_task) && double(do_task.active) && toc(t0) < {max(2.0, total_duration_s + 1.0)!r}; pause(0.01); end",
@@ -1301,8 +1297,6 @@ def build_test_stim_waveform_external_start_command_configurable(
             f"disp({pulse_width_s!r});",
             "disp('Waveform task total duration sec:');",
             f"disp({total_duration_s!r});",
-            "disp('Waveform external-start trigger times sec:');",
-            f"disp({pulse_times_expr});",
             f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', {matlab_string(path_config.trial_waveform_start_trigger_port.split('/')[-1])}, 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', {pulse_times_expr}, 'pulseWidth_s', {pulse_width_s!r});",
             "disp('TRIAL_WAVEFORM_READY_FOR_EXTERNAL_START');",
         ]
