@@ -940,9 +940,9 @@ class ScanImageControlWidget(QWidget):
             )
             return
         dirty_entries = [
-            line.strip()
+            line.rstrip()
             for line in status_result.stdout.splitlines()
-            if line.strip() and not self._is_ignorable_git_status_entry(line.strip())
+            if line.strip() and not self._is_ignorable_git_status_entry(line.rstrip())
         ]
         if dirty_entries:
             if not self._discard_tracked_git_changes(dirty_entries):
