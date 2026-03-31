@@ -103,8 +103,7 @@ function do_task = testVdaqDoTriggeredByDi(varargin)
     fprintf('Start trigger: %s\n', most.idioms.ifthenelse(isempty(startTrigger), '<software start>', startTrigger));
     fprintf('Sample rate (Hz): %.0f\n', sampleRate_Hz);
     fprintf('Pulse width (s): %.6f\n', pulseWidth_s);
-    disp('Pulse times (s):');
-    disp(pulseTimes_s.');
+    fprintf('Pulse count: %d\n', numel(pulseTimes_s));
     fprintf('Total duration (s): %.6f\n', totalDuration_s);
     fprintf('Total samples: %d\n', totalSamples);
     fprintf('High samples: %d\n', nnz(outputWaveform));
