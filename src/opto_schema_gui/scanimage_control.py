@@ -2254,7 +2254,10 @@ class ScanImageControlWidget(QWidget):
         if conditions_raw is None:
             raise ValueError("update_experiment_params requires stimulus_conditions")
         if not isinstance(conditions_raw, list):
-            raise ValueError("update_experiment_params requires stimulus_conditions to be a list")
+            raise ValueError(
+                "update_experiment_params requires stimulus_conditions to be a list; "
+                f"received {type(conditions_raw).__name__}"
+            )
         stimulus_conditions: list[dict[str, object]] = []
         for idx, item in enumerate(conditions_raw):
             if not isinstance(item, dict):
