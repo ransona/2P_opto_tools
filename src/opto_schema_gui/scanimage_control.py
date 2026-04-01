@@ -2061,7 +2061,7 @@ class ScanImageControlWidget(QWidget):
             return
 
         if action == "start_trial":
-            trial_index_raw = message.get("trial_index", message.get("index"))
+            trial_index_raw = message.get("trial_index")
             self.signals.log_message.emit(
                 f"[{path_name}] updated current trial selection to index={trial_index_raw}"
             )
@@ -2279,9 +2279,9 @@ class ScanImageControlWidget(QWidget):
         tracking = runtime.experiment_tracking
         if not tracking.params:
             raise ValueError("start_trial requires prior update_experiment_params")
-        trial_index_raw = message.get("trial_index", message.get("index"))
+        trial_index_raw = message.get("trial_index")
         if trial_index_raw is None:
-            raise ValueError("start_trial requires trial_index or index")
+            raise ValueError("start_trial requires trial_index")
         trial_index = int(trial_index_raw)
         if trial_index < 0 or trial_index >= len(tracking.stimulus_conditions):
             raise IndexError(
