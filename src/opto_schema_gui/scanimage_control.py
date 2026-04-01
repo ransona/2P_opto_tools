@@ -680,6 +680,7 @@ class ScanImageControlWidget(QWidget):
         self._debug_category_enabled: dict[str, bool] = {
             "general": True,
             "udp": True,
+            "experiment": True,
             "software_trigger_times": True,
             "software_trigger_count": True,
             "stimuli": True,
@@ -774,6 +775,7 @@ class ScanImageControlWidget(QWidget):
         filter_layout = QVBoxLayout(filter_box)
         self.show_general_debug_checkbox = QCheckBox("General")
         self.show_udp_debug_checkbox = QCheckBox("UDP commands")
+        self.show_experiment_debug_checkbox = QCheckBox("Experiment info")
         self.show_trigger_times_debug_checkbox = QCheckBox("Software trigger times")
         self.show_trigger_count_debug_checkbox = QCheckBox("Trigger count check")
         self.show_stimuli_debug_checkbox = QCheckBox("Stimuli")
@@ -781,6 +783,7 @@ class ScanImageControlWidget(QWidget):
         for checkbox in (
             self.show_general_debug_checkbox,
             self.show_udp_debug_checkbox,
+            self.show_experiment_debug_checkbox,
             self.show_trigger_times_debug_checkbox,
             self.show_trigger_count_debug_checkbox,
             self.show_stimuli_debug_checkbox,
@@ -857,6 +860,7 @@ class ScanImageControlWidget(QWidget):
         mapping = (
             ("general", self.show_general_debug_checkbox),
             ("udp", self.show_udp_debug_checkbox),
+            ("experiment", self.show_experiment_debug_checkbox),
             ("software_trigger_times", self.show_trigger_times_debug_checkbox),
             ("software_trigger_count", self.show_trigger_count_debug_checkbox),
             ("stimuli", self.show_stimuli_debug_checkbox),
@@ -870,6 +874,7 @@ class ScanImageControlWidget(QWidget):
         parser["debug"] = {
             "general": str(self.show_general_debug_checkbox.isChecked()).lower(),
             "udp": str(self.show_udp_debug_checkbox.isChecked()).lower(),
+            "experiment": str(self.show_experiment_debug_checkbox.isChecked()).lower(),
             "software_trigger_times": str(self.show_trigger_times_debug_checkbox.isChecked()).lower(),
             "software_trigger_count": str(self.show_trigger_count_debug_checkbox.isChecked()).lower(),
             "stimuli": str(self.show_stimuli_debug_checkbox.isChecked()).lower(),
@@ -1893,6 +1898,8 @@ class ScanImageControlWidget(QWidget):
         lower = message.lower()
         if lower.startswith("[") and "stimuli:" in lower:
             return "stimuli"
+        if "updated experiment parameters" in lower or "current trial set to index" in lower:
+            return "experiment"
         if "software trigger count check" in lower:
             return "software_trigger_count"
         if "software trigger" in lower:
@@ -1905,12 +1912,15 @@ class ScanImageControlWidget(QWidget):
         self._debug_category_enabled = {
             "general": self.show_general_debug_checkbox.isChecked(),
             "udp": self.show_udp_debug_checkbox.isChecked(),
+            "experiment": self.show_experiment_debug_checkbox.isChecked(),
             "software_trigger_times": self.show_trigger_times_debug_checkbox.isChecked(),
             "software_trigger_count": self.show_trigger_count_debug_checkbox.isChecked(),
             "stimuli": self.show_stimuli_debug_checkbox.isChecked(),
         }
         if category == "udp":
             return self.show_udp_debug_checkbox.isChecked()
+        if category == "experiment":
+            return self.show_experiment_debug_checkbox.isChecked()
         if category == "software_trigger_times":
             return self.show_trigger_times_debug_checkbox.isChecked()
         if category == "software_trigger_count":
