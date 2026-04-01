@@ -131,6 +131,24 @@ class PreparedPhotostimState:
 
 
 @dataclass
+class ExperimentTrackingState:
+    exp_id: str = ""
+    schema_name: str = ""
+    params: dict[str, object] = field(default_factory=dict)
+    trial_configs: list[dict[str, object]] = field(default_factory=list)
+    current_trial_index: int | None = None
+    current_trial_config: dict[str, object] | None = None
+
+    def reset(self) -> None:
+        self.exp_id = ""
+        self.schema_name = ""
+        self.params = {}
+        self.trial_configs = []
+        self.current_trial_index = None
+        self.current_trial_config = None
+
+
+@dataclass
 class PathRuntime:
     path_config: PathConfig
     session: MatlabSession | None = None
@@ -139,6 +157,7 @@ class PathRuntime:
     launched: bool = False
     last_context: ExperimentContext | None = None
     prepared_photostim: PreparedPhotostimState = field(default_factory=PreparedPhotostimState)
+    experiment_tracking: ExperimentTrackingState = field(default_factory=ExperimentTrackingState)
     lock: threading.Lock = field(default_factory=threading.Lock)
     software_trigger_stop: threading.Event | None = None
     software_trigger_thread: threading.Thread | None = None
@@ -1249,6 +1268,14 @@ class ScanImageControlWidget(QWidget):
                 "engine_name": runtime.path_config.engine_name,
                 "listener_host": runtime.path_config.listener_host,
                 "listener_port": runtime.path_config.listener_port,
+                "experiment_tracking": {
+                    "exp_id": runtime.experiment_tracking.exp_id,
+                    "schema_name": runtime.experiment_tracking.schema_name,
+                    "current_trial_index": runtime.experiment_tracking.current_trial_index,
+                    "trial_config_count": len(runtime.experiment_tracking.trial_configs),
+                    "current_trial_config": runtime.experiment_tracking.current_trial_config,
+                    "params": runtime.experiment_tracking.params,
+                },
             }
         return {
             "machine": self.machine_combo.currentText(),
@@ -2008,6 +2035,54 @@ class ScanImageControlWidget(QWidget):
         udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received action={action}"
         self.signals.path_udp_log.emit(path_name, udp_line)
 
+        if action == "update_experiment_params":
+            exp_id = str(message.get("expID", "")).strip()
+            schema_name = str(message.get("schema_name", "")).strip()
+            self.signals.log_message.emit(
+                f"[{path_name}] updated experiment parameters for expID='{exp_id}' "
+                f"schema='{schema_name}'"
+            )
+            try:
+                self._handle_update_experiment_params_request(
+                    request_path_name=path_name,
+                    message=message,
+                    reply_address=address,
+                )
+            except Exception as exc:
+                self._send_json_reply(
+                    path_name,
+                    address,
+                    {
+                        "action": "update_experiment_params",
+                        "status": "error",
+                        "error": str(exc),
+                    },
+                )
+            return
+
+        if action == "start_trial":
+            trial_index_raw = message.get("trial_index", message.get("index"))
+            self.signals.log_message.emit(
+                f"[{path_name}] updated current trial selection to index={trial_index_raw}"
+            )
+            try:
+                self._handle_start_trial_request(
+                    request_path_name=path_name,
+                    message=message,
+                    reply_address=address,
+                )
+            except Exception as exc:
+                self._send_json_reply(
+                    path_name,
+                    address,
+                    {
+                        "action": "start_trial",
+                        "status": "error",
+                        "error": str(exc),
+                    },
+                )
+            return
+
         if action == "prep_patterns":
             photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
             if not photostim_path:
@@ -2154,6 +2229,84 @@ class ScanImageControlWidget(QWidget):
                 )
             return
         self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
+
+    def _handle_update_experiment_params_request(
+        self,
+        request_path_name: str,
+        message: dict[str, object],
+        reply_address: tuple[str, int],
+    ) -> None:
+        runtime = self._runtimes[request_path_name]
+        tracking = runtime.experiment_tracking
+        exp_id = str(message.get("expID", "")).strip()
+        schema_name = str(message.get("schema_name", "")).strip()
+        trial_configs_raw = message.get("trial_configs", [])
+        if trial_configs_raw is None:
+            trial_configs_raw = []
+        if not isinstance(trial_configs_raw, list):
+            raise ValueError("update_experiment_params requires trial_configs to be a list")
+        trial_configs: list[dict[str, object]] = []
+        for idx, item in enumerate(trial_configs_raw):
+            if not isinstance(item, dict):
+                raise ValueError(f"trial_configs[{idx}] must be an object")
+            trial_configs.append(dict(item))
+
+        tracking.reset()
+        tracking.exp_id = exp_id
+        tracking.schema_name = schema_name
+        tracking.params = {k: v for k, v in message.items() if k != "action"}
+        tracking.trial_configs = trial_configs
+
+        self._send_json_reply(
+            request_path_name,
+            reply_address,
+            {
+                "action": "update_experiment_params",
+                "status": "ready",
+                "expID": exp_id,
+                "schema_name": schema_name,
+                "trial_config_count": len(trial_configs),
+            },
+        )
+
+    def _handle_start_trial_request(
+        self,
+        request_path_name: str,
+        message: dict[str, object],
+        reply_address: tuple[str, int],
+    ) -> None:
+        runtime = self._runtimes[request_path_name]
+        tracking = runtime.experiment_tracking
+        if not tracking.params:
+            raise ValueError("start_trial requires prior update_experiment_params")
+        trial_index_raw = message.get("trial_index", message.get("index"))
+        if trial_index_raw is None:
+            raise ValueError("start_trial requires trial_index or index")
+        trial_index = int(trial_index_raw)
+        if trial_index < 0 or trial_index >= len(tracking.trial_configs):
+            raise IndexError(
+                f"trial_index {trial_index} is out of range for {len(tracking.trial_configs)} trial config(s)"
+            )
+        tracking.current_trial_index = trial_index
+        tracking.current_trial_config = dict(tracking.trial_configs[trial_index])
+        selected_seq_num = tracking.current_trial_config.get("seq_num")
+        self.signals.log_message.emit(
+            f"[{request_path_name}] current trial set to index={trial_index}"
+            + (f" seq_num={selected_seq_num}" if selected_seq_num is not None else "")
+        )
+
+        self._send_json_reply(
+            request_path_name,
+            reply_address,
+            {
+                "action": "start_trial",
+                "status": "ready",
+                "expID": tracking.exp_id,
+                "schema_name": tracking.schema_name,
+                "trial_index": trial_index,
+                "trial_config": tracking.current_trial_config,
+            },
+        )
 
     def _send_json_reply(self, path_name: str, address: tuple[str, int], payload: dict[str, object]) -> None:
         runtime = self._runtimes.get(path_name)
