@@ -135,17 +135,17 @@ class ExperimentTrackingState:
     exp_id: str = ""
     schema_name: str = ""
     params: dict[str, object] = field(default_factory=dict)
-    trial_configs: list[dict[str, object]] = field(default_factory=list)
+    stimulus_conditions: list[dict[str, object]] = field(default_factory=list)
     current_trial_index: int | None = None
-    current_trial_config: dict[str, object] | None = None
+    current_stimulus_condition: dict[str, object] | None = None
 
     def reset(self) -> None:
         self.exp_id = ""
         self.schema_name = ""
         self.params = {}
-        self.trial_configs = []
+        self.stimulus_conditions = []
         self.current_trial_index = None
-        self.current_trial_config = None
+        self.current_stimulus_condition = None
 
 
 @dataclass
@@ -1272,8 +1272,8 @@ class ScanImageControlWidget(QWidget):
                     "exp_id": runtime.experiment_tracking.exp_id,
                     "schema_name": runtime.experiment_tracking.schema_name,
                     "current_trial_index": runtime.experiment_tracking.current_trial_index,
-                    "trial_config_count": len(runtime.experiment_tracking.trial_configs),
-                    "current_trial_config": runtime.experiment_tracking.current_trial_config,
+                    "stimulus_condition_count": len(runtime.experiment_tracking.stimulus_conditions),
+                    "current_stimulus_condition": runtime.experiment_tracking.current_stimulus_condition,
                     "params": runtime.experiment_tracking.params,
                 },
             }
@@ -2240,22 +2240,22 @@ class ScanImageControlWidget(QWidget):
         tracking = runtime.experiment_tracking
         exp_id = str(message.get("expID", "")).strip()
         schema_name = str(message.get("schema_name", "")).strip()
-        trial_configs_raw = message.get("trial_configs", [])
-        if trial_configs_raw is None:
-            trial_configs_raw = []
-        if not isinstance(trial_configs_raw, list):
-            raise ValueError("update_experiment_params requires trial_configs to be a list")
-        trial_configs: list[dict[str, object]] = []
-        for idx, item in enumerate(trial_configs_raw):
+        conditions_raw = message.get("stimulus_conditions")
+        if conditions_raw is None:
+            raise ValueError("update_experiment_params requires stimulus_conditions")
+        if not isinstance(conditions_raw, list):
+            raise ValueError("update_experiment_params requires stimulus_conditions to be a list")
+        stimulus_conditions: list[dict[str, object]] = []
+        for idx, item in enumerate(conditions_raw):
             if not isinstance(item, dict):
-                raise ValueError(f"trial_configs[{idx}] must be an object")
-            trial_configs.append(dict(item))
+                raise ValueError(f"stimulus_conditions[{idx}] must be an object")
+            stimulus_conditions.append(dict(item))
 
         tracking.reset()
         tracking.exp_id = exp_id
         tracking.schema_name = schema_name
         tracking.params = {k: v for k, v in message.items() if k != "action"}
-        tracking.trial_configs = trial_configs
+        tracking.stimulus_conditions = stimulus_conditions
 
         self._send_json_reply(
             request_path_name,
@@ -2265,7 +2265,7 @@ class ScanImageControlWidget(QWidget):
                 "status": "ready",
                 "expID": exp_id,
                 "schema_name": schema_name,
-                "trial_config_count": len(trial_configs),
+                "stimulus_condition_count": len(stimulus_conditions),
             },
         )
 
@@ -2283,16 +2283,16 @@ class ScanImageControlWidget(QWidget):
         if trial_index_raw is None:
             raise ValueError("start_trial requires trial_index or index")
         trial_index = int(trial_index_raw)
-        if trial_index < 0 or trial_index >= len(tracking.trial_configs):
+        if trial_index < 0 or trial_index >= len(tracking.stimulus_conditions):
             raise IndexError(
-                f"trial_index {trial_index} is out of range for {len(tracking.trial_configs)} trial config(s)"
+                f"trial_index {trial_index} is out of range for {len(tracking.stimulus_conditions)} stimulus condition(s)"
             )
         tracking.current_trial_index = trial_index
-        tracking.current_trial_config = dict(tracking.trial_configs[trial_index])
-        selected_seq_num = tracking.current_trial_config.get("seq_num")
+        tracking.current_stimulus_condition = dict(tracking.stimulus_conditions[trial_index])
+        selected_stimulus_id = tracking.current_stimulus_condition.get("stimulus_id")
         self.signals.log_message.emit(
             f"[{request_path_name}] current trial set to index={trial_index}"
-            + (f" seq_num={selected_seq_num}" if selected_seq_num is not None else "")
+            + (f" stimulus_id={selected_stimulus_id}" if selected_stimulus_id is not None else "")
         )
 
         self._send_json_reply(
@@ -2304,7 +2304,7 @@ class ScanImageControlWidget(QWidget):
                 "expID": tracking.exp_id,
                 "schema_name": tracking.schema_name,
                 "trial_index": trial_index,
-                "trial_config": tracking.current_trial_config,
+                "stimulus_condition": tracking.current_stimulus_condition,
             },
         )
 
