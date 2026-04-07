@@ -93,7 +93,8 @@ importedPatternNames = usedPatternNames;
 patternNumbers = usedPatternNumbers;
 
 hPs.stimulusMode = 'sequence';
-hPs.sequenceSelectedStimuli = 2;
+allPreparedGroupIndices = 3:numel(hPs.stimRoiGroups);
+hPs.sequenceSelectedStimuli = [2 allPreparedGroupIndices 2];
 hPs.numSequences = 1;
 if isprop(hPs, 'autoTriggerPeriod')
     hPs.autoTriggerPeriod = 0;
@@ -106,6 +107,8 @@ if strlength(opts.TriggerTerm) > 0
 end
 
 disp('Starting photostim mask generation');
+disp('Initial photostim prep sequence:');
+disp(hPs.sequenceSelectedStimuli);
 hPs.start();
 disp('Photostim mask generation ready');
 end
