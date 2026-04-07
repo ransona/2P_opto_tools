@@ -1058,9 +1058,8 @@ class ScanImageControlWidget(QWidget):
         if self._ignore_combo_changes:
             return
         if self._has_active_paths():
-            QMessageBox.warning(self, "Machine change blocked", "Stop all paths before switching machine/config.")
-            self._reset_combo_selection()
-            return
+            self.signals.log_message.emit("[config] Machine change requested; stopping active paths first")
+            self._teardown_active_paths_for_config_change()
         self._populate_configs_for_machine(machine_name)
 
     def _populate_configs_for_machine(self, machine_name: str) -> None:
@@ -1084,9 +1083,8 @@ class ScanImageControlWidget(QWidget):
         if self._ignore_combo_changes:
             return
         if self._has_active_paths():
-            QMessageBox.warning(self, "Config change blocked", "Stop all paths before switching machine/config.")
-            self._reset_combo_selection()
-            return
+            self.signals.log_message.emit("[config] Config change requested; stopping active paths first")
+            self._teardown_active_paths_for_config_change()
         self._load_selected_config()
 
     def _reset_combo_selection(self) -> None:
@@ -1097,6 +1095,24 @@ class ScanImageControlWidget(QWidget):
             if self._current_config_name:
                 self.config_combo.setCurrentText(self._current_config_name)
         self._ignore_combo_changes = False
+
+    def _teardown_active_paths_for_config_change(self) -> None:
+        if self.machine_config is None:
+            return
+        self._startup_reconnect_prompt_pending = False
+        self._startup_reconnect_prompt_shown = False
+        self._startup_reconnect_prompt_paths = []
+        if self._startup_reconnect_prompt_box is not None:
+            self._startup_reconnect_prompt_box.hide()
+            self._startup_reconnect_prompt_box.deleteLater()
+            self._startup_reconnect_prompt_box = None
+        for path_name in reversed(self.machine_config.launch_order):
+            runtime = self._runtimes.get(path_name)
+            if runtime is None:
+                continue
+            if runtime.session is None and runtime.udp_listener is None:
+                continue
+            self._run_action(path_name, "stop path for config change", self._stop_path)
 
     def _load_selected_config(self) -> None:
         machine_name = self.machine_combo.currentText().strip()
