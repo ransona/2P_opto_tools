@@ -102,6 +102,12 @@ end
 if isprop(hPs, 'stimImmediately')
     hPs.stimImmediately = false;
 end
+if isprop(hPs, 'monitoring')
+    hPs.monitoring = true;
+end
+if isprop(hPs, 'logging')
+    hPs.logging = true;
+end
 if strlength(opts.TriggerTerm) > 0
     hPs.stimTriggerTerm = normalizePhotostimTriggerTerm(char(opts.TriggerTerm));
 end
