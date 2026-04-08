@@ -58,7 +58,7 @@ settleTime = 0.5;     % settle time in seconds to allow the resonant scanner to 
 
 % Calibration Settings
 amplitudeToLinePhaseMap = [0.393 1.39417e-06;1.333 -5.06971e-08;2.6 -2.816e-07;3 -4.352e-07;3.429 -3.584e-07;4 -4.48e-07;4.8 -4.30925e-07;6 -4.608e-07;8 -5.504e-07;8.667 -5.504e-07;14.712 -5.888e-07;17.719 -6.21039e-07;24 -6.528e-07;26 -6.144e-07];     % translates an amplitude (degrees) to a line phase (seconds)
-amplitudeToFrequencyMap = [1.333 7920.57;2.6 7918.94;2.615 7922.26;3 7919.64;3.429 7919.94;3.433 7921.74;4 7918.97;4.496 7923.13;4.74 7921.03;4.8 7918.63;5.231 7921.15;5.435 7918.99;5.556 7920.79;5.806 7923.25;6 7914.46;6.175 7920.56;6.5 7917.7;7.111 7920.15;7.856 7923.36;8 7920.84;8.515 7916.18;8.591 7921.81;8.667 7917.81;12 7909.77;12.531 7914.31;13.567 7920.53;14.712 7917.96;17.719 7920.19;19.822 7919.85;20.392 7917.64;21.93 7916.15;22.064 7913.26;23.473 7910.28;24 7913.97;26 7914.06];     % translates an amplitude (degrees) to a resonant frequency (Hz)
+amplitudeToFrequencyMap = [1.333 7920.57;2.6 7918.94;2.615 7922.26;3 7919.64;3.429 7919.94;3.433 7921.74;4 7918.97;4.496 7923.13;4.74 7921.03;4.8 7918.63;5.231 7921.15;5.435 7918.99;5.556 7920.79;5.806 7923.25;6 7914.46;6.175 7920.56;6.5 7917.7;7.111 7920.15;7.856 7923.36;8 7920.84;8.515 7916.18;8.591 7921.81;8.667 7917.81;9.847 7920.22;12 7909.77;12.531 7914.31;13.567 7920.53;14.712 7917.96;17.719 7920.19;19.822 7919.85;20.392 7917.64;21.93 7916.15;22.064 7913.26;22.84 7917.91;23.473 7910.28;24 7913.97;26 7914.06];     % translates an amplitude (degrees) to a resonant frequency (Hz)
 amplitudeLUT = zeros(0,2);     % translates a nominal amplitude (degrees) to an output amplitude (degrees)
 
 %% dabs.generic.GalvoPureAnalog (X Galvo P2)
@@ -235,15 +235,15 @@ volumeTriggerOut = '';     % Output line for the volume clock
 % Calibration data
 scannerToRefTransform = [1 0 0;0 1 0;0 0 1];
 LaserTriggerDebounceTicks = 1;
-virtualChannelsSource = {'AI0' 'AI1' 'AI1'};
-virtualChannelsMode = {'analog' 'analog' 'photon counting'};
+virtualChannelsSource = {'AI0' 'AI1' 'AI0'};
+virtualChannelsMode = {'analog' 'analog' 'analog'};
 virtualChannelsThreshold = [false false false];
 virtualChannelsBinarize = [false false false];
 virtualChannelsEdgeDetect = [false false false];
-virtualChannelsLaserGate = [false false false];
+virtualChannelsLaserGate = [false false true];
 virtualChannelsDisableDivide = [false false false];
 virtualChannelsThresholdValue = [100 100 100];
-virtualChannelsLaserFilterWindow = {[0 1] [21 24] [0 1]};
+virtualChannelsLaserFilterWindow = {[0 1] [21 24] [0 3]};
 
 
 %% dabs.generic.recolorGuis (Recolor P2)

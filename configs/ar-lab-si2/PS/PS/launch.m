@@ -32,21 +32,46 @@ fprintf('N=%d, high_frac=%.3f\n', numel(w), mean(w>0));
 wg.startTask();
 
 function seedConfigDialogPathsAndLoadDefaultCfg(hSiObj, configDir)
-if isempty(hSiObj) || ~isprop(hSiObj, 'hConfigurationSaver')
+%SEEDCONFIGDIALOGPATHSANDLOADDEFAULTCFG Seed ScanImage config paths and load a default CFG.
+%   seedConfigDialogPathsAndLoadDefaultCfg(hSiObj, configDir) updates the
+%   ConfigurationSaver class-data entries used by the config dialogs and
+%   then loads the newest cfg_path*.cfg found in configDir.
+
+if isempty(hSiObj) || ~isprop(hSiObj, 'hConfigurationSaver') || isempty(hSiObj.hConfigurationSaver)
     return;
 end
 
 hCfg = hSiObj.hConfigurationSaver;
-hCfg.setClassDataVar('lastConfigFilePath', configDir, hCfg.classDataFileName);
-hCfg.setClassDataVar('lastFastConfigFilePath', configDir, hCfg.classDataFileName);
+configDir = char(configDir);
+assert(exist(configDir, 'dir') == 7, 'Configuration directory does not exist: %s', configDir);
+
+if isempty(hCfg.classDataFileName) || exist(hCfg.classDataFileName, 'file') ~= 2
+    hCfg.reinit();
+end
+
+className = class(hCfg);
+classDataFileName = hCfg.classDataFileName;
+
+most.HasClassDataFile.setClassDataVarStatic( ...
+    className, 'lastConfigFilePath', configDir, classDataFileName, false);
+most.HasClassDataFile.setClassDataVarStatic( ...
+    className, 'lastFastConfigFilePath', configDir, classDataFileName, false);
 
 usrCandidates = dir(fullfile(configDir, 'usr_path*.usr'));
+usrCandidates = usrCandidates(~[usrCandidates.isdir]);
 if ~isempty(usrCandidates)
-    hCfg.setClassDataVar('lastUsrFile', fullfile(configDir, usrCandidates(1).name), hCfg.classDataFileName);
+    usrPath = fullfile(usrCandidates(1).folder, usrCandidates(1).name);
+    most.HasClassDataFile.setClassDataVarStatic( ...
+        className, 'lastUsrFile', usrPath, classDataFileName, false);
 end
 
 cfgCandidates = dir(fullfile(configDir, 'cfg_path*.cfg'));
-if ~isempty(cfgCandidates)
-    hCfg.cfgLoadConfig(fullfile(configDir, cfgCandidates(1).name));
+cfgCandidates = cfgCandidates(~[cfgCandidates.isdir]);
+if isempty(cfgCandidates)
+    return;
 end
+
+[~, newestIndex] = max([cfgCandidates.datenum]);
+cfgPath = fullfile(cfgCandidates(newestIndex).folder, cfgCandidates(newestIndex).name);
+hCfg.cfgLoadConfig(cfgPath);
 end

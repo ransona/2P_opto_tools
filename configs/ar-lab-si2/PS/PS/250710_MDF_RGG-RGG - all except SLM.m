@@ -342,7 +342,7 @@ DOTripReset = '';     % <optional> resource name of the analog output channel th
 
 % Calibration settings
 wavelength_nm = 510;     % wavelength in nanometer
-autoOn = false;     % powers the PMT automatically on for the duration of a scan
+autoOn = true;     % powers the PMT automatically on for the duration of a scan
 gain_V = 0.6;     % PMT power supply voltage
 
 %% dabs.generic.PMTAnalog (Red PMT)
@@ -584,3 +584,4 @@ defaultValueVolts = 0;
 periodSec = 0.1;              % ignored now, leave large
 startDelay = 0;               % this is your only timing knob
 dutyCycle = 50;
+

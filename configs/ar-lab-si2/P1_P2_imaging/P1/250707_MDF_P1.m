@@ -61,7 +61,7 @@ settleTime = 0.5;     % settle time in seconds to allow the resonant scanner to 
 
 % Calibration Settings
 amplitudeToLinePhaseMap = [4 -2.53485e-06;6 -2.62357e-06;12 -2.69962e-06;17.615 -2.69962e-06;18.767 -2.76299e-06;19.449 -2.76299e-06;24 -2.76299e-06];     % translates an amplitude (degrees) to a line phase (seconds)
-amplitudeToFrequencyMap = [4 7926.61;4.228 7922.59;4.8 7926.55;4.996 7926.24;5.2 7927.36;5.523 7925.22;6 7921.03;6.405 7924.5;8.327 7926.26;8.711 7927.27;12 7915.08;12.769 7923.96;14.348 7926.26;16.552 7916.65;17.202 7917.39;17.295 7918.32;17.615 7921.82;18.767 7916.94;19.141 7917.25;19.449 7919.14;19.537 7918.85;19.833 7917.37;21.163 7920.57;21.636 7918.5;21.907 7923.76;23.059 7923.15;23.444 7924.66;24 7918.82];     % translates an amplitude (degrees) to a resonant frequency (Hz)
+amplitudeToFrequencyMap = [4 7926.61;4.228 7922.59;4.8 7926.55;4.996 7926.24;5.2 7927.36;5.523 7925.22;6 7921.03;6.405 7924.5;8.327 7926.26;8.711 7927.27;12 7915.08;12.769 7923.96;14.348 7926.26;16.552 7916.65;17.202 7917.39;17.295 7918.32;17.615 7921.82;17.807 7922.86;18.767 7916.94;19.141 7917.25;19.449 7919.14;19.537 7918.85;19.833 7917.37;21.163 7920.57;21.636 7918.5;21.907 7923.76;23.059 7923.15;23.188 7922;23.444 7924.66;24 7918.82];     % translates an amplitude (degrees) to a resonant frequency (Hz)
 amplitudeLUT = zeros(0,2);     % translates a nominal amplitude (degrees) to an output amplitude (degrees)
 
 %% dabs.generic.GalvoPureAnalog (X Galvo P1)
@@ -190,7 +190,7 @@ DOTripReset = '';     % <optional> resource name of the analog output channel th
 
 % Calibration settings
 wavelength_nm = 510;     % wavelength in nanometer
-autoOn = false;     % powers the PMT automatically on for the duration of a scan
+autoOn = true;     % powers the PMT automatically on for the duration of a scan
 gain_V = 0.6;     % PMT power supply voltage
 
 %% dabs.generic.PMTAnalog (Red PMT)
@@ -286,10 +286,10 @@ virtualChannelsMode = {'analog' 'analog' 'analog'};
 virtualChannelsThreshold = [false false false];
 virtualChannelsBinarize = [false false false];
 virtualChannelsEdgeDetect = [false false false];
-virtualChannelsLaserGate = [false false false];
+virtualChannelsLaserGate = [false false true];
 virtualChannelsDisableDivide = [false false false];
 virtualChannelsThresholdValue = [100 100 100];
-virtualChannelsLaserFilterWindow = {[0 1] [0 1] [0 1]};
+virtualChannelsLaserFilterWindow = {[0 1] [0 1] [16 19]};
 
 %% dabs.zaber.ZaberMultiDevice (Zaber Motor)
 comPort = 'COM3';     % Serial port the stage is connected to (e.g. 'COM3')
