@@ -1592,10 +1592,13 @@ class MainWindow(QMainWindow):
 
     def save_schema_dialog(self) -> bool:
         default_path = self.schema_save_path()
+        default_dir = default_path.parent
+        default_dir.mkdir(parents=True, exist_ok=True)
+        dialog_path = default_path if default_path.exists() else default_dir / default_path.name
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save schema",
-            str(default_path),
+            str(dialog_path),
             "YAML (*.yaml *.yml)",
         )
         if not path:
