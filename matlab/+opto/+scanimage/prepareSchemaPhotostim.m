@@ -7,6 +7,7 @@ arguments
     opts.BlankDuration (1,1) double = 0.001
     opts.ParkDuration (1,1) double = 0.001
     opts.BlockDuration (1,1) double = 0.25
+    opts.InitialBlockLeadInDuration (1,1) double = 0.010
     opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
@@ -159,6 +160,7 @@ for stepIdx = 1:numel(sequenceSteps)
         patternNumber, ...
         overlapStart_s - stepStart_s, ...
         overlapEnd_s - overlapStart_s, ...
+        blockIdx == 1, ...
         hSI, ...
         opts, ...
         nBeams ...
@@ -172,7 +174,7 @@ end
 end
 
 
-function appendPatternSliceToGroup(hGroup, pattern, patternNumber, patternOffset_s, segmentDuration_s, hSI, opts, nBeams)
+function appendPatternSliceToGroup(hGroup, pattern, patternNumber, patternOffset_s, segmentDuration_s, isFirstBlockOfSequence, hSI, opts, nBeams)
 validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
 validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
 validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
@@ -250,13 +252,17 @@ if ismethod(stimField, 'recenterGalvoOntoSlmPattern')
     stimField.recenterGalvoOntoSlmPattern();
 end
 
-beamPowers = zeros(1, nBeams);
-beamPowers(3) = pattern.power_percent;
-stimField.powers = beamPowers;
+beamPowersOn = zeros(1, nBeams);
+beamPowersOn(3) = pattern.power_percent;
+beamPowersOff = zeros(1, nBeams);
 
 segmentStart_s = double(patternOffset_s);
 segmentEnd_s = segmentStart_s + double(segmentDuration_s);
 cursor_s = segmentStart_s;
+firstActiveLeadIn_s = 0;
+if isFirstBlockOfSequence && segmentStart_s <= 1e-9
+    firstActiveLeadIn_s = max(0, double(opts.InitialBlockLeadInDuration));
+end
 
 cycleCount = max(1, ceil(totalDuration_s ./ cycleDuration));
 for cycleIdx = 0:(cycleCount - 1)
@@ -270,31 +276,26 @@ for cycleIdx = 0:(cycleCount - 1)
     end
 
     activeStart_s = min(cycleEnd_s, cycleStart_s + opts.PreStimPauseDuration);
+    if cycleIdx == 0 && firstActiveLeadIn_s > 0
+        activeStart_s = min(cycleEnd_s, max(activeStart_s, firstActiveLeadIn_s));
+    end
     activeEnd_s = min(cycleEnd_s, activeStart_s + stimDuration);
 
-    if activeStart_s > cursor_s
-        hGroup.add(makePauseRoi([0 0], [0 0], activeStart_s - cursor_s, nBeams));
-        cursor_s = activeStart_s;
+    overlapStart_s = max(segmentStart_s, activeStart_s);
+    if overlapStart_s > cursor_s
+        hGroup.add(makePowerStimRoi(stimField, beamPowersOff, overlapStart_s - cursor_s));
+        cursor_s = overlapStart_s;
     end
 
-    overlapStart_s = max(segmentStart_s, activeStart_s);
     overlapEnd_s = min(segmentEnd_s, activeEnd_s);
     if overlapEnd_s > overlapStart_s
-        stimField.duration = overlapEnd_s - overlapStart_s;
-        stimField.repetitions = 1;
-        hGroup.add(makeStimRoi(stimField));
+        hGroup.add(makePowerStimRoi(stimField, beamPowersOn, overlapEnd_s - overlapStart_s));
         cursor_s = overlapEnd_s;
-    end
-
-    pauseStop_s = min(segmentEnd_s, cycleEnd_s);
-    if pauseStop_s > cursor_s
-        hGroup.add(makePauseRoi([0 0], [0 0], pauseStop_s - cursor_s, nBeams));
-        cursor_s = pauseStop_s;
     end
 end
 
 if cursor_s < segmentEnd_s
-    hGroup.add(makePauseRoi([0 0], [0 0], segmentEnd_s - cursor_s, nBeams));
+    hGroup.add(makePowerStimRoi(stimField, beamPowersOff, segmentEnd_s - cursor_s));
 end
 end
 
@@ -339,6 +340,15 @@ end
 function roi = makeStimRoi(stimField)
 roi = scanimage.mroi.Roi();
 roi.add(0, stimField.copy());
+end
+
+
+function roi = makePowerStimRoi(stimFieldTemplate, powers, durationSeconds)
+stimField = stimFieldTemplate.copy();
+stimField.duration = durationSeconds;
+stimField.repetitions = 1;
+stimField.powers = powers;
+roi = makeStimRoi(stimField);
 end
 
 
