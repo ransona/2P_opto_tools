@@ -253,20 +253,49 @@ end
 beamPowers = zeros(1, nBeams);
 beamPowers(3) = pattern.power_percent;
 stimField.powers = beamPowers;
-stimField.duration = segmentDuration_s;
-stimField.repetitions = 1;
-stimField.stimfcnhdl = @opto.scanimage.pulsedStimulusPath;
-stimField.stimparams = { ...
-    'prePause_s', opts.PreStimPauseDuration, ...
-    'stimActive_s', stimDuration, ...
-    'cycleDuration_s', cycleDuration, ...
-    'patternOffset_s', patternOffset_s, ...
-    'totalPatternDuration_s', totalDuration_s, ...
-    'delegateFunction', 'scanimage.mroi.stimulusfunctions.logspiral', ...
-    'delegateParams', {'revolutions', opts.Revolutions, 'direction', 'outward'} ...
-};
-stimField.beamsfcnhdl = @opto.scanimage.pulsedBeamPowers;
-hGroup.add(makeStimRoi(stimField));
+
+segmentStart_s = double(patternOffset_s);
+segmentEnd_s = segmentStart_s + double(segmentDuration_s);
+cursor_s = segmentStart_s;
+
+cycleCount = max(1, ceil(totalDuration_s ./ cycleDuration));
+for cycleIdx = 0:(cycleCount - 1)
+    cycleStart_s = double(cycleIdx) * cycleDuration;
+    cycleEnd_s = min(totalDuration_s, cycleStart_s + cycleDuration);
+    if cycleEnd_s <= segmentStart_s
+        continue;
+    end
+    if cycleStart_s >= segmentEnd_s
+        break;
+    end
+
+    activeStart_s = min(cycleEnd_s, cycleStart_s + opts.PreStimPauseDuration);
+    activeEnd_s = min(cycleEnd_s, activeStart_s + stimDuration);
+
+    if activeStart_s > cursor_s
+        hGroup.add(makePauseRoi([0 0], [0 0], activeStart_s - cursor_s, nBeams));
+        cursor_s = activeStart_s;
+    end
+
+    overlapStart_s = max(segmentStart_s, activeStart_s);
+    overlapEnd_s = min(segmentEnd_s, activeEnd_s);
+    if overlapEnd_s > overlapStart_s
+        stimField.duration = overlapEnd_s - overlapStart_s;
+        stimField.repetitions = 1;
+        hGroup.add(makeStimRoi(stimField));
+        cursor_s = overlapEnd_s;
+    end
+
+    pauseStop_s = min(segmentEnd_s, cycleEnd_s);
+    if pauseStop_s > cursor_s
+        hGroup.add(makePauseRoi([0 0], [0 0], pauseStop_s - cursor_s, nBeams));
+        cursor_s = pauseStop_s;
+    end
+end
+
+if cursor_s < segmentEnd_s
+    hGroup.add(makePauseRoi([0 0], [0 0], segmentEnd_s - cursor_s, nBeams));
+end
 end
 
 
