@@ -288,6 +288,7 @@ class PatternEditor(QWidget):
         on_dirty,
         on_commit=None,
         resolve_sequence_overlaps=None,
+        on_live_commit=None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -295,6 +296,7 @@ class PatternEditor(QWidget):
         self.on_dirty = on_dirty
         self.on_commit = on_commit
         self.resolve_sequence_overlaps = resolve_sequence_overlaps
+        self.on_live_commit = on_live_commit
         self.current_name = ""
         self._loading = False
         self._build_ui()
@@ -375,14 +377,14 @@ class PatternEditor(QWidget):
         self.remove_row_btn.clicked.connect(self.remove_selected_cell_rows)
         self.copy_btn.clicked.connect(self.copy_current_pattern)
         self.clear_btn.clicked.connect(self.clear_form)
-        self.name_edit.editingFinished.connect(self._on_form_changed)
+        self.name_edit.textChanged.connect(self._on_form_changed)
         self.duration_spin.valueChanged.connect(self._on_form_changed)
         self.freq_spin.valueChanged.connect(self._on_form_changed)
         self.duty_cycle_spin.valueChanged.connect(self._on_form_changed)
         self.power_spin.valueChanged.connect(self._on_form_changed)
         self.spiral_width_spin.valueChanged.connect(self._on_form_changed)
         self.spiral_height_spin.valueChanged.connect(self._on_form_changed)
-        self.notes_edit.editingFinished.connect(self._on_form_changed)
+        self.notes_edit.textChanged.connect(self._on_form_changed)
 
     def add_cell_row(self, cell: CellSpec | None = None) -> None:
         row = self.cells_table.rowCount()
@@ -413,7 +415,8 @@ class PatternEditor(QWidget):
         if self._loading:
             return
         self._highlight_duplicate_coordinates()
-        self.commit_current_pattern(silent=True)
+        if self.commit_current_pattern(silent=True) and self.on_live_commit is not None:
+            self.on_live_commit()
         self.on_dirty()
 
     def _highlight_duplicate_coordinates(self) -> None:
@@ -576,12 +579,13 @@ class PatternEditor(QWidget):
 
 
 class SequenceEditor(QWidget):
-    def __init__(self, project: ExperimentProject, preview: TimelinePreview, on_dirty, on_commit=None, parent: QWidget | None = None):
+    def __init__(self, project: ExperimentProject, preview: TimelinePreview, on_dirty, on_commit=None, on_live_commit=None, parent: QWidget | None = None):
         super().__init__(parent)
         self.project = project
         self.preview = preview
         self.on_dirty = on_dirty
         self.on_commit = on_commit
+        self.on_live_commit = on_live_commit
         self.current_name = ""
         self._loading = False
         self._build_ui()
@@ -636,8 +640,8 @@ class SequenceEditor(QWidget):
         self.remove_step_btn.clicked.connect(self.remove_selected_step_rows)
         self.copy_btn.clicked.connect(self.copy_current_sequence)
         self.clear_btn.clicked.connect(self.clear_form)
-        self.name_edit.editingFinished.connect(self._on_form_changed)
-        self.notes_edit.editingFinished.connect(self._on_form_changed)
+        self.name_edit.textChanged.connect(self._on_form_changed)
+        self.notes_edit.textChanged.connect(self._on_form_changed)
         self.start_spin.valueChanged.connect(self._on_form_changed)
         self.steps_table.itemChanged.connect(self._on_steps_table_item_changed)
         self.save_btn.clicked.connect(self.save_current_sequence)
@@ -733,7 +737,8 @@ class SequenceEditor(QWidget):
         self._loading = True
         self._set_sequence_steps(steps)
         self._loading = False
-        self.commit_current_sequence(silent=True)
+        if self.commit_current_sequence(silent=True) and self.on_live_commit is not None:
+            self.on_live_commit()
         self._sync_start_spin_to_end()
         self.on_dirty()
 
@@ -748,7 +753,8 @@ class SequenceEditor(QWidget):
             self.steps_table.removeRow(self.steps_table.rowCount() - 1)
         self._loading = False
         self._refresh_preview()
-        self.commit_current_sequence(silent=True)
+        if self.commit_current_sequence(silent=True) and self.on_live_commit is not None:
+            self.on_live_commit()
         self._sync_start_spin_to_end()
         self.on_dirty()
 
@@ -762,7 +768,8 @@ class SequenceEditor(QWidget):
     def _on_form_changed(self, *_args) -> None:
         if self._loading:
             return
-        self.commit_current_sequence(silent=True)
+        if self.commit_current_sequence(silent=True) and self.on_live_commit is not None:
+            self.on_live_commit()
         self.on_dirty()
 
     def _on_steps_table_item_changed(self, item: QTableWidgetItem) -> None:
@@ -819,7 +826,8 @@ class SequenceEditor(QWidget):
         self._loading = True
         self._set_sequence_steps(sequence.steps)
         self._loading = False
-        self.commit_current_sequence(silent=True)
+        if self.commit_current_sequence(silent=True) and self.on_live_commit is not None:
+            self.on_live_commit()
         self.on_dirty()
 
     def _current_end_time(self) -> float:
@@ -911,8 +919,6 @@ class SequenceEditor(QWidget):
         self.current_name = sequence.name
         self._refresh_preview()
         self._sync_start_spin_to_end()
-        if self.on_commit is not None:
-            self.on_commit()
         return True
 
     def save_current_sequence(self) -> bool:
@@ -940,7 +946,10 @@ class SequenceEditor(QWidget):
             self._set_sequence_steps(sequence.steps)
             self._loading = False
             self.on_dirty()
-        return self.commit_current_sequence(silent=False)
+        ok = self.commit_current_sequence(silent=False)
+        if ok and self.on_commit is not None:
+            self.on_commit()
+        return ok
 
     def _refresh_preview(self) -> None:
         self.preview.set_sequence(self.name_edit.text().strip())
@@ -995,13 +1004,21 @@ class MainWindow(QMainWindow):
         self._suppress_dirty_updates = False
 
         self.preview = TimelinePreview(self.project)
+        self._suppress_selection_load = False
         self.pattern_editor = PatternEditor(
             self.project,
             self.mark_pattern_dirty,
             self.refresh_lists,
             self._resolve_sequence_overlaps_after_pattern_edit,
+            self._refresh_lists_live,
         )
-        self.sequence_editor = SequenceEditor(self.project, self.preview, self.mark_sequence_dirty, self.refresh_lists)
+        self.sequence_editor = SequenceEditor(
+            self.project,
+            self.preview,
+            self.mark_sequence_dirty,
+            self.refresh_lists,
+            self._refresh_lists_live,
+        )
         self.scanimage_control = ScanImageControlWidget(self.ensure_schema_path_for_external_use)
 
         self.pattern_list = QListWidget()
@@ -1272,8 +1289,8 @@ class MainWindow(QMainWindow):
         self._send_gui_control_reply(address, response)
 
     def refresh_lists(self) -> None:
-        current_pattern = self._current_item_name(self.pattern_list)
-        current_sequence = self._current_item_name(self.sequence_list)
+        current_pattern = self.pattern_editor.current_name or self._current_item_name(self.pattern_list)
+        current_sequence = self.sequence_editor.current_name or self._current_item_name(self.sequence_list)
 
         self.pattern_list.blockSignals(True)
         self.sequence_list.blockSignals(True)
@@ -1320,6 +1337,13 @@ class MainWindow(QMainWindow):
 
     def update_save_path_label(self) -> None:
         self.save_path_label.setText(str(self.schema_save_path()))
+
+    def _refresh_lists_live(self) -> None:
+        self._suppress_selection_load = True
+        try:
+            self.refresh_lists()
+        finally:
+            self._suppress_selection_load = False
 
     def animal_id(self) -> str:
         value = self.animal_edit.text().strip()
@@ -1389,7 +1413,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _pattern_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
-        if not current:
+        if self._suppress_selection_load or not current:
             return
         name = self._item_name(current)
         if name in self.project.patterns:
@@ -1397,7 +1421,7 @@ class MainWindow(QMainWindow):
             self.pattern_editor.load_pattern(name)
 
     def _sequence_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
-        if not current:
+        if self._suppress_selection_load or not current:
             return
         name = self._item_name(current)
         if name in self.project.sequences:
