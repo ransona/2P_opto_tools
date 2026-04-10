@@ -841,13 +841,19 @@ class ScanImageControlWidget(QWidget):
         config.read(self.repo_root / "config.ini")
         raw_save_root = config.get("paths", "save_root", fallback="./data")
         raw_schema_root = config.get("paths", "schema_root", fallback="./data")
-        save_root = Path(raw_save_root).expanduser()
-        if not save_root.is_absolute():
-            save_root = (self.repo_root / save_root).resolve()
-        schema_root = Path(raw_schema_root).expanduser()
-        if not schema_root.is_absolute():
-            schema_root = (self.repo_root / schema_root).resolve()
+        save_root = self._resolve_root_path(raw_save_root)
+        schema_root = self._resolve_root_path(raw_schema_root)
         return save_root, schema_root
+
+    def _resolve_root_path(self, raw_path: str) -> Path:
+        normalized = raw_path.replace("/", "\\").rstrip("\\").lower()
+        windows_schema_root = r"\\ar-lab-nas1\DataServer\opto_schemas".lower()
+        if sys.platform.startswith("linux") and normalized == windows_schema_root:
+            return Path("/mnt/opto_schemas")
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = (self.repo_root / path).resolve()
+        return path
 
     def _load_gui_state(self) -> None:
         parser = configparser.ConfigParser()

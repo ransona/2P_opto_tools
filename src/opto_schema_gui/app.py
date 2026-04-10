@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -41,6 +43,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .imaging_coordinates import convert_imaging_pixel_to_pattern_coords, list_imaging_scanfields
 from .io import load_schema, save_schema
 from .models import SCHEMA_TIME_QUANTUM_S, CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 from .matlab_bridge import autodetect_machine_name, load_machine_ui_config
@@ -133,7 +136,26 @@ def _load_save_root() -> Path:
     return _resolve_config_path(raw_root)
 
 
+def _windows_schema_root() -> str:
+    return r"\\ar-lab-nas1\DataServer\opto_schemas"
+
+
+def _ubuntu_schema_root() -> Path:
+    return Path("/mnt/opto_schemas")
+
+
+def _roi_coordinate_import_enabled() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def _normalize_unc_path(raw_path: str) -> str:
+    return raw_path.replace("/", "\\").rstrip("\\").lower()
+
+
 def _resolve_config_path(raw_path: str) -> Path:
+    normalized = _normalize_unc_path(raw_path)
+    if sys.platform.startswith("linux") and normalized == _normalize_unc_path(_windows_schema_root()):
+        return _ubuntu_schema_root()
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         path = (_repo_root() / path).resolve()
@@ -281,10 +303,111 @@ class TimelinePreview(QWidget):
         painter.drawText(16, self.height() - 18, f"Total duration: {max_end:.3f}s")
 
 
+class ImagingPixelImportDialog(QDialog):
+    def __init__(self, repo_root: Path, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.repo_root = repo_root
+        self.bundle = None
+        self.setWindowTitle("Add Imaging Pixel")
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.exp_id_edit = QLineEdit()
+        self.imaging_path_combo = QComboBox()
+        self.imaging_path_combo.addItems(["P1"])
+        self.scanfield_combo = QComboBox()
+        self.scanfield_combo.setEnabled(False)
+        self.x_spin = QDoubleSpinBox()
+        self.x_spin.setRange(0.0, 100000.0)
+        self.x_spin.setDecimals(3)
+        self.y_spin = QDoubleSpinBox()
+        self.y_spin.setRange(0.0, 100000.0)
+        self.y_spin.setDecimals(3)
+        self.label_edit = QLineEdit()
+        self.info_label = QLabel("Enter an experiment ID, load scanfields, then supply 0-based pixel X/Y.")
+        self.info_label.setWordWrap(True)
+        self.load_btn = QPushButton("Load Scanfields")
+
+        form.addRow("Experiment ID", self.exp_id_edit)
+        form.addRow("Imaging Path", self.imaging_path_combo)
+        form.addRow("Scanfield", self.scanfield_combo)
+        form.addRow("Pixel X (0-based)", self.x_spin)
+        form.addRow("Pixel Y (0-based)", self.y_spin)
+        form.addRow("Cell Label", self.label_edit)
+        form.addRow("", self.load_btn)
+        form.addRow("Info", self.info_label)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.load_btn.clicked.connect(self.load_scanfields)
+        self.exp_id_edit.textChanged.connect(self._clear_loaded_scanfields)
+
+    def _clear_loaded_scanfields(self) -> None:
+        self.bundle = None
+        self.scanfield_combo.clear()
+        self.scanfield_combo.setEnabled(False)
+
+    def load_scanfields(self) -> None:
+        exp_id = self.exp_id_edit.text().strip()
+        if not exp_id:
+            QMessageBox.warning(self, "Missing experiment ID", "Enter an experiment ID first.")
+            return
+        try:
+            bundle = list_imaging_scanfields(
+                self.repo_root,
+                exp_id,
+                imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Failed to load imaging metadata", str(exc))
+            return
+
+        self.bundle = bundle
+        self.scanfield_combo.clear()
+        for scanfield in bundle.scanfields:
+            self.scanfield_combo.addItem(scanfield.label, scanfield.index)
+        self.scanfield_combo.setEnabled(True)
+        note = bundle.note if bundle.note else ""
+        self.info_label.setText(f"Source: {bundle.source}\nExperiment dir: {bundle.exp_dir}{chr(10) + note if note else ''}")
+
+        if not self.label_edit.text().strip():
+            self.label_edit.setText(f"img_{exp_id}_cell")
+
+    def result_data(self) -> tuple[str, CellSpec, str, str]:
+        exp_id = self.exp_id_edit.text().strip()
+        if not exp_id:
+            raise ValueError("Experiment ID is required.")
+        if self.bundle is None or self.scanfield_combo.count() == 0:
+            raise ValueError("Load scanfields before importing a coordinate.")
+
+        scanfield_index = int(self.scanfield_combo.currentData())
+        result = convert_imaging_pixel_to_pattern_coords(
+            self.repo_root,
+            exp_id,
+            scanfield_index=scanfield_index,
+            x_px=self.x_spin.value(),
+            y_px=self.y_spin.value(),
+            imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
+        )
+        label = self.label_edit.text().strip() or f"img_{exp_id}_{scanfield_index}"
+        cell = CellSpec(label=label, x=result.x_um, y=result.y_um, z=result.z_um)
+        return exp_id, cell, result.source, result.note
+
+
+
+
 class PatternEditor(QWidget):
     def __init__(
         self,
         project: ExperimentProject,
+        repo_root: Path,
         on_dirty,
         on_commit=None,
         resolve_sequence_overlaps=None,
@@ -293,6 +416,7 @@ class PatternEditor(QWidget):
     ):
         super().__init__(parent)
         self.project = project
+        self.repo_root = repo_root
         self.on_dirty = on_dirty
         self.on_commit = on_commit
         self.resolve_sequence_overlaps = resolve_sequence_overlaps
@@ -365,15 +489,21 @@ class PatternEditor(QWidget):
 
         button_row = QHBoxLayout()
         self.add_row_btn = QPushButton("Add Cell")
+        self.add_imaging_pixel_btn = QPushButton("Add Imaging Pixel")
+        self.add_imaging_pixel_btn.setEnabled(_roi_coordinate_import_enabled())
+        if not _roi_coordinate_import_enabled():
+            self.add_imaging_pixel_btn.setToolTip("Imaging pixel ROI import is available on Ubuntu only.")
         self.remove_row_btn = QPushButton("Remove Cell")
         self.copy_btn = QPushButton("Copy Pattern")
         button_row.addWidget(self.add_row_btn)
+        button_row.addWidget(self.add_imaging_pixel_btn)
         button_row.addWidget(self.remove_row_btn)
         button_row.addWidget(self.copy_btn)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
         self.add_row_btn.clicked.connect(self.add_cell_row)
+        self.add_imaging_pixel_btn.clicked.connect(self.add_imaging_pixel)
         self.remove_row_btn.clicked.connect(self.remove_selected_cell_rows)
         self.copy_btn.clicked.connect(self.copy_current_pattern)
         self.clear_btn.clicked.connect(self.clear_form)
@@ -403,6 +533,24 @@ class PatternEditor(QWidget):
         self.cells_table.selectRow(row)
         if not self._loading:
             self._on_form_changed()
+
+    def add_imaging_pixel(self) -> None:
+        if not _roi_coordinate_import_enabled():
+            QMessageBox.information(self, "Unavailable on this platform", "Imaging pixel ROI import is available on Ubuntu only.")
+            return
+        dialog = ImagingPixelImportDialog(self.repo_root, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            exp_id, cell, source, note = dialog.result_data()
+        except Exception as exc:
+            QMessageBox.warning(self, "Failed to convert imaging coordinate", str(exc))
+            return
+        self.add_cell_row(cell)
+        details = [f"Added cell from {exp_id}", f"Source: {source}"]
+        if note:
+            details.append(note)
+        QMessageBox.information(self, "Imaging pixel imported", "\n".join(details))
 
     def remove_selected_cell_rows(self) -> None:
         row = _selected_or_last_row(self.cells_table)
@@ -994,6 +1142,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Opto Schema GUI")
+        self.repo_root = _repo_root()
         self.project = ExperimentProject()
         self.save_root = _load_save_root()
         self.schema_root = _load_schema_root()
@@ -1007,6 +1156,7 @@ class MainWindow(QMainWindow):
         self._suppress_selection_load = False
         self.pattern_editor = PatternEditor(
             self.project,
+            self.repo_root,
             self.mark_pattern_dirty,
             self.refresh_lists,
             self._resolve_sequence_overlaps_after_pattern_edit,
