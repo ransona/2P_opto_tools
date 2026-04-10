@@ -146,13 +146,7 @@ def _resolve_experiment_dir(exp_id: str, imaging_config, imaging_path: str) -> P
     ubuntu_path_root = ubuntu_raw_root / animal_id / exp_id / imaging_path
     checked.append(ubuntu_path_root)
     if ubuntu_path_root.is_dir():
-        roi_dirs = sorted([path for path in ubuntu_path_root.iterdir() if path.is_dir()], key=lambda path: path.name.lower())
-        for roi_dir in roi_dirs:
-            checked.append(roi_dir)
-            if _find_selected_scanfield_roi_files(roi_dir) or _find_tiff_files(roi_dir):
-                return roi_dir
-        if _find_selected_scanfield_roi_files(ubuntu_path_root) or _find_tiff_files(ubuntu_path_root):
-            return ubuntu_path_root
+        return ubuntu_path_root
 
     acquisition_candidates = []
     for raw_root in (imaging_config.local_data_root, imaging_config.remote_data_root):
