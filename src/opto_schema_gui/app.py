@@ -304,12 +304,16 @@ class TimelinePreview(QWidget):
 
 
 class ImagingPixelImportDialog(QDialog):
-    def __init__(self, repo_root: Path, parent: QWidget | None = None):
+    def __init__(self, repo_root: Path, default_exp_id: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.repo_root = repo_root
         self.bundle = None
         self.setWindowTitle("Add Imaging Pixel")
         self._build_ui()
+        default_exp_id = default_exp_id.strip()
+        if default_exp_id:
+            self.exp_id_edit.setText(default_exp_id)
+            self.load_scanfields(show_error_dialog=False)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -354,7 +358,7 @@ class ImagingPixelImportDialog(QDialog):
         self.scanfield_combo.clear()
         self.scanfield_combo.setEnabled(False)
 
-    def load_scanfields(self) -> None:
+    def load_scanfields(self, show_error_dialog: bool = True) -> None:
         exp_id = self.exp_id_edit.text().strip()
         if not exp_id:
             QMessageBox.warning(self, "Missing experiment ID", "Enter an experiment ID first.")
@@ -366,7 +370,9 @@ class ImagingPixelImportDialog(QDialog):
                 imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
             )
         except Exception as exc:
-            QMessageBox.warning(self, "Failed to load imaging metadata", str(exc))
+            self.info_label.setText(str(exc))
+            if show_error_dialog:
+                QMessageBox.warning(self, "Failed to load imaging metadata", str(exc))
             return
 
         self.bundle = bundle
@@ -538,7 +544,7 @@ class PatternEditor(QWidget):
         if not _roi_coordinate_import_enabled():
             QMessageBox.information(self, "Unavailable on this platform", "Imaging pixel ROI import is available on Ubuntu only.")
             return
-        dialog = ImagingPixelImportDialog(self.repo_root, self)
+        dialog = ImagingPixelImportDialog(self.repo_root, self.project.origin_exp_id, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -1150,6 +1156,7 @@ class MainWindow(QMainWindow):
         self.last_schema_load_dir = self.schema_root
         self.pattern_dirty = False
         self.sequence_dirty = False
+        self.project_dirty = False
         self._suppress_dirty_updates = False
 
         self.preview = TimelinePreview(self.project)
@@ -1208,12 +1215,15 @@ class MainWindow(QMainWindow):
         project_form = QFormLayout(project_box)
         self.animal_edit = QLineEdit("TEST")
         self.project_edit = QLineEdit("DEFAULT")
+        self.origin_exp_id_edit = QLineEdit()
         self.save_path_label = QLabel()
         self.save_path_label.setWordWrap(True)
         self.animal_edit.textChanged.connect(self.update_save_path_label)
         self.project_edit.textChanged.connect(self.update_save_path_label)
+        self.origin_exp_id_edit.textChanged.connect(self._origin_exp_id_changed)
         project_form.addRow("Animal ID", self.animal_edit)
         project_form.addRow("Project", self.project_edit)
+        project_form.addRow("Origin ExpID", self.origin_exp_id_edit)
         project_form.addRow("Save root", QLabel(str(self.save_root)))
         project_form.addRow("Default schema path", self.save_path_label)
         schema_left_layout.addWidget(project_box)
@@ -1324,6 +1334,9 @@ class MainWindow(QMainWindow):
         if "project_name" in values:
             self.project_edit.setText(str(values["project_name"]))
             applied["project_name"] = self.project_edit.text()
+        if "origin_exp_id" in values:
+            self.origin_exp_id_edit.setText(str(values["origin_exp_id"]))
+            applied["origin_exp_id"] = self.origin_exp_id_edit.text()
         applied.update(self.scanimage_control.set_remote_state(values))
         return applied
 
@@ -1333,6 +1346,7 @@ class MainWindow(QMainWindow):
             "project_name": self.project_name(),
             "schema_file_path": self.schema_file_path,
             "schema_save_path": str(self.schema_save_path()),
+            "origin_exp_id": self.project.origin_exp_id,
             "pattern_dirty": self.pattern_dirty,
             "sequence_dirty": self.sequence_dirty,
             "current_pattern": self._current_item_name(self.pattern_list),
@@ -1478,6 +1492,8 @@ class MainWindow(QMainWindow):
     def update_status(self) -> None:
         errors = self.project.validate()
         dirty_bits = []
+        if self.project_dirty:
+            dirty_bits.append("project modified")
         if self.pattern_dirty:
             dirty_bits.append("patterns modified")
         if self.sequence_dirty:
@@ -1487,6 +1503,16 @@ class MainWindow(QMainWindow):
 
     def update_save_path_label(self) -> None:
         self.save_path_label.setText(str(self.schema_save_path()))
+
+    def _origin_exp_id_changed(self) -> None:
+        value = self.origin_exp_id_edit.text().strip()
+        if self.project.origin_exp_id == value:
+            return
+        self.project.origin_exp_id = value
+        if self._suppress_dirty_updates:
+            return
+        self.project_dirty = True
+        self.update_status()
 
     def _refresh_lists_live(self) -> None:
         self._suppress_selection_load = True
@@ -1524,6 +1550,7 @@ class MainWindow(QMainWindow):
     def clear_dirty(self) -> None:
         self.pattern_dirty = False
         self.sequence_dirty = False
+        self.project_dirty = False
         self.update_status()
 
     def _resolve_sequence_overlaps_after_pattern_edit(self) -> bool:
@@ -1690,7 +1717,7 @@ class MainWindow(QMainWindow):
                 return
 
     def new_project(self) -> None:
-        if self.pattern_dirty or self.sequence_dirty:
+        if self.project_dirty or self.pattern_dirty or self.sequence_dirty:
             choice = QMessageBox.question(
                 self,
                 "New project",
@@ -1709,6 +1736,7 @@ class MainWindow(QMainWindow):
         try:
             self.project = ExperimentProject()
             self.schema_file_path = ""
+            self.origin_exp_id_edit.setText("")
             self.pattern_editor.project = self.project
             self.sequence_editor.project = self.project
             self.preview.project = self.project
@@ -1716,6 +1744,7 @@ class MainWindow(QMainWindow):
             self.sequence_editor.current_name = ""
             self.pattern_dirty = False
             self.sequence_dirty = False
+            self.project_dirty = False
             self.pattern_editor.clear_form()
             self.sequence_editor.clear_form()
             self.refresh_lists()
@@ -1724,7 +1753,7 @@ class MainWindow(QMainWindow):
         self.clear_dirty()
 
     def load_schema_dialog(self) -> None:
-        if self.pattern_dirty or self.sequence_dirty:
+        if self.project_dirty or self.pattern_dirty or self.sequence_dirty:
             choice = QMessageBox.question(
                 self,
                 "Load schema",
@@ -1754,8 +1783,10 @@ class MainWindow(QMainWindow):
             self.sequence_editor.current_name = ""
             self.pattern_editor.clear_form()
             self.sequence_editor.clear_form()
+            self.origin_exp_id_edit.setText(self.project.origin_exp_id)
             self.pattern_dirty = False
             self.sequence_dirty = False
+            self.project_dirty = False
             self.last_schema_load_dir = Path(path).resolve().parent
             self.refresh_lists()
         finally:
@@ -1807,7 +1838,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _save_schema_to_default(self, force: bool = False) -> bool:
-        if not force and not (self.pattern_dirty or self.sequence_dirty):
+        if not force and not (self.project_dirty or self.pattern_dirty or self.sequence_dirty):
             return True
         self._suppress_dirty_updates = True
         try:
@@ -1828,7 +1859,7 @@ class MainWindow(QMainWindow):
         return True
 
     def ensure_schema_path_for_external_use(self) -> Path | None:
-        if self.pattern_dirty or self.sequence_dirty:
+        if self.project_dirty or self.pattern_dirty or self.sequence_dirty:
             choice = QMessageBox.question(
                 self,
                 "Save schema",

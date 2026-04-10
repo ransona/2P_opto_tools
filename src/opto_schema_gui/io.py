@@ -10,6 +10,7 @@ from .models import CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 def load_schema(path: str | Path) -> ExperimentProject:
     data = yaml.safe_load(Path(path).read_text()) or {}
 
+    project_block = data.get("project", {})
     patterns_block = data.get("patterns", {})
     sequences_block = data.get("sequences", {})
 
@@ -49,12 +50,19 @@ def load_schema(path: str | Path) -> ExperimentProject:
             notes=sequence_data.get("notes", ""),
         )
 
-    return ExperimentProject(patterns=patterns, sequences=sequences)
+    return ExperimentProject(
+        patterns=patterns,
+        sequences=sequences,
+        origin_exp_id=str(project_block.get("origin_exp_id", "") or ""),
+    )
 
 
 def save_schema(path: str | Path, project: ExperimentProject) -> None:
     payload = {
         "version": 1,
+        "project": {
+            "origin_exp_id": project.origin_exp_id,
+        },
         "patterns": {name: pattern.as_dict() for name, pattern in project.patterns.items()},
         "sequences": {
             name: sequence.as_dict(project.patterns)

@@ -93,6 +93,7 @@ class Sequence:
 class ExperimentProject:
     patterns: Dict[str, Pattern] = field(default_factory=dict)
     sequences: Dict[str, Sequence] = field(default_factory=dict)
+    origin_exp_id: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
