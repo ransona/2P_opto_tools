@@ -17,6 +17,7 @@ class ScanfieldChoice:
     index: int
     label: str
     roi_name: str
+    roi_folder_name: str
     scanfield_name: str
     z_um: float
     pixel_resolution_xy: tuple[int, int]
@@ -194,6 +195,14 @@ def _candidate_roots_from_raw(raw_root: str) -> list[Path]:
     return candidates
 
 
+def _list_roi_folder_names(exp_dir: Path) -> list[str]:
+    roi_dirs = sorted(
+        [path.name for path in exp_dir.iterdir() if path.is_dir() and re.fullmatch(r"R\d{3}", path.name)],
+        key=str.lower,
+    )
+    return roi_dirs
+
+
 def _find_selected_scanfield_roi_files(exp_dir: Path) -> list[Path]:
     return sorted(exp_dir.rglob("*_selectedScanfield.roi"), key=lambda path: str(path).lower())
 
@@ -206,6 +215,7 @@ def _find_tiff_files(exp_dir: Path) -> list[Path]:
 
 
 def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | None:
+    roi_folder_names = _list_roi_folder_names(path.parent)
     try:
         payload = json.loads(path.read_text())
     except Exception:
@@ -224,6 +234,7 @@ def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | 
         if not isinstance(roi, dict):
             continue
         roi_name = str(roi.get("roiName") or f"ROI {roi_idx}")
+        roi_folder_name = roi_folder_names[roi_idx - 1] if roi_idx - 1 < len(roi_folder_names) else f"R{roi_idx:03d}"
         for sf_idx, scanfield in enumerate(roi.get("scanfields", []), start=1):
             if not isinstance(scanfield, dict):
                 continue
@@ -241,8 +252,9 @@ def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | 
             scanfields.append(
                 ScanfieldChoice(
                     index=index,
-                    label=f"{index}: {roi_name} / {scanfield_name} / z={z_um:g} um / {pixel_resolution[0]}x{pixel_resolution[1]}",
+                    label=f"{index}: {roi_folder_name} / {roi_name} / {scanfield_name} / z={z_um:g} um / {pixel_resolution[0]}x{pixel_resolution[1]}",
                     roi_name=roi_name,
+                    roi_folder_name=roi_folder_name,
                     scanfield_name=scanfield_name,
                     z_um=z_um,
                     pixel_resolution_xy=pixel_resolution,
