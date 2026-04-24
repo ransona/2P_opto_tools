@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import pickle
 import re
 import sys
 from dataclasses import dataclass
@@ -41,6 +42,22 @@ class ConvertedPatternCoordinate:
     note: str
     exp_dir: Path
     scanfield_label: str
+
+
+@dataclass(frozen=True)
+class ResolvedProcessedCell:
+    exp_id: str
+    processed_path: Path
+    processed_cell_id: int
+    imaging_path: str
+    roi_folder_name: str
+    depth_value: int
+    local_cell_index: int
+    x_px: float
+    y_px: float
+    scanfield_index: int
+    scanfield_label: str
+    note: str
 
 
 def list_imaging_scanfields(
@@ -122,6 +139,92 @@ def convert_imaging_pixel_to_pattern_coords(
     )
 
 
+def resolve_processed_cell_to_imaging_pixel(
+    repo_root: Path,
+    exp_id: str,
+    processed_cell_id: int,
+    channel: int = 0,
+    default_imaging_path: str = "P1",
+    photostim_path: str = "PS",
+) -> ResolvedProcessedCell:
+    _require_linux_roi_import()
+    if processed_cell_id < 0:
+        raise ValueError("Processed cell ID must be >= 0.")
+
+    processed_data, processed_path = _load_processed_s2p_pickle(exp_id, channel)
+    neuron_count = _processed_neuron_count(processed_data)
+    if processed_cell_id >= neuron_count:
+        raise IndexError(
+            f"Processed cell ID {processed_cell_id} is out of range for '{processed_path.name}'. "
+            f"Available cells: 0..{neuron_count - 1}."
+        )
+
+    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
+    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
+
+    scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
+    siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+    depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+    imaging_path = f"P{scanpath_number}" if has_scanpath else default_imaging_path
+    roi_folder_name = f"R{siroi_number:03d}" if has_siroi else "R001"
+
+    group_key = (
+        imaging_path,
+        siroi_number if has_siroi else None,
+        depth_value,
+    )
+    local_cell_index = _local_cell_index_for_processed_row(processed_data, processed_cell_id, default_imaging_path)
+    roi_pixels = _lookup_processed_roi_pixels(processed_data, processed_cell_id, default_imaging_path)
+    fov_shape = _lookup_processed_fov_shape(processed_data, processed_cell_id, default_imaging_path)
+    ypix, xpix = np.unravel_index(roi_pixels.astype(int), fov_shape)
+    x_px = float(np.mean(xpix))
+    y_px = float(np.mean(ypix))
+
+    processed_debug_lines = [
+        f"Processed file: {processed_path}",
+        f"Resolved imaging path: {imaging_path}",
+        f"Resolved ROI folder: {roi_folder_name}",
+        f"Resolved depth value: {depth_value}",
+        f"Resolved local ROI index within group: {local_cell_index}",
+        f"Resolved centroid pixel: ({x_px:.2f}, {y_px:.2f})",
+        f"Group key: {group_key}",
+    ]
+
+    try:
+        bundle = list_imaging_scanfields(
+            repo_root,
+            exp_id,
+            imaging_path=imaging_path,
+            photostim_path=photostim_path,
+        )
+    except Exception as exc:
+        raise type(exc)(f"{exc}\n" + "\n".join(processed_debug_lines)) from exc
+    scanfield_index = _match_processed_cell_to_scanfield_index(
+        bundle,
+        depth_value=depth_value,
+        roi_folder_name=roi_folder_name if has_siroi else None,
+        depth_is_one_based=has_scanpath,
+    )
+    scanfield = bundle.scanfields[scanfield_index - 1]
+
+    debug_lines = processed_debug_lines + [f"Matched scanfield: {scanfield.label}"]
+
+    return ResolvedProcessedCell(
+        exp_id=exp_id,
+        processed_path=processed_path,
+        processed_cell_id=processed_cell_id,
+        imaging_path=imaging_path,
+        roi_folder_name=roi_folder_name,
+        depth_value=depth_value,
+        local_cell_index=local_cell_index,
+        x_px=x_px,
+        y_px=y_px,
+        scanfield_index=scanfield_index,
+        scanfield_label=scanfield.label,
+        note="\n".join(debug_lines),
+    )
+
+
 def _load_v1_configs(repo_root: Path, imaging_path: str, photostim_path: str):
     machine_name = autodetect_machine_name(repo_root) or "ar-lab-si2"
     imaging_machine_config = load_machine_config(repo_root, machine_name, "P1_imaging")
@@ -132,6 +235,157 @@ def _load_v1_configs(repo_root: Path, imaging_path: str, photostim_path: str):
     if photostim_path not in photostim_machine_config.paths:
         raise KeyError(f"Photostim path '{photostim_path}' is not defined in config '{photostim_machine_config.name}'.")
     return imaging_machine_config.paths[imaging_path], photostim_machine_config.paths[photostim_path]
+
+
+def _load_processed_s2p_pickle(exp_id: str, channel: int) -> tuple[dict, Path]:
+    animal_id = _animal_id_from_exp_id(exp_id)
+    candidates = [
+        Path("/home/adamranson/data/Repository") / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
+        Path("/home/adamranson/data/Local_Repository") / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
+        Path("/home/adamranson/data/tif_meso/processed_repository") / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
+    ]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        with candidate.open("rb") as handle:
+            payload = pickle.load(handle)
+        if not isinstance(payload, dict):
+            raise TypeError(f"Processed file '{candidate}' did not contain a dict payload.")
+        return payload, candidate
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"Could not find processed s2p pickle for '{exp_id}'. Checked: {searched}")
+
+
+def _processed_neuron_count(processed_data: dict) -> int:
+    for key in ("F", "dF", "Spikes", "Depths"):
+        value = processed_data.get(key)
+        if value is None:
+            continue
+        array = np.asarray(value)
+        if array.ndim == 0:
+            continue
+        return int(array.shape[0])
+    raise ValueError("Processed s2p payload did not contain any row-aligned neuron arrays.")
+
+
+def _row_scalar(value: object, row_index: int, default: int) -> int:
+    if value is None:
+        return default
+    array = np.asarray(value)
+    if array.size == 0:
+        return default
+    flat = array.reshape(array.shape[0], -1)
+    return int(flat[row_index, 0])
+
+
+def _local_cell_index_for_processed_row(processed_data: dict, processed_cell_id: int, default_imaging_path: str) -> int:
+    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
+    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
+    target_path = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1) if has_scanpath else None
+    target_roi = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1) if has_siroi else None
+    target_depth = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+
+    count = 0
+    for row_index in range(processed_cell_id):
+        row_path = _row_scalar(processed_data.get("allScanpaths"), row_index, default=1) if has_scanpath else None
+        row_roi = _row_scalar(processed_data.get("allSIRois"), row_index, default=1) if has_siroi else None
+        row_depth = _row_scalar(processed_data.get("Depths"), row_index, default=0)
+        if row_path == target_path and row_roi == target_roi and row_depth == target_depth:
+            count += 1
+    return count
+
+
+def _lookup_processed_roi_pixels(processed_data: dict, processed_cell_id: int, default_imaging_path: str) -> np.ndarray:
+    roi_pix = processed_data.get("AllRoiPix")
+    if not isinstance(roi_pix, dict):
+        raise ValueError("Processed payload is missing AllRoiPix.")
+
+    local_cell_index = _local_cell_index_for_processed_row(processed_data, processed_cell_id, default_imaging_path)
+    depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+        try:
+            roi_list = roi_pix[int(scanpath_number)][int(siroi_number)][int(depth_value)]
+        except Exception as exc:
+            raise KeyError(
+                "Processed AllRoiPix layout did not match expected mesoscope structure "
+                "{scanpath -> si_roi -> depth -> [roi pixels]}."
+            ) from exc
+    else:
+        if int(depth_value) not in roi_pix:
+            available = sorted(roi_pix.keys())
+            raise KeyError(
+                f"Processed AllRoiPix does not contain depth key {int(depth_value)}. "
+                f"Available keys: {available}. This looks like an unsupported legacy processed layout."
+            )
+        roi_list = roi_pix[int(depth_value)]
+
+    if local_cell_index < 0 or local_cell_index >= len(roi_list):
+        raise IndexError(
+            f"Local ROI index {local_cell_index} is out of range for processed cell {processed_cell_id}."
+        )
+    return np.asarray(roi_list[local_cell_index])
+
+
+def _lookup_processed_fov_shape(processed_data: dict, processed_cell_id: int, default_imaging_path: str) -> tuple[int, int]:
+    all_fov = processed_data.get("AllFOV")
+    if not isinstance(all_fov, dict):
+        raise ValueError("Processed payload is missing AllFOV.")
+
+    depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+        try:
+            image = np.asarray(all_fov[int(scanpath_number)][int(siroi_number)][int(depth_value)])
+        except Exception as exc:
+            raise KeyError(
+                "Processed AllFOV layout did not match expected mesoscope structure "
+                "{scanpath -> si_roi -> depth -> image}."
+            ) from exc
+    else:
+        if int(depth_value) not in all_fov:
+            available = sorted(all_fov.keys())
+            raise KeyError(
+                f"Processed AllFOV does not contain depth key {int(depth_value)}. "
+                f"Available keys: {available}. This looks like an unsupported legacy processed layout."
+            )
+        image = np.asarray(all_fov[int(depth_value)])
+    return int(image.shape[0]), int(image.shape[1])
+
+
+def _match_processed_cell_to_scanfield_index(
+    bundle: MetadataBundle,
+    depth_value: int,
+    roi_folder_name: str | None,
+    depth_is_one_based: bool,
+) -> int:
+    candidates = list(bundle.scanfields)
+    if roi_folder_name:
+        roi_filtered = [scanfield for scanfield in candidates if scanfield.roi_folder_name == roi_folder_name]
+        if roi_filtered:
+            candidates = roi_filtered
+
+    exact_z = [scanfield for scanfield in candidates if math.isclose(scanfield.z_um, float(depth_value), rel_tol=0.0, abs_tol=1e-9)]
+    if len(exact_z) == 1:
+        return exact_z[0].index
+
+    if len(candidates) == 1:
+        return candidates[0].index
+
+    ordered = sorted(candidates, key=lambda scanfield: scanfield.index)
+    if depth_is_one_based:
+        candidate_position = depth_value - 1
+    else:
+        candidate_position = depth_value
+    if 0 <= candidate_position < len(ordered):
+        return ordered[candidate_position].index
+
+    candidate_labels = ", ".join(scanfield.label for scanfield in ordered)
+    raise ValueError(
+        f"Could not uniquely match processed cell to scanfield. Candidates: {candidate_labels}"
+    )
 
 
 def _require_linux_roi_import() -> None:

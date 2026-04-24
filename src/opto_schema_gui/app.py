@@ -43,7 +43,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .imaging_coordinates import convert_imaging_pixel_to_pattern_coords, list_imaging_scanfields
+from .imaging_coordinates import (
+    convert_imaging_pixel_to_pattern_coords,
+    list_imaging_scanfields,
+    resolve_processed_cell_to_imaging_pixel,
+)
 from .io import load_schema, save_schema
 from .models import SCHEMA_TIME_QUANTUM_S, CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 from .matlab_bridge import autodetect_machine_name, load_machine_ui_config
@@ -141,7 +145,7 @@ def _windows_schema_root() -> str:
 
 
 def _ubuntu_schema_root() -> Path:
-    return Path("/mnt/opto_schemas")
+    return Path("/mnt/nas2/opto_schemas")
 
 
 def _roi_coordinate_import_enabled() -> bool:
@@ -308,6 +312,7 @@ class ImagingPixelImportDialog(QDialog):
         super().__init__(parent)
         self.repo_root = repo_root
         self.bundle = None
+        self._resolved_cell_note = ""
         self.setWindowTitle("Add Imaging Pixel")
         self._build_ui()
         default_exp_id = default_exp_id.strip()
@@ -330,18 +335,23 @@ class ImagingPixelImportDialog(QDialog):
         self.y_spin = QDoubleSpinBox()
         self.y_spin.setRange(0.0, 100000.0)
         self.y_spin.setDecimals(3)
+        self.cell_id_spin = QSpinBox()
+        self.cell_id_spin.setRange(0, 1_000_000)
         self.label_edit = QLineEdit()
         self.info_label = QLabel("Enter an experiment ID, load scanfields, then supply 0-based pixel X/Y.")
         self.info_label.setWordWrap(True)
         self.load_btn = QPushButton("Load Scanfields")
+        self.resolve_cell_btn = QPushButton("Resolve Processed Cell ID")
 
         form.addRow("Experiment ID", self.exp_id_edit)
         form.addRow("Imaging Path", self.imaging_path_combo)
         form.addRow("Scanfield", self.scanfield_combo)
+        form.addRow("Processed Cell ID", self.cell_id_spin)
         form.addRow("Pixel X (0-based)", self.x_spin)
         form.addRow("Pixel Y (0-based)", self.y_spin)
         form.addRow("Cell Label", self.label_edit)
         form.addRow("", self.load_btn)
+        form.addRow("", self.resolve_cell_btn)
         form.addRow("Info", self.info_label)
         layout.addLayout(form)
 
@@ -351,10 +361,12 @@ class ImagingPixelImportDialog(QDialog):
         layout.addWidget(buttons)
 
         self.load_btn.clicked.connect(self.load_scanfields)
+        self.resolve_cell_btn.clicked.connect(self.resolve_processed_cell)
         self.exp_id_edit.textChanged.connect(self._clear_loaded_scanfields)
 
     def _clear_loaded_scanfields(self) -> None:
         self.bundle = None
+        self._resolved_cell_note = ""
         self.scanfield_combo.clear()
         self.scanfield_combo.setEnabled(False)
 
@@ -381,10 +393,52 @@ class ImagingPixelImportDialog(QDialog):
             self.scanfield_combo.addItem(scanfield.label, scanfield.index)
         self.scanfield_combo.setEnabled(True)
         note = bundle.note if bundle.note else ""
-        self.info_label.setText(f"Source: {bundle.source}\nExperiment dir: {bundle.exp_dir}{chr(10) + note if note else ''}")
+        pieces = [f"Source: {bundle.source}", f"Experiment dir: {bundle.exp_dir}"]
+        if note:
+            pieces.append(note)
+        if self._resolved_cell_note:
+            pieces.append(self._resolved_cell_note)
+        self.info_label.setText("\n".join(pieces))
 
         if not self.label_edit.text().strip():
             self.label_edit.setText(f"img_{exp_id}_cell")
+
+    def resolve_processed_cell(self) -> None:
+        exp_id = self.exp_id_edit.text().strip()
+        if not exp_id:
+            QMessageBox.warning(self, "Missing experiment ID", "Enter an experiment ID first.")
+            return
+        try:
+            resolved = resolve_processed_cell_to_imaging_pixel(
+                self.repo_root,
+                exp_id,
+                processed_cell_id=self.cell_id_spin.value(),
+                default_imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
+            )
+            self.imaging_path_combo.setCurrentText(resolved.imaging_path)
+            self.load_scanfields(show_error_dialog=True)
+            if self.bundle is None:
+                raise ValueError("Scanfields could not be loaded after resolving the processed cell.")
+            combo_index = self.scanfield_combo.findData(resolved.scanfield_index)
+            if combo_index < 0:
+                raise ValueError(
+                    f"Resolved scanfield index {resolved.scanfield_index} was not available in the loaded scanfield list."
+                )
+            self.scanfield_combo.setCurrentIndex(combo_index)
+            self.x_spin.setValue(resolved.x_px)
+            self.y_spin.setValue(resolved.y_px)
+            self._resolved_cell_note = resolved.note
+            pieces = [f"Source: {self.bundle.source}", f"Experiment dir: {self.bundle.exp_dir}"]
+            if self.bundle.note:
+                pieces.append(self.bundle.note)
+            pieces.append(resolved.note)
+            self.info_label.setText("\n".join(pieces))
+            if not self.label_edit.text().strip():
+                self.label_edit.setText(f"cell_{resolved.processed_cell_id}")
+        except Exception as exc:
+            self._resolved_cell_note = ""
+            self.info_label.setText(str(exc))
+            QMessageBox.warning(self, "Failed to resolve processed cell ID", str(exc))
 
     def result_data(self) -> tuple[str, CellSpec, str, str]:
         exp_id = self.exp_id_edit.text().strip()
