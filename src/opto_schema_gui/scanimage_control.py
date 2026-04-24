@@ -849,7 +849,7 @@ class ScanImageControlWidget(QWidget):
         normalized = raw_path.replace("/", "\\").rstrip("\\").lower()
         windows_schema_root = r"\\ar-lab-nas1\DataServer\opto_schemas".lower()
         if sys.platform.startswith("linux") and normalized == windows_schema_root:
-            return Path("/mnt/opto_schemas")
+            return Path("/mnt/nas2/opto_schemas")
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
             path = (self.repo_root / path).resolve()
