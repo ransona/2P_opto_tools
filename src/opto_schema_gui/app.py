@@ -1155,7 +1155,10 @@ class PatternEditor(QWidget):
 
             if not item(0) or not item(1) or not item(2) or not item(3):
                 raise ValueError(f"Pattern cell row {row + 1} is incomplete.")
-            origin_meta = self.cells_table.item(row, 5).data(Qt.ItemDataRole.UserRole) or {}
+            origin_item = self.cells_table.item(row, 5)
+            origin_meta = origin_item.data(Qt.ItemDataRole.UserRole) if origin_item is not None else {}
+            if not isinstance(origin_meta, dict):
+                origin_meta = {}
             cells.append(
                 CellSpec(
                     label=item(0),
