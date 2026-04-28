@@ -20,6 +20,7 @@ class CellSpec:
     y: float
     z: float
     power_scale: float = 1.0
+    origin: str = ""
 
     def as_dict(self) -> dict:
         data = {
@@ -28,6 +29,7 @@ class CellSpec:
             "y": self.y,
             "z": self.z,
             "power_scale": self.power_scale,
+            "origin": self.origin,
         }
         return data
 

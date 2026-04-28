@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .imaging_coordinates import (
+    ScanfieldChoice,
     convert_imaging_pixel_to_pattern_coords,
     list_imaging_scanfields,
     resolve_processed_cell_to_imaging_pixel,
@@ -87,6 +88,59 @@ def _selected_or_last_row(table: QTableWidget) -> int | None:
     if table.rowCount():
         return table.rowCount() - 1
     return None
+
+
+def _read_only_item(text: str) -> QTableWidgetItem:
+    item = QTableWidgetItem(text)
+    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+    return item
+
+
+def _parse_cell_id_list(raw_text: str) -> list[int]:
+    values: list[int] = []
+    for token in raw_text.replace("\n", ",").split(","):
+        stripped = token.strip()
+        if not stripped:
+            continue
+        try:
+            value = int(stripped)
+        except ValueError as exc:
+            raise ValueError(f"Invalid cell ID '{stripped}'. Use comma-separated integers.") from exc
+        if value < 0:
+            raise ValueError("Cell IDs must be >= 0.")
+        values.append(value)
+    if not values:
+        raise ValueError("Enter at least one processed cell ID.")
+    return values
+
+
+def _scanfield_plane_index(scanfields: tuple[ScanfieldChoice, ...], scanfield_index: int) -> int:
+    matched = next((scanfield for scanfield in scanfields if scanfield.index == scanfield_index), None)
+    if matched is None:
+        return max(scanfield_index - 1, 0)
+    roi_scanfields = [scanfield for scanfield in scanfields if scanfield.roi_folder_name == matched.roi_folder_name]
+    ordered = sorted(roi_scanfields, key=lambda scanfield: scanfield.index)
+    for plane_index, scanfield in enumerate(ordered):
+        if scanfield.index == matched.index:
+            return plane_index
+    return max(scanfield_index - 1, 0)
+
+
+def _format_origin_from_scanfield(
+    imaging_path: str,
+    scanfields: tuple[ScanfieldChoice, ...],
+    scanfield_index: int,
+    x_px: float,
+    y_px: float,
+) -> str:
+    matched = next((scanfield for scanfield in scanfields if scanfield.index == scanfield_index), None)
+    if matched is None:
+        return ""
+    plane_index = _scanfield_plane_index(scanfields, scanfield_index)
+    return (
+        f"{imaging_path} {matched.roi_folder_name} plane{plane_index} "
+        f"x={x_px:.1f} y={y_px:.1f} z={float(matched.z_um):g}"
+    )
 
 
 def _step_end_s(step: SequenceStep, patterns: dict[str, Pattern]) -> float:
@@ -313,6 +367,7 @@ class ImagingPixelImportDialog(QDialog):
         self.repo_root = repo_root
         self.bundle = None
         self._resolved_cell_note = ""
+        self._resolved_origin = ""
         self.setWindowTitle("Add Imaging Pixel")
         self._build_ui()
         default_exp_id = default_exp_id.strip()
@@ -367,6 +422,7 @@ class ImagingPixelImportDialog(QDialog):
     def _clear_loaded_scanfields(self) -> None:
         self.bundle = None
         self._resolved_cell_note = ""
+        self._resolved_origin = ""
         self.scanfield_combo.clear()
         self.scanfield_combo.setEnabled(False)
 
@@ -428,6 +484,7 @@ class ImagingPixelImportDialog(QDialog):
             self.x_spin.setValue(resolved.x_px)
             self.y_spin.setValue(resolved.y_px)
             self._resolved_cell_note = resolved.note
+            self._resolved_origin = resolved.origin
             pieces = [f"Source: {self.bundle.source}", f"Experiment dir: {self.bundle.exp_dir}"]
             if self.bundle.note:
                 pieces.append(self.bundle.note)
@@ -437,6 +494,7 @@ class ImagingPixelImportDialog(QDialog):
                 self.label_edit.setText(f"cell_{resolved.processed_cell_id}")
         except Exception as exc:
             self._resolved_cell_note = ""
+            self._resolved_origin = ""
             self.info_label.setText(str(exc))
             QMessageBox.warning(self, "Failed to resolve processed cell ID", str(exc))
 
@@ -457,8 +515,114 @@ class ImagingPixelImportDialog(QDialog):
             imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
         )
         label = self.label_edit.text().strip() or f"img_{exp_id}_{scanfield_index}"
-        cell = CellSpec(label=label, x=result.x_um, y=result.y_um, z=result.z_um)
+        origin = self._resolved_origin or _format_origin_from_scanfield(
+            self.imaging_path_combo.currentText().strip() or "P1",
+            self.bundle.scanfields,
+            scanfield_index,
+            self.x_spin.value(),
+            self.y_spin.value(),
+        )
+        cell = CellSpec(label=label, x=result.x_um, y=result.y_um, z=result.z_um, origin=origin)
         return exp_id, cell, result.source, result.note
+
+
+class ProcessedCellGroupImportDialog(QDialog):
+    def __init__(self, repo_root: Path, default_exp_id: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+        self.repo_root = repo_root
+        self._cells: list[CellSpec] = []
+        self._details = ""
+        self.setWindowTitle("Add Cells by Cell ID")
+        self._build_ui()
+        default_exp_id = default_exp_id.strip()
+        if default_exp_id:
+            self.exp_id_edit.setText(default_exp_id)
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.exp_id_edit = QLineEdit()
+        self.cell_ids_edit = QLineEdit()
+        self.cell_ids_edit.setPlaceholderText("e.g. 0, 3, 4, 12")
+        self.label_prefix_edit = QLineEdit("cell_")
+        self.info_label = QLabel("Enter comma-separated processed cell IDs, then resolve them.")
+        self.info_label.setWordWrap(True)
+        self.resolve_btn = QPushButton("Resolve Cell IDs")
+
+        form.addRow("Experiment ID", self.exp_id_edit)
+        form.addRow("Cell IDs", self.cell_ids_edit)
+        form.addRow("Label Prefix", self.label_prefix_edit)
+        form.addRow("", self.resolve_btn)
+        form.addRow("Info", self.info_label)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.resolve_btn.clicked.connect(self.resolve_cells)
+        self.exp_id_edit.textChanged.connect(self._clear_results)
+        self.cell_ids_edit.textChanged.connect(self._clear_results)
+        self.label_prefix_edit.textChanged.connect(self._clear_results)
+
+    def _clear_results(self) -> None:
+        self._cells = []
+        self._details = ""
+
+    def resolve_cells(self) -> None:
+        exp_id = self.exp_id_edit.text().strip()
+        if not exp_id:
+            QMessageBox.warning(self, "Missing experiment ID", "Enter an experiment ID first.")
+            return
+        try:
+            processed_cell_ids = _parse_cell_id_list(self.cell_ids_edit.text())
+        except ValueError as exc:
+            self.info_label.setText(str(exc))
+            QMessageBox.warning(self, "Invalid cell IDs", str(exc))
+            return
+
+        label_prefix = self.label_prefix_edit.text()
+        resolved_cells: list[CellSpec] = []
+        detail_lines: list[str] = []
+        for processed_cell_id in processed_cell_ids:
+            resolved = resolve_processed_cell_to_imaging_pixel(
+                self.repo_root,
+                exp_id,
+                processed_cell_id=processed_cell_id,
+                default_imaging_path="P1",
+            )
+            converted = convert_imaging_pixel_to_pattern_coords(
+                self.repo_root,
+                exp_id,
+                scanfield_index=resolved.scanfield_index,
+                x_px=resolved.x_px,
+                y_px=resolved.y_px,
+                imaging_path=resolved.imaging_path,
+            )
+            resolved_cells.append(
+                CellSpec(
+                    label=f"{label_prefix}{processed_cell_id}",
+                    x=converted.x_um,
+                    y=converted.y_um,
+                    z=converted.z_um,
+                    origin=resolved.origin,
+                )
+            )
+            detail_lines.append(f"cell {processed_cell_id}: {resolved.origin}")
+
+        self._cells = resolved_cells
+        self._details = "\n".join(detail_lines)
+        self.info_label.setText(self._details or "Resolved 0 cells.")
+
+    def result_data(self) -> tuple[str, list[CellSpec], str]:
+        exp_id = self.exp_id_edit.text().strip()
+        if not exp_id:
+            raise ValueError("Experiment ID is required.")
+        if not self._cells:
+            raise ValueError("Resolve at least one processed cell ID before importing.")
+        return exp_id, list(self._cells), self._details
 
 
 
@@ -539,8 +703,8 @@ class PatternEditor(QWidget):
 
         layout.addWidget(form_box)
 
-        self.cells_table = QTableWidget(0, 5)
-        self.cells_table.setHorizontalHeaderLabels(["Label", "X", "Y", "Z", "Power scale"])
+        self.cells_table = QTableWidget(0, 6)
+        self.cells_table.setHorizontalHeaderLabels(["Label", "X", "Y", "Z", "Power scale", "Origin"])
         self.cells_table.horizontalHeader().setStretchLastSection(True)
         self.cells_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.cells_table.itemChanged.connect(self._on_form_changed)
@@ -550,13 +714,17 @@ class PatternEditor(QWidget):
         button_row = QHBoxLayout()
         self.add_row_btn = QPushButton("Add Cell")
         self.add_imaging_pixel_btn = QPushButton("Add Imaging Pixel")
+        self.add_cells_by_id_btn = QPushButton("Add Cells by ID")
         self.add_imaging_pixel_btn.setEnabled(_roi_coordinate_import_enabled())
+        self.add_cells_by_id_btn.setEnabled(_roi_coordinate_import_enabled())
         if not _roi_coordinate_import_enabled():
             self.add_imaging_pixel_btn.setToolTip("Imaging pixel ROI import is available on Ubuntu only.")
+            self.add_cells_by_id_btn.setToolTip("Processed cell ROI import is available on Ubuntu only.")
         self.remove_row_btn = QPushButton("Remove Cell")
         self.copy_btn = QPushButton("Copy Pattern")
         button_row.addWidget(self.add_row_btn)
         button_row.addWidget(self.add_imaging_pixel_btn)
+        button_row.addWidget(self.add_cells_by_id_btn)
         button_row.addWidget(self.remove_row_btn)
         button_row.addWidget(self.copy_btn)
         button_row.addStretch(1)
@@ -564,6 +732,7 @@ class PatternEditor(QWidget):
 
         self.add_row_btn.clicked.connect(self.add_cell_row)
         self.add_imaging_pixel_btn.clicked.connect(self.add_imaging_pixel)
+        self.add_cells_by_id_btn.clicked.connect(self.add_cells_by_id)
         self.remove_row_btn.clicked.connect(self.remove_selected_cell_rows)
         self.copy_btn.clicked.connect(self.copy_current_pattern)
         self.clear_btn.clicked.connect(self.clear_form)
@@ -587,6 +756,7 @@ class PatternEditor(QWidget):
             QTableWidgetItem(str(values.y)),
             QTableWidgetItem(str(values.z)),
             QTableWidgetItem(str(values.power_scale)),
+            _read_only_item(values.origin),
         ]
         for col, widget in enumerate(widgets):
             self.cells_table.setItem(row, col, widget)
@@ -611,6 +781,25 @@ class PatternEditor(QWidget):
         if note:
             details.append(note)
         QMessageBox.information(self, "Imaging pixel imported", "\n".join(details))
+
+    def add_cells_by_id(self) -> None:
+        if not _roi_coordinate_import_enabled():
+            QMessageBox.information(self, "Unavailable on this platform", "Processed cell ROI import is available on Ubuntu only.")
+            return
+        dialog = ProcessedCellGroupImportDialog(self.repo_root, self.project.origin_exp_id, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            exp_id, cells, details = dialog.result_data()
+        except Exception as exc:
+            QMessageBox.warning(self, "Failed to resolve processed cell IDs", str(exc))
+            return
+        for cell in cells:
+            self.add_cell_row(cell)
+        message_lines = [f"Added {len(cells)} cells from {exp_id}"]
+        if details:
+            message_lines.append(details)
+        QMessageBox.information(self, "Processed cells imported", "\n".join(message_lines))
 
     def remove_selected_cell_rows(self) -> None:
         row = _selected_or_last_row(self.cells_table)
@@ -724,6 +913,7 @@ class PatternEditor(QWidget):
                     y=float(item(2)),
                     z=float(item(3)),
                     power_scale=float(item(4) or "1.0"),
+                    origin=item(5),
                 )
             )
         return Pattern(
@@ -1693,7 +1883,17 @@ class MainWindow(QMainWindow):
             spiral_width=pattern.spiral_width,
             spiral_height=pattern.spiral_height,
             notes=pattern.notes,
-            cells=[CellSpec(label=cell.label, x=cell.x, y=cell.y, z=cell.z, power_scale=cell.power_scale) for cell in pattern.cells],
+            cells=[
+                CellSpec(
+                    label=cell.label,
+                    x=cell.x,
+                    y=cell.y,
+                    z=cell.z,
+                    power_scale=cell.power_scale,
+                    origin=cell.origin,
+                )
+                for cell in pattern.cells
+            ],
         )
         self.project.patterns[copied.name] = copied
         self.pattern_dirty = True

@@ -23,6 +23,7 @@ def load_schema(path: str | Path) -> ExperimentProject:
                 y=cell["y"],
                 z=cell["z"],
                 power_scale=cell.get("power_scale", 1.0),
+                origin=str(cell.get("origin", "") or ""),
             )
             for cell in pattern_data.get("cells", [])
         ]

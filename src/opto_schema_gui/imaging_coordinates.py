@@ -52,11 +52,14 @@ class ResolvedProcessedCell:
     imaging_path: str
     roi_folder_name: str
     depth_value: int
+    plane_index: int
     local_cell_index: int
     x_px: float
     y_px: float
+    z_um: float
     scanfield_index: int
     scanfield_label: str
+    origin: str
     note: str
 
 
@@ -206,8 +209,17 @@ def resolve_processed_cell_to_imaging_pixel(
         depth_is_one_based=has_scanpath,
     )
     scanfield = bundle.scanfields[scanfield_index - 1]
+    plane_index = _scanfield_plane_index(bundle, scanfield)
+    origin = (
+        f"{imaging_path} {roi_folder_name} plane{plane_index} "
+        f"x={x_px:.1f} y={y_px:.1f} z={float(scanfield.z_um):g}"
+    )
 
-    debug_lines = processed_debug_lines + [f"Matched scanfield: {scanfield.label}"]
+    debug_lines = processed_debug_lines + [
+        f"Matched scanfield: {scanfield.label}",
+        f"Resolved plane index: {plane_index}",
+        f"Resolved origin: {origin}",
+    ]
 
     return ResolvedProcessedCell(
         exp_id=exp_id,
@@ -216,11 +228,14 @@ def resolve_processed_cell_to_imaging_pixel(
         imaging_path=imaging_path,
         roi_folder_name=roi_folder_name,
         depth_value=depth_value,
+        plane_index=plane_index,
         local_cell_index=local_cell_index,
         x_px=x_px,
         y_px=y_px,
+        z_um=float(scanfield.z_um),
         scanfield_index=scanfield_index,
         scanfield_label=scanfield.label,
+        origin=origin,
         note="\n".join(debug_lines),
     )
 
@@ -306,7 +321,9 @@ def _lookup_processed_roi_pixels(processed_data: dict, processed_cell_id: int, d
         scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
         siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
         try:
-            roi_list = roi_pix[int(scanpath_number)][int(siroi_number)][int(depth_value)]
+            scanpath_block = _lookup_nested_dict_value(roi_pix, int(scanpath_number))
+            roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
+            roi_list = _lookup_nested_dict_value(roi_block, int(depth_value), one_based_fallback=True)
         except Exception as exc:
             raise KeyError(
                 "Processed AllRoiPix layout did not match expected mesoscope structure "
@@ -338,7 +355,9 @@ def _lookup_processed_fov_shape(processed_data: dict, processed_cell_id: int, de
         scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
         siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
         try:
-            image = np.asarray(all_fov[int(scanpath_number)][int(siroi_number)][int(depth_value)])
+            scanpath_block = _lookup_nested_dict_value(all_fov, int(scanpath_number))
+            roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
+            image = np.asarray(_lookup_nested_dict_value(roi_block, int(depth_value), one_based_fallback=True))
         except Exception as exc:
             raise KeyError(
                 "Processed AllFOV layout did not match expected mesoscope structure "
@@ -386,6 +405,30 @@ def _match_processed_cell_to_scanfield_index(
     raise ValueError(
         f"Could not uniquely match processed cell to scanfield. Candidates: {candidate_labels}"
     )
+
+
+def _scanfield_plane_index(bundle: MetadataBundle, scanfield: ScanfieldChoice) -> int:
+    roi_scanfields = [candidate for candidate in bundle.scanfields if candidate.roi_folder_name == scanfield.roi_folder_name]
+    if not roi_scanfields:
+        return max(scanfield.index - 1, 0)
+    ordered = sorted(roi_scanfields, key=lambda candidate: candidate.index)
+    for plane_index, candidate in enumerate(ordered):
+        if candidate.index == scanfield.index:
+            return plane_index
+    return max(scanfield.index - 1, 0)
+
+
+def _lookup_nested_dict_value(mapping: dict, key: int, one_based_fallback: bool = False):
+    if key in mapping:
+        return mapping[key]
+    candidates: list[int] = []
+    if one_based_fallback:
+        candidates.append(key - 1)
+    for candidate in candidates:
+        if candidate in mapping:
+            return mapping[candidate]
+    available = sorted(mapping.keys())
+    raise KeyError(f"Key {key} was not present. Available keys: {available}")
 
 
 def _require_linux_roi_import() -> None:
@@ -470,6 +513,7 @@ def _find_tiff_files(exp_dir: Path) -> list[Path]:
 
 def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | None:
     roi_folder_names = _list_roi_folder_names(path.parent)
+    stack_relative_zs = _load_stack_relative_zs(path.parent)
     try:
         payload = json.loads(path.read_text())
     except Exception:
@@ -489,7 +533,8 @@ def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | 
             continue
         roi_name = str(roi.get("roiName") or f"ROI {roi_idx}")
         roi_folder_name = roi_folder_names[roi_idx - 1] if roi_idx - 1 < len(roi_folder_names) else f"R{roi_idx:03d}"
-        for sf_idx, scanfield in enumerate(roi.get("scanfields", []), start=1):
+        roi_scanfields = roi.get("scanfields", [])
+        for sf_idx, scanfield in enumerate(roi_scanfields, start=1):
             if not isinstance(scanfield, dict):
                 continue
             pixel_resolution = _parse_pixel_resolution(scanfield.get("pixelResolutionXY"))
@@ -500,21 +545,29 @@ def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | 
                 transform = _build_pixel_to_ref_transform_from_geometry(scanfield, pixel_resolution)
             if transform is None:
                 continue
-            z_um = _safe_float(scanfield.get("scanfieldZ"), default=0.0)
             scanfield_name = str(scanfield.get("scanfieldName") or f"Scanfield {sf_idx}")
-            index = len(scanfields) + 1
-            scanfields.append(
-                ScanfieldChoice(
-                    index=index,
-                    label=f"{index}: {roi_folder_name} / {roi_name} / {scanfield_name} / z={z_um:g} um / {pixel_resolution[0]}x{pixel_resolution[1]}",
-                    roi_name=roi_name,
-                    roi_folder_name=roi_folder_name,
-                    scanfield_name=scanfield_name,
-                    z_um=z_um,
-                    pixel_resolution_xy=pixel_resolution,
-                    pixel_to_ref_transform=transform,
+            if stack_relative_zs and len(stack_relative_zs) > 1 and len(roi_scanfields) == 1:
+                z_values = stack_relative_zs
+            else:
+                z_values = [_safe_float(scanfield.get("scanfieldZ"), default=0.0)]
+            for plane_index, z_um in enumerate(z_values):
+                index = len(scanfields) + 1
+                plane_suffix = f" / plane{plane_index}" if len(z_values) > 1 else ""
+                scanfields.append(
+                    ScanfieldChoice(
+                        index=index,
+                        label=(
+                            f"{index}: {roi_folder_name} / {roi_name}{plane_suffix} / "
+                            f"{scanfield_name} / z={z_um:g} um / {pixel_resolution[0]}x{pixel_resolution[1]}"
+                        ),
+                        roi_name=roi_name,
+                        roi_folder_name=roi_folder_name,
+                        scanfield_name=scanfield_name,
+                        z_um=float(z_um),
+                        pixel_resolution_xy=pixel_resolution,
+                        pixel_to_ref_transform=transform,
+                    )
                 )
-            )
 
     return tuple(scanfields) if scanfields else None
 
@@ -569,6 +622,40 @@ def _read_scanimage_header_text(path: Path) -> str:
     with path.open("rb") as handle:
         payload = handle.read(2_000_000)
     return payload.decode("latin1", errors="ignore")
+
+
+def _load_stack_relative_zs(exp_dir: Path) -> list[float]:
+    meta_path = exp_dir / "SI_meta.pickle"
+    if not meta_path.is_file():
+        return []
+    try:
+        with meta_path.open("rb") as handle:
+            payload = pickle.load(handle)
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    meta1 = payload.get("Meta1")
+    if not isinstance(meta1, tuple) or not meta1:
+        return []
+    state = meta1[0]
+    if not isinstance(state, dict):
+        return []
+    raw_zs = state.get("SI.hStackManager.zsRelative")
+    if raw_zs is None:
+        raw_zs = state.get("SI.hStackManager.zs")
+    z_values = _flatten_numeric_values(raw_zs)
+    if len(z_values) <= 1:
+        return z_values
+    top_z = min(z_values)
+    return [float(value - top_z) for value in z_values]
+
+
+def _flatten_numeric_values(raw: object) -> list[float]:
+    if raw is None:
+        return []
+    arr = np.asarray(raw, dtype=float).reshape(-1)
+    return [float(value) for value in arr.tolist()]
 
 
 def _extract_bool(text: str, pattern: str) -> bool:
