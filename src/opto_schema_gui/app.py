@@ -102,10 +102,33 @@ def _parse_cell_id_list(raw_text: str) -> list[int]:
         stripped = token.strip()
         if not stripped:
             continue
+        if ":" in stripped:
+            parts = [part.strip() for part in stripped.split(":")]
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise ValueError(
+                    f"Invalid range '{stripped}'. Use inclusive ranges like '1:10'."
+                )
+            try:
+                start = int(parts[0])
+                end = int(parts[1])
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid range '{stripped}'. Use inclusive ranges like '1:10'."
+                ) from exc
+            if start < 0 or end < 0:
+                raise ValueError("Cell IDs must be >= 0.")
+            if end < start:
+                raise ValueError(
+                    f"Invalid range '{stripped}'. Range end must be >= start."
+                )
+            values.extend(range(start, end + 1))
+            continue
         try:
             value = int(stripped)
         except ValueError as exc:
-            raise ValueError(f"Invalid cell ID '{stripped}'. Use comma-separated integers.") from exc
+            raise ValueError(
+                f"Invalid cell ID '{stripped}'. Use integers and inclusive ranges like '1:10,13,15:20'."
+            ) from exc
         if value < 0:
             raise ValueError("Cell IDs must be >= 0.")
         values.append(value)
@@ -546,23 +569,20 @@ class ProcessedCellGroupImportDialog(QDialog):
         self.cell_ids_edit = QLineEdit()
         self.cell_ids_edit.setPlaceholderText("e.g. 0, 3, 4, 12")
         self.label_prefix_edit = QLineEdit("cell_")
-        self.info_label = QLabel("Enter comma-separated processed cell IDs, then resolve them.")
+        self.info_label = QLabel("Enter comma-separated processed cell IDs, then click OK.")
         self.info_label.setWordWrap(True)
-        self.resolve_btn = QPushButton("Resolve Cell IDs")
 
         form.addRow("Experiment ID", self.exp_id_edit)
         form.addRow("Cell IDs", self.cell_ids_edit)
         form.addRow("Label Prefix", self.label_prefix_edit)
-        form.addRow("", self.resolve_btn)
         form.addRow("Info", self.info_label)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._accept_with_resolution)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        self.resolve_btn.clicked.connect(self.resolve_cells)
         self.exp_id_edit.textChanged.connect(self._clear_results)
         self.cell_ids_edit.textChanged.connect(self._clear_results)
         self.label_prefix_edit.textChanged.connect(self._clear_results)
@@ -570,6 +590,11 @@ class ProcessedCellGroupImportDialog(QDialog):
     def _clear_results(self) -> None:
         self._cells = []
         self._details = ""
+
+    def _accept_with_resolution(self) -> None:
+        self.resolve_cells()
+        if self._cells:
+            self.accept()
 
     def resolve_cells(self) -> None:
         exp_id = self.exp_id_edit.text().strip()
@@ -797,16 +822,12 @@ class PatternEditor(QWidget):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            exp_id, cells, details = dialog.result_data()
+            _exp_id, cells, _details = dialog.result_data()
         except Exception as exc:
             QMessageBox.warning(self, "Failed to resolve processed cell IDs", str(exc))
             return
         for cell in cells:
             self.add_cell_row(cell)
-        message_lines = [f"Added {len(cells)} cells from {exp_id}"]
-        if details:
-            message_lines.append(details)
-        QMessageBox.information(self, "Processed cells imported", "\n".join(message_lines))
 
     def remove_selected_cell_rows(self) -> None:
         row = _selected_or_last_row(self.cells_table)
