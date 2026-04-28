@@ -27,6 +27,13 @@ class CellSpec:
     z: float
     power_scale: float = 1.0
     origin: str = ""
+    origin_exp_id: str = ""
+    origin_user_id: str = ""
+    origin_processed_cell_id: int | None = None
+    origin_imaging_path: str = ""
+    origin_roi_folder_name: str = ""
+    origin_plane_index: int | None = None
+    origin_z_um: float | None = None
 
     def as_dict(self) -> dict:
         data = {
@@ -37,6 +44,20 @@ class CellSpec:
             "power_scale": self.power_scale,
             "origin": self.origin,
         }
+        if self.origin_exp_id:
+            data["origin_exp_id"] = self.origin_exp_id
+        if self.origin_user_id:
+            data["origin_user_id"] = self.origin_user_id
+        if self.origin_processed_cell_id is not None:
+            data["origin_processed_cell_id"] = int(self.origin_processed_cell_id)
+        if self.origin_imaging_path:
+            data["origin_imaging_path"] = self.origin_imaging_path
+        if self.origin_roi_folder_name:
+            data["origin_roi_folder_name"] = self.origin_roi_folder_name
+        if self.origin_plane_index is not None:
+            data["origin_plane_index"] = int(self.origin_plane_index)
+        if self.origin_z_um is not None:
+            data["origin_z_um"] = float(self.origin_z_um)
         return data
 
 

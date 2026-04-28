@@ -64,6 +64,22 @@ class ResolvedProcessedCell:
     note: str
 
 
+@dataclass(frozen=True)
+class ProcessedCellOverlay:
+    exp_id: str
+    user_id: str
+    processed_cell_id: int
+    imaging_path: str
+    roi_folder_name: str
+    plane_index: int
+    z_um: float
+    mean_image: np.ndarray
+    roi_pixels: np.ndarray
+    x_px: float
+    y_px: float
+    title: str
+
+
 def list_imaging_scanfields(
     repo_root: Path,
     exp_id: str,
@@ -242,6 +258,61 @@ def resolve_processed_cell_to_imaging_pixel(
     )
 
 
+def load_processed_cell_overlay(
+    exp_id: str,
+    processed_cell_id: int,
+    user_id: str | None = None,
+    channel: int = 0,
+    default_imaging_path: str = "P1",
+    imaging_path: str = "",
+    roi_folder_name: str = "",
+    plane_index: int | None = None,
+    z_um: float | None = None,
+) -> ProcessedCellOverlay:
+    processed_data, _processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=user_id)
+    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
+    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
+    resolved_imaging_path = imaging_path or (
+        f"P{_row_scalar(processed_data.get('allScanpaths'), processed_cell_id, default=1)}"
+        if has_scanpath
+        else default_imaging_path
+    )
+    resolved_roi_folder_name = roi_folder_name or (
+        f"R{_row_scalar(processed_data.get('allSIRois'), processed_cell_id, default=1):03d}"
+        if has_siroi
+        else "R001"
+    )
+    resolved_plane_index = plane_index
+    if resolved_plane_index is None:
+        depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+        resolved_plane_index = int(depth_value - 1 if has_scanpath else depth_value)
+    roi_pixels = _lookup_processed_roi_pixels(processed_data, processed_cell_id, default_imaging_path)
+    fov_image = _lookup_processed_fov_image(processed_data, processed_cell_id, default_imaging_path)
+    fov_shape = _lookup_processed_fov_shape(processed_data, processed_cell_id, default_imaging_path)
+    ypix, xpix = np.unravel_index(roi_pixels.astype(int), fov_shape)
+    x_px = float(np.mean(xpix))
+    y_px = float(np.mean(ypix))
+    resolved_z_um = float(z_um if z_um is not None else 0.0)
+    return ProcessedCellOverlay(
+        exp_id=exp_id,
+        user_id=(user_id or "").strip() or getpass.getuser(),
+        processed_cell_id=processed_cell_id,
+        imaging_path=resolved_imaging_path,
+        roi_folder_name=resolved_roi_folder_name,
+        plane_index=int(resolved_plane_index),
+        z_um=resolved_z_um,
+        mean_image=fov_image,
+        roi_pixels=roi_pixels.astype(int),
+        x_px=x_px,
+        y_px=y_px,
+        title=(
+            f"{resolved_imaging_path} {resolved_roi_folder_name} "
+            f"plane{int(resolved_plane_index)} z={resolved_z_um:g} "
+            f"cell {processed_cell_id}"
+        ),
+    )
+
+
 def _load_v1_configs(repo_root: Path, imaging_path: str, photostim_path: str):
     machine_name = autodetect_machine_name(repo_root) or "ar-lab-si2"
     imaging_machine_config = load_machine_config(repo_root, machine_name, "P1_imaging")
@@ -375,6 +446,33 @@ def _lookup_processed_fov_shape(processed_data: dict, processed_cell_id: int, de
             )
         image = np.asarray(all_fov[int(depth_value)])
     return int(image.shape[0]), int(image.shape[1])
+
+
+def _lookup_processed_fov_image(processed_data: dict, processed_cell_id: int, default_imaging_path: str) -> np.ndarray:
+    all_fov = processed_data.get("AllFOV")
+    if not isinstance(all_fov, dict):
+        raise ValueError("Processed payload is missing AllFOV.")
+
+    depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+        try:
+            scanpath_block = _lookup_nested_dict_value(all_fov, int(scanpath_number))
+            roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
+            return np.asarray(_lookup_nested_dict_value(roi_block, int(depth_value), one_based_fallback=True))
+        except Exception as exc:
+            raise KeyError(
+                "Processed AllFOV layout did not match expected mesoscope structure "
+                "{scanpath -> si_roi -> depth -> image}."
+            ) from exc
+    if int(depth_value) not in all_fov:
+        available = sorted(all_fov.keys())
+        raise KeyError(
+            f"Processed AllFOV does not contain depth key {int(depth_value)}. "
+            f"Available keys: {available}. This looks like an unsupported legacy processed layout."
+        )
+    return np.asarray(all_fov[int(depth_value)])
 
 
 def _match_processed_cell_to_scanfield_index(

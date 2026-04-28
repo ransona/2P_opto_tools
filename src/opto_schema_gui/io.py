@@ -24,6 +24,13 @@ def load_schema(path: str | Path) -> ExperimentProject:
                 z=cell["z"],
                 power_scale=cell.get("power_scale", 1.0),
                 origin=str(cell.get("origin", "") or ""),
+                origin_exp_id=str(cell.get("origin_exp_id", "") or ""),
+                origin_user_id=str(cell.get("origin_user_id", "") or ""),
+                origin_processed_cell_id=cell.get("origin_processed_cell_id"),
+                origin_imaging_path=str(cell.get("origin_imaging_path", "") or ""),
+                origin_roi_folder_name=str(cell.get("origin_roi_folder_name", "") or ""),
+                origin_plane_index=cell.get("origin_plane_index"),
+                origin_z_um=cell.get("origin_z_um"),
             )
             for cell in pattern_data.get("cells", [])
         ]

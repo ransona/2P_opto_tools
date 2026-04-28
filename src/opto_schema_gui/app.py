@@ -10,10 +10,11 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from PyQt6.QtCore import QObject, Qt, QRectF, QSize, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -47,6 +48,7 @@ from PyQt6.QtWidgets import (
 from .imaging_coordinates import (
     ScanfieldChoice,
     convert_imaging_pixel_to_pattern_coords,
+    load_processed_cell_overlay,
     list_imaging_scanfields,
     resolve_processed_cell_to_imaging_pixel,
 )
@@ -95,6 +97,52 @@ def _read_only_item(text: str) -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
     return item
+
+
+def _cell_origin_metadata(cell: CellSpec) -> dict[str, object]:
+    return {
+        "origin_exp_id": cell.origin_exp_id,
+        "origin_user_id": cell.origin_user_id,
+        "origin_processed_cell_id": cell.origin_processed_cell_id,
+        "origin_imaging_path": cell.origin_imaging_path,
+        "origin_roi_folder_name": cell.origin_roi_folder_name,
+        "origin_plane_index": cell.origin_plane_index,
+        "origin_z_um": cell.origin_z_um,
+    }
+
+
+class RoiOverlayDialog(QDialog):
+    def __init__(self, title: str, pixmap: QPixmap, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Cell ROI Overlay")
+        self._pixmap = pixmap
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(title))
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.image_label, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.accept)
+        layout.addWidget(buttons)
+        self.resize(900, 900)
+        self._refresh_pixmap()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_pixmap()
+
+    def _refresh_pixmap(self) -> None:
+        if self._pixmap.isNull():
+            self.image_label.clear()
+            return
+        scaled = self._pixmap.scaled(
+            self.image_label.size() if self.image_label.size().isValid() else self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+        self.image_label.setPixmap(scaled)
 
 
 def _parse_cell_id_list(raw_text: str) -> list[int]:
@@ -424,6 +472,10 @@ class ImagingPixelImportDialog(QDialog):
         self.bundle = None
         self._resolved_cell_note = ""
         self._resolved_origin = ""
+        self._resolved_processed_cell_id: int | None = None
+        self._resolved_imaging_path = ""
+        self._resolved_roi_folder_name = ""
+        self._resolved_plane_index: int | None = None
         self.setWindowTitle("Add Imaging Pixel")
         self._build_ui()
         default_exp_id = default_exp_id.strip()
@@ -479,6 +531,10 @@ class ImagingPixelImportDialog(QDialog):
         self.bundle = None
         self._resolved_cell_note = ""
         self._resolved_origin = ""
+        self._resolved_processed_cell_id = None
+        self._resolved_imaging_path = ""
+        self._resolved_roi_folder_name = ""
+        self._resolved_plane_index = None
         self.scanfield_combo.clear()
         self.scanfield_combo.setEnabled(False)
 
@@ -541,6 +597,10 @@ class ImagingPixelImportDialog(QDialog):
             self.y_spin.setValue(resolved.y_px)
             self._resolved_cell_note = resolved.note
             self._resolved_origin = resolved.origin
+            self._resolved_processed_cell_id = resolved.processed_cell_id
+            self._resolved_imaging_path = resolved.imaging_path
+            self._resolved_roi_folder_name = resolved.roi_folder_name
+            self._resolved_plane_index = resolved.plane_index
             pieces = [f"Source: {self.bundle.source}", f"Experiment dir: {self.bundle.exp_dir}"]
             if self.bundle.note:
                 pieces.append(self.bundle.note)
@@ -551,6 +611,10 @@ class ImagingPixelImportDialog(QDialog):
         except Exception as exc:
             self._resolved_cell_note = ""
             self._resolved_origin = ""
+            self._resolved_processed_cell_id = None
+            self._resolved_imaging_path = ""
+            self._resolved_roi_folder_name = ""
+            self._resolved_plane_index = None
             self.info_label.setText(str(exc))
             QMessageBox.warning(self, "Failed to resolve processed cell ID", str(exc))
 
@@ -578,7 +642,20 @@ class ImagingPixelImportDialog(QDialog):
             self.x_spin.value(),
             self.y_spin.value(),
         )
-        cell = CellSpec(label=label, x=result.x_um, y=result.y_um, z=result.z_um, origin=origin)
+        cell = CellSpec(
+            label=label,
+            x=result.x_um,
+            y=result.y_um,
+            z=result.z_um,
+            origin=origin,
+            origin_exp_id=exp_id if self._resolved_processed_cell_id is not None else "",
+            origin_user_id=self.parent().project.origin_user_id if hasattr(self.parent(), "project") and self._resolved_processed_cell_id is not None else "",
+            origin_processed_cell_id=self._resolved_processed_cell_id,
+            origin_imaging_path=self._resolved_imaging_path,
+            origin_roi_folder_name=self._resolved_roi_folder_name,
+            origin_plane_index=self._resolved_plane_index,
+            origin_z_um=result.z_um if self._resolved_processed_cell_id is not None else None,
+        )
         return exp_id, cell, result.source, result.note
 
 
@@ -675,6 +752,13 @@ class ProcessedCellGroupImportDialog(QDialog):
                         y=converted.y_um,
                         z=converted.z_um,
                         origin=resolved.origin,
+                        origin_exp_id=exp_id,
+                        origin_user_id=self.default_user_id or "",
+                        origin_processed_cell_id=processed_cell_id,
+                        origin_imaging_path=resolved.imaging_path,
+                        origin_roi_folder_name=resolved.roi_folder_name,
+                        origin_plane_index=resolved.plane_index,
+                        origin_z_um=resolved.z_um,
                     )
                 )
                 detail_lines.append(f"cell {processed_cell_id}: {resolved.origin}")
@@ -781,6 +865,7 @@ class PatternEditor(QWidget):
         self.cells_table.horizontalHeader().setStretchLastSection(True)
         self.cells_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.cells_table.itemChanged.connect(self._on_form_changed)
+        self.cells_table.itemDoubleClicked.connect(self._show_cell_roi_overlay)
         layout.addWidget(QLabel("Cells in this pattern"))
         layout.addWidget(self.cells_table)
 
@@ -832,6 +917,8 @@ class PatternEditor(QWidget):
             _read_only_item(values.origin),
         ]
         for col, widget in enumerate(widgets):
+            if col == 5:
+                widget.setData(Qt.ItemDataRole.UserRole, _cell_origin_metadata(values))
             self.cells_table.setItem(row, col, widget)
         self.cells_table.selectRow(row)
         if not self._loading:
@@ -889,6 +976,94 @@ class PatternEditor(QWidget):
         if self.commit_current_pattern(silent=True) and self.on_live_commit is not None:
             self.on_live_commit()
         self.on_dirty()
+
+    def _show_cell_roi_overlay(self, item: QTableWidgetItem) -> None:
+        row = item.row()
+        origin_item = self.cells_table.item(row, 5)
+        metadata = origin_item.data(Qt.ItemDataRole.UserRole) if origin_item is not None else None
+        if not isinstance(metadata, dict):
+            QMessageBox.information(
+                self,
+                "ROI overlay unavailable",
+                "This cell does not have structured processed-origin metadata. Re-import the cell from processed data to view its ROI overlay.",
+            )
+            return
+        origin_exp_id = str(metadata.get("origin_exp_id") or "")
+        origin_user_id = str(metadata.get("origin_user_id") or "")
+        processed_cell_id = metadata.get("origin_processed_cell_id")
+        if not origin_exp_id or processed_cell_id is None:
+            QMessageBox.information(
+                self,
+                "ROI overlay unavailable",
+                "This cell does not have structured processed-origin metadata. Re-import the cell from processed data to view its ROI overlay.",
+            )
+            return
+        try:
+            overlay = load_processed_cell_overlay(
+                exp_id=origin_exp_id,
+                processed_cell_id=int(processed_cell_id),
+                user_id=origin_user_id or None,
+                imaging_path=str(metadata.get("origin_imaging_path") or ""),
+                roi_folder_name=str(metadata.get("origin_roi_folder_name") or ""),
+                plane_index=int(metadata["origin_plane_index"]) if metadata.get("origin_plane_index") is not None else None,
+                z_um=float(metadata["origin_z_um"]) if metadata.get("origin_z_um") is not None else None,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Failed to load ROI overlay", str(exc))
+            return
+        pixmap = self._build_roi_overlay_pixmap(overlay.mean_image, overlay.roi_pixels)
+        title = f"{self.cells_table.item(row, 0).text()} | {overlay.title}"
+        dialog = RoiOverlayDialog(title, pixmap, self)
+        dialog.exec()
+
+    def _build_roi_overlay_pixmap(self, mean_image: np.ndarray, roi_pixels: np.ndarray) -> QPixmap:
+        image = np.asarray(mean_image, dtype=float)
+        if image.ndim != 2:
+            raise ValueError(f"Expected a 2D mean image, got shape {image.shape}.")
+        finite = np.isfinite(image)
+        if not np.any(finite):
+            normalized = np.zeros_like(image, dtype=np.uint8)
+        else:
+            valid = image[finite]
+            low = float(np.percentile(valid, 1))
+            high = float(np.percentile(valid, 99))
+            if high <= low:
+                high = low + 1.0
+            clipped = np.clip(image, low, high)
+            normalized = np.round((clipped - low) / (high - low) * 255.0).astype(np.uint8)
+        rgb = np.repeat(normalized[:, :, None], 3, axis=2)
+        mask = np.zeros(image.shape, dtype=bool)
+        ypix, xpix = np.unravel_index(roi_pixels.astype(int), image.shape)
+        mask[ypix, xpix] = True
+        boundary = self._roi_boundary(mask)
+        rgb[boundary, 0] = 255
+        rgb[boundary, 1] = 64
+        rgb[boundary, 2] = 64
+        qimage = QImage(
+            rgb.data,
+            rgb.shape[1],
+            rgb.shape[0],
+            rgb.strides[0],
+            QImage.Format.Format_RGB888,
+        ).copy()
+        return QPixmap.fromImage(qimage)
+
+    def _roi_boundary(self, mask: np.ndarray) -> np.ndarray:
+        boundary = mask.copy()
+        interior = mask.copy()
+        interior[1:-1, 1:-1] = (
+            mask[1:-1, 1:-1]
+            & mask[:-2, 1:-1]
+            & mask[2:, 1:-1]
+            & mask[1:-1, :-2]
+            & mask[1:-1, 2:]
+            & mask[:-2, :-2]
+            & mask[:-2, 2:]
+            & mask[2:, :-2]
+            & mask[2:, 2:]
+        )
+        boundary &= ~interior
+        return boundary
 
     def _highlight_duplicate_coordinates(self) -> None:
         coords_to_rows: dict[tuple[float, float, float], list[int]] = {}
@@ -980,6 +1155,7 @@ class PatternEditor(QWidget):
 
             if not item(0) or not item(1) or not item(2) or not item(3):
                 raise ValueError(f"Pattern cell row {row + 1} is incomplete.")
+            origin_meta = self.cells_table.item(row, 5).data(Qt.ItemDataRole.UserRole) or {}
             cells.append(
                 CellSpec(
                     label=item(0),
@@ -988,6 +1164,13 @@ class PatternEditor(QWidget):
                     z=float(item(3)),
                     power_scale=float(item(4) or "1.0"),
                     origin=item(5),
+                    origin_exp_id=str(origin_meta.get("origin_exp_id", "")),
+                    origin_user_id=str(origin_meta.get("origin_user_id", "")),
+                    origin_processed_cell_id=origin_meta.get("origin_processed_cell_id"),
+                    origin_imaging_path=str(origin_meta.get("origin_imaging_path", "")),
+                    origin_roi_folder_name=str(origin_meta.get("origin_roi_folder_name", "")),
+                    origin_plane_index=origin_meta.get("origin_plane_index"),
+                    origin_z_um=origin_meta.get("origin_z_um"),
                 )
             )
         return Pattern(
