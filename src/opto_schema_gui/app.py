@@ -586,31 +586,38 @@ class ProcessedCellGroupImportDialog(QDialog):
         label_prefix = self.label_prefix_edit.text()
         resolved_cells: list[CellSpec] = []
         detail_lines: list[str] = []
-        for processed_cell_id in processed_cell_ids:
-            resolved = resolve_processed_cell_to_imaging_pixel(
-                self.repo_root,
-                exp_id,
-                processed_cell_id=processed_cell_id,
-                default_imaging_path="P1",
-            )
-            converted = convert_imaging_pixel_to_pattern_coords(
-                self.repo_root,
-                exp_id,
-                scanfield_index=resolved.scanfield_index,
-                x_px=resolved.x_px,
-                y_px=resolved.y_px,
-                imaging_path=resolved.imaging_path,
-            )
-            resolved_cells.append(
-                CellSpec(
-                    label=f"{label_prefix}{processed_cell_id}",
-                    x=converted.x_um,
-                    y=converted.y_um,
-                    z=converted.z_um,
-                    origin=resolved.origin,
+        try:
+            for processed_cell_id in processed_cell_ids:
+                resolved = resolve_processed_cell_to_imaging_pixel(
+                    self.repo_root,
+                    exp_id,
+                    processed_cell_id=processed_cell_id,
+                    default_imaging_path="P1",
                 )
-            )
-            detail_lines.append(f"cell {processed_cell_id}: {resolved.origin}")
+                converted = convert_imaging_pixel_to_pattern_coords(
+                    self.repo_root,
+                    exp_id,
+                    scanfield_index=resolved.scanfield_index,
+                    x_px=resolved.x_px,
+                    y_px=resolved.y_px,
+                    imaging_path=resolved.imaging_path,
+                )
+                resolved_cells.append(
+                    CellSpec(
+                        label=f"{label_prefix}{processed_cell_id}",
+                        x=converted.x_um,
+                        y=converted.y_um,
+                        z=converted.z_um,
+                        origin=resolved.origin,
+                    )
+                )
+                detail_lines.append(f"cell {processed_cell_id}: {resolved.origin}")
+        except Exception as exc:
+            self._cells = []
+            self._details = ""
+            self.info_label.setText(str(exc))
+            QMessageBox.warning(self, "Failed to resolve processed cell IDs", str(exc))
+            return
 
         self._cells = resolved_cells
         self._details = "\n".join(detail_lines)
