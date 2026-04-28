@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import configparser
+import getpass
 import json
 import socket
 import sys
@@ -135,6 +136,38 @@ def _parse_cell_id_list(raw_text: str) -> list[int]:
     if not values:
         raise ValueError("Enter at least one processed cell ID.")
     return values
+
+
+def _default_origin_user_id() -> str:
+    return getpass.getuser() if sys.platform.startswith("linux") else ""
+
+
+def _origin_user_options(saved_user_id: str = "") -> list[str]:
+    options: list[str] = []
+    if sys.platform.startswith("linux"):
+        current_user = getpass.getuser()
+        options.append(current_user)
+        for home_dir in sorted(Path("/home").iterdir(), key=lambda path: path.name.lower()):
+            if not home_dir.is_dir():
+                continue
+            user_id = home_dir.name
+            if user_id in options:
+                continue
+            try:
+                has_data_root = (
+                    (home_dir / "data" / "Repository").is_dir()
+                    or (home_dir / "data" / "Local_Repository").is_dir()
+                    or (home_dir / "data" / "tif_meso" / "processed_repository").is_dir()
+                )
+            except PermissionError:
+                continue
+            if has_data_root:
+                options.append(user_id)
+    if saved_user_id and saved_user_id not in options:
+        options.append(saved_user_id)
+    if not options:
+        options.append("")
+    return options
 
 
 def _scanfield_plane_index(scanfields: tuple[ScanfieldChoice, ...], scanfield_index: int) -> int:
@@ -550,9 +583,16 @@ class ImagingPixelImportDialog(QDialog):
 
 
 class ProcessedCellGroupImportDialog(QDialog):
-    def __init__(self, repo_root: Path, default_exp_id: str = "", parent: QWidget | None = None):
+    def __init__(
+        self,
+        repo_root: Path,
+        default_exp_id: str = "",
+        default_user_id: str = "",
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.repo_root = repo_root
+        self.default_user_id = default_user_id.strip()
         self._cells: list[CellSpec] = []
         self._details = ""
         self.setWindowTitle("Add Cells by Cell ID")
@@ -617,6 +657,7 @@ class ProcessedCellGroupImportDialog(QDialog):
                     self.repo_root,
                     exp_id,
                     processed_cell_id=processed_cell_id,
+                    user_id=self.default_user_id or None,
                     default_imaging_path="P1",
                 )
                 converted = convert_imaging_pixel_to_pattern_coords(
@@ -818,7 +859,12 @@ class PatternEditor(QWidget):
         if not _roi_coordinate_import_enabled():
             QMessageBox.information(self, "Unavailable on this platform", "Processed cell ROI import is available on Ubuntu only.")
             return
-        dialog = ProcessedCellGroupImportDialog(self.repo_root, self.project.origin_exp_id, self)
+        dialog = ProcessedCellGroupImportDialog(
+            self.repo_root,
+            self.project.origin_exp_id,
+            self.project.origin_user_id,
+            self,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -1461,6 +1507,7 @@ class MainWindow(QMainWindow):
         self.gui_control_listener: GuiControlListener | None = None
 
         self._build_ui()
+        self._set_origin_user_id_options(self.project.origin_user_id, use_linux_default=True)
         self.refresh_lists()
         self._start_gui_control_listener()
 
@@ -1488,14 +1535,17 @@ class MainWindow(QMainWindow):
         self.animal_edit = QLineEdit("TEST")
         self.project_edit = QLineEdit("DEFAULT")
         self.origin_exp_id_edit = QLineEdit()
+        self.origin_user_id_combo = QComboBox()
         self.save_path_label = QLabel()
         self.save_path_label.setWordWrap(True)
         self.animal_edit.textChanged.connect(self.update_save_path_label)
         self.project_edit.textChanged.connect(self.update_save_path_label)
         self.origin_exp_id_edit.textChanged.connect(self._origin_exp_id_changed)
+        self.origin_user_id_combo.currentTextChanged.connect(self._origin_user_id_changed)
         project_form.addRow("Animal ID", self.animal_edit)
         project_form.addRow("Project", self.project_edit)
         project_form.addRow("Origin ExpID", self.origin_exp_id_edit)
+        project_form.addRow("Origin userID", self.origin_user_id_combo)
         project_form.addRow("Save root", QLabel(str(self.save_root)))
         project_form.addRow("Default schema path", self.save_path_label)
         schema_left_layout.addWidget(project_box)
@@ -1609,6 +1659,10 @@ class MainWindow(QMainWindow):
         if "origin_exp_id" in values:
             self.origin_exp_id_edit.setText(str(values["origin_exp_id"]))
             applied["origin_exp_id"] = self.origin_exp_id_edit.text()
+        if "origin_user_id" in values:
+            self._set_origin_user_id_options(str(values["origin_user_id"]), use_linux_default=False)
+            self.project.origin_user_id = self.origin_user_id_combo.currentText().strip()
+            applied["origin_user_id"] = self.origin_user_id_combo.currentText()
         applied.update(self.scanimage_control.set_remote_state(values))
         return applied
 
@@ -1619,6 +1673,7 @@ class MainWindow(QMainWindow):
             "schema_file_path": self.schema_file_path,
             "schema_save_path": str(self.schema_save_path()),
             "origin_exp_id": self.project.origin_exp_id,
+            "origin_user_id": self.project.origin_user_id,
             "pattern_dirty": self.pattern_dirty,
             "sequence_dirty": self.sequence_dirty,
             "current_pattern": self._current_item_name(self.pattern_list),
@@ -1626,6 +1681,30 @@ class MainWindow(QMainWindow):
             "pattern_names": list(self.project.patterns.keys()),
             "sequence_names": list(self.project.sequences.keys()),
         }
+
+    def _set_origin_user_id_options(self, selected_user_id: str, use_linux_default: bool) -> None:
+        if selected_user_id.strip():
+            target_user_id = selected_user_id.strip()
+        elif use_linux_default and sys.platform.startswith("linux"):
+            target_user_id = _default_origin_user_id()
+        else:
+            target_user_id = ""
+        options = _origin_user_options(target_user_id)
+        if not target_user_id and "" not in options:
+            options = [""] + options
+        self.origin_user_id_combo.blockSignals(True)
+        self.origin_user_id_combo.clear()
+        for option in options:
+            self.origin_user_id_combo.addItem(option)
+        index = self.origin_user_id_combo.findText(target_user_id)
+        if index < 0 and target_user_id:
+            self.origin_user_id_combo.addItem(target_user_id)
+            index = self.origin_user_id_combo.findText(target_user_id)
+        if index >= 0:
+            self.origin_user_id_combo.setCurrentIndex(index)
+        elif self.origin_user_id_combo.count():
+            self.origin_user_id_combo.setCurrentIndex(0)
+        self.origin_user_id_combo.blockSignals(False)
 
     def _remote_state(self) -> dict[str, object]:
         return {
@@ -1781,6 +1860,16 @@ class MainWindow(QMainWindow):
         if self.project.origin_exp_id == value:
             return
         self.project.origin_exp_id = value
+        if self._suppress_dirty_updates:
+            return
+        self.project_dirty = True
+        self.update_status()
+
+    def _origin_user_id_changed(self, value: str) -> None:
+        normalized = value.strip()
+        if self.project.origin_user_id == normalized:
+            return
+        self.project.origin_user_id = normalized
         if self._suppress_dirty_updates:
             return
         self.project_dirty = True
@@ -2019,6 +2108,7 @@ class MainWindow(QMainWindow):
             self.project = ExperimentProject()
             self.schema_file_path = ""
             self.origin_exp_id_edit.setText("")
+            self._set_origin_user_id_options("", use_linux_default=True)
             self.pattern_editor.project = self.project
             self.sequence_editor.project = self.project
             self.preview.project = self.project
@@ -2066,6 +2156,7 @@ class MainWindow(QMainWindow):
             self.pattern_editor.clear_form()
             self.sequence_editor.clear_form()
             self.origin_exp_id_edit.setText(self.project.origin_exp_id)
+            self._set_origin_user_id_options(self.project.origin_user_id, use_linux_default=False)
             self.pattern_dirty = False
             self.sequence_dirty = False
             self.project_dirty = False

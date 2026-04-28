@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import getpass
 import json
 import math
 import pickle
@@ -147,6 +148,7 @@ def resolve_processed_cell_to_imaging_pixel(
     exp_id: str,
     processed_cell_id: int,
     channel: int = 0,
+    user_id: str | None = None,
     default_imaging_path: str = "P1",
     photostim_path: str = "PS",
 ) -> ResolvedProcessedCell:
@@ -154,7 +156,7 @@ def resolve_processed_cell_to_imaging_pixel(
     if processed_cell_id < 0:
         raise ValueError("Processed cell ID must be >= 0.")
 
-    processed_data, processed_path = _load_processed_s2p_pickle(exp_id, channel)
+    processed_data, processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=user_id)
     neuron_count = _processed_neuron_count(processed_data)
     if processed_cell_id >= neuron_count:
         raise IndexError(
@@ -252,12 +254,13 @@ def _load_v1_configs(repo_root: Path, imaging_path: str, photostim_path: str):
     return imaging_machine_config.paths[imaging_path], photostim_machine_config.paths[photostim_path]
 
 
-def _load_processed_s2p_pickle(exp_id: str, channel: int) -> tuple[dict, Path]:
+def _load_processed_s2p_pickle(exp_id: str, channel: int, user_id: str | None = None) -> tuple[dict, Path]:
     animal_id = _animal_id_from_exp_id(exp_id)
+    resolved_user_id = (user_id or "").strip() or getpass.getuser()
     candidates = [
-        Path("/home/adamranson/data/Repository") / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
-        Path("/home/adamranson/data/Local_Repository") / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
-        Path("/home/adamranson/data/tif_meso/processed_repository") / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
+        Path("/home") / resolved_user_id / "data" / "Repository" / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
+        Path("/home") / resolved_user_id / "data" / "Local_Repository" / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
+        Path("/home") / resolved_user_id / "data" / "tif_meso" / "processed_repository" / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
     ]
     for candidate in candidates:
         if not candidate.is_file():

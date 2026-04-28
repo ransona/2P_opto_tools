@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import getpass
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -11,6 +13,10 @@ def _is_quantized(value: float, quantum: float = SCHEMA_TIME_QUANTUM_S, tol: flo
         return True
     steps = round(value / quantum)
     return abs(value - (steps * quantum)) <= tol
+
+
+def _default_origin_user_id() -> str:
+    return getpass.getuser() if sys.platform.startswith("linux") else ""
 
 
 @dataclass
@@ -96,6 +102,7 @@ class ExperimentProject:
     patterns: Dict[str, Pattern] = field(default_factory=dict)
     sequences: Dict[str, Sequence] = field(default_factory=dict)
     origin_exp_id: str = ""
+    origin_user_id: str = field(default_factory=_default_origin_user_id)
 
     def validate(self) -> list[str]:
         errors: list[str] = []

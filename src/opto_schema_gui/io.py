@@ -55,6 +55,7 @@ def load_schema(path: str | Path) -> ExperimentProject:
         patterns=patterns,
         sequences=sequences,
         origin_exp_id=str(project_block.get("origin_exp_id", "") or ""),
+        origin_user_id=str(project_block.get("origin_user_id", "") or ""),
     )
 
 
@@ -63,6 +64,7 @@ def save_schema(path: str | Path, project: ExperimentProject) -> None:
         "version": 1,
         "project": {
             "origin_exp_id": project.origin_exp_id,
+            "origin_user_id": project.origin_user_id,
         },
         "patterns": {name: pattern.as_dict() for name, pattern in project.patterns.items()},
         "sequences": {
