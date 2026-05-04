@@ -4,7 +4,9 @@ import hashlib
 import configparser
 import getpass
 import json
+import re
 import socket
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -13,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from PyQt6.QtCore import QObject, Qt, QRectF, QSize, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QRect, QRectF, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -46,15 +48,18 @@ from PyQt6.QtWidgets import (
 )
 
 from .imaging_coordinates import (
+    ProcessedFovGroup,
     ScanfieldChoice,
     convert_imaging_pixel_to_pattern_coords,
     load_processed_cell_overlay,
+    list_processed_channels,
+    list_processed_fov_groups,
     list_imaging_scanfields,
     resolve_processed_cell_to_imaging_pixel,
 )
 from .io import load_schema, save_schema
 from .models import SCHEMA_TIME_QUANTUM_S, CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
-from .matlab_bridge import autodetect_machine_name, load_machine_ui_config
+from .matlab_bridge import autodetect_machine_name
 from .scanimage_control import ScanImageControlWidget
 
 
@@ -63,6 +68,64 @@ class GuiControlConfig:
     enabled: bool
     host: str
     port: int
+
+
+def _preferred_startup_geometry(app: QApplication) -> QRect | None:
+    if sys.platform.startswith("linux"):
+        geometry = _linux_monitor_geometry()
+        if geometry is not None:
+            return geometry
+    screen = app.primaryScreen()
+    return screen.availableGeometry() if screen is not None else None
+
+
+def _linux_monitor_geometry() -> QRect | None:
+    try:
+        result = subprocess.run(
+            ["xrandr", "--listactivemonitors"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+
+    monitors: list[tuple[bool, int, int, int, int, str]] = []
+    pattern = re.compile(
+        r"^\s*\d+:\s+\+(?P<primary>\*)?(?P<name>\S+)\s+"
+        r"(?P<width>\d+)(?:/\d+)?x(?P<height>\d+)(?:/\d+)?\+(?P<x>-?\d+)\+(?P<y>-?\d+)"
+    )
+    for line in result.stdout.splitlines():
+        match = pattern.match(line)
+        if not match:
+            continue
+        monitors.append(
+            (
+                bool(match.group("primary")),
+                int(match.group("x")),
+                int(match.group("y")),
+                int(match.group("width")),
+                int(match.group("height")),
+                match.group("name"),
+            )
+        )
+    if not monitors:
+        return None
+
+    primary = next((monitor for monitor in monitors if monitor[0]), monitors[0])
+    _is_primary, x, y, width, height, name = primary
+
+    # X forwarding / spanned desktops sometimes expose one fake ultra-wide "default" monitor.
+    # In that case, fall back to a reasonable single-monitor-sized region centered within it.
+    if len(monitors) == 1 and name == "default" and width >= 3000:
+        single_width = min(width, 1920)
+        x = x + max(0, (width - single_width) // 2)
+        width = single_width
+
+    return QRect(x, y, width, height)
 
 
 def _stable_color(key: str) -> QColor:
@@ -143,6 +206,73 @@ class RoiOverlayDialog(QDialog):
             Qt.TransformationMode.FastTransformation,
         )
         self.image_label.setPixmap(scaled)
+
+
+class ClickableImageLabel(QLabel):
+    image_clicked = pyqtSignal(int, int)
+
+    def __init__(self, empty_text: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+        self._source_pixmap: QPixmap | None = None
+        self._image_width = 0
+        self._image_height = 0
+        self._empty_text = empty_text
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(320, 240)
+        self.setStyleSheet("background:#111827; color:#cbd5e1; border:1px solid #475569;")
+        self.setWordWrap(True)
+        self._refresh_pixmap()
+
+    def set_image(self, pixmap: QPixmap | None, image_shape: tuple[int, int] | None, empty_text: str | None = None) -> None:
+        self._source_pixmap = pixmap
+        if image_shape is None:
+            self._image_height = 0
+            self._image_width = 0
+        else:
+            self._image_height = int(image_shape[0])
+            self._image_width = int(image_shape[1])
+        if empty_text is not None:
+            self._empty_text = empty_text
+        self._refresh_pixmap()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_pixmap()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        super().mousePressEvent(event)
+        if self._source_pixmap is None or self._image_width <= 0 or self._image_height <= 0:
+            return
+        display = self.pixmap()
+        if display is None or display.isNull():
+            return
+        pix_width = display.width()
+        pix_height = display.height()
+        rect = self.contentsRect()
+        left = rect.x() + max(0, (rect.width() - pix_width) // 2)
+        top = rect.y() + max(0, (rect.height() - pix_height) // 2)
+        x = event.position().x()
+        y = event.position().y()
+        if x < left or y < top or x >= left + pix_width or y >= top + pix_height:
+            return
+        rel_x = (x - left) / max(1, pix_width)
+        rel_y = (y - top) / max(1, pix_height)
+        img_x = min(self._image_width - 1, max(0, int(rel_x * self._image_width)))
+        img_y = min(self._image_height - 1, max(0, int(rel_y * self._image_height)))
+        self.image_clicked.emit(img_x, img_y)
+
+    def _refresh_pixmap(self) -> None:
+        if self._source_pixmap is None or self._source_pixmap.isNull():
+            self.clear()
+            self.setText(self._empty_text)
+            return
+        self.setText("")
+        scaled = self._source_pixmap.scaled(
+            self.contentsRect().size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+        self.setPixmap(scaled)
 
 
 def _parse_cell_id_list(raw_text: str) -> list[int]:
@@ -781,7 +911,386 @@ class ProcessedCellGroupImportDialog(QDialog):
             raise ValueError("Resolve at least one processed cell ID before importing.")
         return exp_id, list(self._cells), self._details
 
+class AddCellsFromFovDialog(QDialog):
+    def __init__(
+        self,
+        repo_root: Path,
+        default_exp_id: str = "",
+        default_user_id: str = "",
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.repo_root = repo_root
+        self.default_user_id = default_user_id.strip()
+        self._groups: tuple[ProcessedFovGroup, ...] = ()
+        self._selected_cells: dict[int, CellSpec] = {}
+        self.setWindowTitle("Add from FOV")
+        self._build_ui()
+        if default_exp_id.strip():
+            self.exp_id_edit.setText(default_exp_id.strip())
+            self._reload_groups(show_error_dialog=False)
 
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        controls_box = QGroupBox("Processed FOV")
+        controls_layout = QVBoxLayout(controls_box)
+        top_row = QHBoxLayout()
+        self.exp_id_edit = QLineEdit()
+        self.channel_combo = QComboBox()
+        self.path_combo = QComboBox()
+        self.roi_combo = QComboBox()
+        self.plane_combo = QComboBox()
+        self.info_label = QLabel("Choose a processed experiment and FOV, then click cells in either image.")
+        self.info_label.setWordWrap(True)
+
+        top_row.addWidget(QLabel("Experiment ID"))
+        top_row.addWidget(self.exp_id_edit, 2)
+        top_row.addWidget(QLabel("Path"))
+        top_row.addWidget(self.path_combo)
+        top_row.addWidget(QLabel("Channel"))
+        top_row.addWidget(self.channel_combo)
+        top_row.addWidget(QLabel("ROI"))
+        top_row.addWidget(self.roi_combo)
+        top_row.addWidget(QLabel("Plane"))
+        top_row.addWidget(self.plane_combo)
+        top_row.addStretch(1)
+        controls_layout.addLayout(top_row)
+        controls_layout.addWidget(self.info_label)
+        layout.addWidget(controls_box)
+
+        images_row = QHBoxLayout()
+        left_panel = QVBoxLayout()
+        left_panel.addWidget(QLabel("ROI masks"))
+        self.roi_map_label = ClickableImageLabel("No ROI map loaded.")
+        left_panel.addWidget(self.roi_map_label, 1)
+        right_panel = QVBoxLayout()
+        right_panel.addWidget(QLabel("Mean FOV"))
+        self.mean_image_label = ClickableImageLabel("No mean image loaded.")
+        right_panel.addWidget(self.mean_image_label, 1)
+        images_row.addLayout(left_panel, 1)
+        images_row.addLayout(right_panel, 1)
+        layout.addLayout(images_row, 1)
+
+        selected_box = QGroupBox("Selected cells")
+        selected_layout = QVBoxLayout(selected_box)
+        self.selected_table = QTableWidget(0, 6)
+        self.selected_table.setHorizontalHeaderLabels(["Label", "X", "Y", "Z", "Power scale", "Origin"])
+        self.selected_table.horizontalHeader().setStretchLastSection(True)
+        self.selected_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        selected_layout.addWidget(self.selected_table)
+        selected_buttons = QHBoxLayout()
+        self.remove_selected_btn = QPushButton("Remove Selected")
+        selected_buttons.addWidget(self.remove_selected_btn)
+        selected_buttons.addStretch(1)
+        selected_layout.addLayout(selected_buttons)
+        layout.addWidget(selected_box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept_if_ready)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.exp_id_edit.textChanged.connect(self._reload_groups)
+        self.channel_combo.currentIndexChanged.connect(self._reload_groups_for_channel)
+        self.path_combo.currentIndexChanged.connect(self._refresh_roi_options)
+        self.roi_combo.currentIndexChanged.connect(self._refresh_plane_options)
+        self.plane_combo.currentIndexChanged.connect(self._refresh_images)
+        self.roi_map_label.image_clicked.connect(self._handle_image_click)
+        self.mean_image_label.image_clicked.connect(self._handle_image_click)
+        self.remove_selected_btn.clicked.connect(self._remove_selected_cell)
+        self.resize(1400, 900)
+
+    def _accept_if_ready(self) -> None:
+        if not self._selected_cells:
+            QMessageBox.warning(self, "No cells selected", "Select at least one cell before clicking OK.")
+            return
+        self.accept()
+
+    def _reload_groups(self, show_error_dialog: bool = True) -> None:
+        exp_id = self.exp_id_edit.text().strip()
+        self._groups = ()
+        self.channel_combo.blockSignals(True)
+        self.channel_combo.clear()
+        self.channel_combo.blockSignals(False)
+        self.path_combo.clear()
+        self.roi_combo.clear()
+        self.plane_combo.clear()
+        self.roi_map_label.set_image(None, None, "No ROI map loaded.")
+        self.mean_image_label.set_image(None, None, "No mean image loaded.")
+        if not exp_id:
+            self.info_label.setText("Enter an experiment ID to load processed FOVs.")
+            return
+        try:
+            channels = list_processed_channels(exp_id, user_id=self.default_user_id or None)
+            if not channels:
+                resolved_user_id = (self.default_user_id or getpass.getuser()).strip()
+                raise FileNotFoundError(
+                    f"No processed s2p_ch*.pickle files were found for '{exp_id}' from user '{resolved_user_id}'."
+                )
+            current_channel = self.channel_combo.currentData()
+            self.channel_combo.blockSignals(True)
+            self.channel_combo.clear()
+            for channel in channels:
+                self.channel_combo.addItem(f"ch{channel}", channel)
+            channel_index = self.channel_combo.findData(current_channel)
+            self.channel_combo.setCurrentIndex(channel_index if channel_index >= 0 else 0)
+            self.channel_combo.blockSignals(False)
+            self._reload_groups_for_channel(show_error_dialog=show_error_dialog)
+        except Exception as exc:
+            self.info_label.setText(str(exc))
+            if show_error_dialog:
+                QMessageBox.warning(self, "Failed to load processed FOVs", str(exc))
+
+    def _reload_groups_for_channel(self, _index: int | None = None, show_error_dialog: bool = True) -> None:
+        exp_id = self.exp_id_edit.text().strip()
+        channel = self.channel_combo.currentData()
+        self._groups = ()
+        self.path_combo.clear()
+        self.roi_combo.clear()
+        self.plane_combo.clear()
+        self.roi_map_label.set_image(None, None, "No ROI map loaded.")
+        self.mean_image_label.set_image(None, None, "No mean image loaded.")
+        if not exp_id or channel is None:
+            return
+        try:
+            self._groups = list_processed_fov_groups(
+                self.repo_root,
+                exp_id,
+                user_id=self.default_user_id or None,
+                channel=int(channel),
+            )
+            path_names = sorted({group.imaging_path for group in self._groups})
+            self.path_combo.blockSignals(True)
+            self.path_combo.clear()
+            for path_name in path_names:
+                self.path_combo.addItem(path_name)
+            self.path_combo.blockSignals(False)
+            self._refresh_roi_options()
+            self.info_label.setText(f"Loaded {len(self._groups)} processed FOV group(s) for {exp_id}.")
+        except Exception as exc:
+            self.info_label.setText(str(exc))
+            if show_error_dialog:
+                QMessageBox.warning(self, "Failed to load processed FOVs", str(exc))
+
+    def _refresh_roi_options(self) -> None:
+        path_name = self.path_combo.currentText().strip()
+        groups = [group for group in self._groups if group.imaging_path == path_name] if path_name else []
+        roi_names = sorted({group.roi_folder_name for group in groups})
+        self.roi_combo.blockSignals(True)
+        self.roi_combo.clear()
+        for roi_name in roi_names:
+            self.roi_combo.addItem(roi_name)
+        self.roi_combo.blockSignals(False)
+        self._refresh_plane_options()
+
+    def _refresh_plane_options(self) -> None:
+        candidates = self._current_group_candidates()
+        self.plane_combo.blockSignals(True)
+        self.plane_combo.clear()
+        for group in candidates:
+            self.plane_combo.addItem(f"plane{group.plane_index} (z={group.z_um:g})", group.plane_index)
+        self.plane_combo.blockSignals(False)
+        self._refresh_images()
+
+    def _current_group_candidates(self) -> list[ProcessedFovGroup]:
+        path_name = self.path_combo.currentText().strip()
+        roi_name = self.roi_combo.currentText().strip()
+        return [
+            group
+            for group in self._groups
+            if group.imaging_path == path_name and group.roi_folder_name == roi_name
+        ]
+
+    def _current_group(self) -> ProcessedFovGroup | None:
+        plane_index = self.plane_combo.currentData()
+        for group in self._current_group_candidates():
+            if group.plane_index == plane_index:
+                return group
+        return None
+
+    def _refresh_images(self) -> None:
+        group = self._current_group()
+        if group is None:
+            self.roi_map_label.set_image(None, None, "No ROI map loaded.")
+            self.mean_image_label.set_image(None, None, "No mean image loaded.")
+            return
+        self.roi_map_label.set_image(
+            self._build_roi_map_pixmap(group.mean_image, group.roi_map),
+            group.mean_image.shape,
+        )
+        self.mean_image_label.set_image(
+            self._build_mean_image_pixmap(group.mean_image),
+            group.mean_image.shape,
+        )
+        self.info_label.setText(f"{group.title} | {len(group.processed_cell_ids)} cells")
+
+    def _handle_image_click(self, x_px: int, y_px: int) -> None:
+        group = self._current_group()
+        if group is None:
+            return
+        if x_px < 0 or y_px < 0 or y_px >= group.roi_map.shape[0] or x_px >= group.roi_map.shape[1]:
+            return
+        label_value = int(round(float(group.roi_map[y_px, x_px])))
+        if label_value <= 0:
+            self.info_label.setText(f"{group.title} | No cell at x={x_px}, y={y_px}")
+            return
+        local_index = label_value - 1
+        if local_index < 0 or local_index >= len(group.processed_cell_ids):
+            self.info_label.setText(f"{group.title} | ROI label {label_value} did not map to a processed cell.")
+            return
+        processed_cell_id = int(group.processed_cell_ids[local_index])
+        if processed_cell_id in self._selected_cells:
+            self.info_label.setText(f"{group.title} | cell {processed_cell_id} already selected")
+            return
+        try:
+            resolved = resolve_processed_cell_to_imaging_pixel(
+                self.repo_root,
+                group.exp_id,
+                processed_cell_id=processed_cell_id,
+                user_id=group.user_id,
+                channel=group.channel,
+                default_imaging_path=group.imaging_path,
+            )
+            converted = convert_imaging_pixel_to_pattern_coords(
+                self.repo_root,
+                group.exp_id,
+                scanfield_index=resolved.scanfield_index,
+                x_px=resolved.x_px,
+                y_px=resolved.y_px,
+                imaging_path=resolved.imaging_path,
+            )
+            cell = CellSpec(
+                label=f"cell_{processed_cell_id}",
+                x=converted.x_um,
+                y=converted.y_um,
+                z=converted.z_um,
+                origin=resolved.origin,
+                origin_exp_id=group.exp_id,
+                origin_user_id=group.user_id,
+                origin_processed_cell_id=processed_cell_id,
+                origin_imaging_path=resolved.imaging_path,
+                origin_roi_folder_name=resolved.roi_folder_name,
+                origin_plane_index=resolved.plane_index,
+                origin_z_um=resolved.z_um,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Failed to resolve clicked cell", str(exc))
+            return
+        self._selected_cells[processed_cell_id] = cell
+        self._append_selected_cell_row(cell)
+        self.info_label.setText(f"{group.title} | added cell {processed_cell_id}: {resolved.origin}")
+
+    def _append_selected_cell_row(self, cell: CellSpec) -> None:
+        row = self.selected_table.rowCount()
+        self.selected_table.insertRow(row)
+        items = [
+            _read_only_item(cell.label),
+            _read_only_item(f"{cell.x:g}"),
+            _read_only_item(f"{cell.y:g}"),
+            _read_only_item(f"{cell.z:g}"),
+            _read_only_item(f"{cell.power_scale:g}"),
+            _read_only_item(cell.origin),
+        ]
+        for col, item in enumerate(items):
+            if col == 5:
+                item.setData(Qt.ItemDataRole.UserRole, _cell_origin_metadata(cell))
+            item.setData(Qt.ItemDataRole.UserRole + 1, cell.origin_processed_cell_id)
+            self.selected_table.setItem(row, col, item)
+        self.selected_table.selectRow(row)
+
+    def _remove_selected_cell(self) -> None:
+        row = _selected_or_last_row(self.selected_table)
+        if row is None:
+            return
+        processed_cell_id = None
+        item = self.selected_table.item(row, 0)
+        if item is not None:
+            processed_cell_id = item.data(Qt.ItemDataRole.UserRole + 1)
+        if isinstance(processed_cell_id, int):
+            self._selected_cells.pop(processed_cell_id, None)
+        self.selected_table.removeRow(row)
+
+    def result_data(self) -> tuple[str, list[CellSpec]]:
+        exp_id = self.exp_id_edit.text().strip()
+        if not exp_id:
+            raise ValueError("Experiment ID is required.")
+        if not self._selected_cells:
+            raise ValueError("Select at least one cell from the FOV before importing.")
+        return exp_id, list(self._selected_cells.values())
+
+    def _build_mean_image_pixmap(self, mean_image: np.ndarray) -> QPixmap:
+        image = np.asarray(mean_image, dtype=float)
+        finite = np.isfinite(image)
+        if not np.any(finite):
+            normalized = np.zeros_like(image, dtype=np.uint8)
+        else:
+            valid = image[finite]
+            low = float(np.percentile(valid, 1))
+            high = float(np.percentile(valid, 99))
+            if high <= low:
+                high = low + 1.0
+            clipped = np.clip(image, low, high)
+            normalized = np.round((clipped - low) / (high - low) * 255.0).astype(np.uint8)
+        rgb = np.repeat(normalized[:, :, None], 3, axis=2)
+        qimage = QImage(
+            rgb.data,
+            rgb.shape[1],
+            rgb.shape[0],
+            rgb.strides[0],
+            QImage.Format.Format_RGB888,
+        ).copy()
+        return QPixmap.fromImage(qimage)
+
+    def _build_roi_map_pixmap(self, mean_image: np.ndarray, roi_map: np.ndarray) -> QPixmap:
+        image = np.asarray(mean_image, dtype=float)
+        labels = np.asarray(roi_map, dtype=int)
+        finite = np.isfinite(image)
+        if not np.any(finite):
+            normalized = np.zeros_like(image, dtype=np.uint8)
+        else:
+            valid = image[finite]
+            low = float(np.percentile(valid, 1))
+            high = float(np.percentile(valid, 99))
+            if high <= low:
+                high = low + 1.0
+            clipped = np.clip(image, low, high)
+            normalized = np.round((clipped - low) / (high - low) * 255.0).astype(np.uint8)
+        rgb = np.repeat(normalized[:, :, None], 3, axis=2).astype(np.uint8)
+        for label_value in (int(value) for value in np.unique(labels) if int(value) > 0):
+            mask = labels == label_value
+            color = _stable_color(f"roi_{label_value}")
+            overlay = np.array([color.red(), color.green(), color.blue()], dtype=float)
+            rgb[mask] = np.round(rgb[mask].astype(float) * 0.45 + overlay * 0.55).astype(np.uint8)
+            boundary = self._roi_boundary(mask)
+            rgb[boundary, 0] = 255
+            rgb[boundary, 1] = 255
+            rgb[boundary, 2] = 255
+        qimage = QImage(
+            rgb.data,
+            rgb.shape[1],
+            rgb.shape[0],
+            rgb.strides[0],
+            QImage.Format.Format_RGB888,
+        ).copy()
+        return QPixmap.fromImage(qimage)
+
+    def _roi_boundary(self, mask: np.ndarray) -> np.ndarray:
+        boundary = mask.copy()
+        interior = mask.copy()
+        interior[1:-1, 1:-1] = (
+            mask[1:-1, 1:-1]
+            & mask[:-2, 1:-1]
+            & mask[2:, 1:-1]
+            & mask[1:-1, :-2]
+            & mask[1:-1, 2:]
+            & mask[:-2, :-2]
+            & mask[:-2, 2:]
+            & mask[2:, :-2]
+            & mask[2:, 2:]
+        )
+        boundary &= ~interior
+        return boundary
 
 
 class PatternEditor(QWidget):
@@ -873,16 +1382,20 @@ class PatternEditor(QWidget):
         self.add_row_btn = QPushButton("Add Cell")
         self.add_imaging_pixel_btn = QPushButton("Add Imaging Pixel")
         self.add_cells_by_id_btn = QPushButton("Add Cells by ID")
+        self.add_from_fov_btn = QPushButton("Add from FOV")
         self.add_imaging_pixel_btn.setEnabled(_roi_coordinate_import_enabled())
         self.add_cells_by_id_btn.setEnabled(_roi_coordinate_import_enabled())
+        self.add_from_fov_btn.setEnabled(_roi_coordinate_import_enabled())
         if not _roi_coordinate_import_enabled():
             self.add_imaging_pixel_btn.setToolTip("Imaging pixel ROI import is available on Ubuntu only.")
             self.add_cells_by_id_btn.setToolTip("Processed cell ROI import is available on Ubuntu only.")
+            self.add_from_fov_btn.setToolTip("Processed FOV import is available on Ubuntu only.")
         self.remove_row_btn = QPushButton("Remove Cell")
         self.copy_btn = QPushButton("Copy Pattern")
         button_row.addWidget(self.add_row_btn)
         button_row.addWidget(self.add_imaging_pixel_btn)
         button_row.addWidget(self.add_cells_by_id_btn)
+        button_row.addWidget(self.add_from_fov_btn)
         button_row.addWidget(self.remove_row_btn)
         button_row.addWidget(self.copy_btn)
         button_row.addStretch(1)
@@ -891,6 +1404,7 @@ class PatternEditor(QWidget):
         self.add_row_btn.clicked.connect(self.add_cell_row)
         self.add_imaging_pixel_btn.clicked.connect(self.add_imaging_pixel)
         self.add_cells_by_id_btn.clicked.connect(self.add_cells_by_id)
+        self.add_from_fov_btn.clicked.connect(self.add_cells_from_fov)
         self.remove_row_btn.clicked.connect(self.remove_selected_cell_rows)
         self.copy_btn.clicked.connect(self.copy_current_pattern)
         self.clear_btn.clicked.connect(self.clear_form)
@@ -958,6 +1472,26 @@ class PatternEditor(QWidget):
             _exp_id, cells, _details = dialog.result_data()
         except Exception as exc:
             QMessageBox.warning(self, "Failed to resolve processed cell IDs", str(exc))
+            return
+        for cell in cells:
+            self.add_cell_row(cell)
+
+    def add_cells_from_fov(self) -> None:
+        if not _roi_coordinate_import_enabled():
+            QMessageBox.information(self, "Unavailable on this platform", "Processed FOV import is available on Ubuntu only.")
+            return
+        dialog = AddCellsFromFovDialog(
+            self.repo_root,
+            self.project.origin_exp_id,
+            self.project.origin_user_id,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            _exp_id, cells = dialog.result_data()
+        except Exception as exc:
+            QMessageBox.warning(self, "Failed to import cells from FOV", str(exc))
             return
         for cell in cells:
             self.add_cell_row(cell)
@@ -1662,6 +2196,7 @@ class MainWindow(QMainWindow):
         self.sequence_dirty = False
         self.project_dirty = False
         self._suppress_dirty_updates = False
+        self._initial_layout_applied = False
 
         self.preview = TimelinePreview(self.project)
         self._suppress_selection_load = False
@@ -1767,14 +2302,14 @@ class MainWindow(QMainWindow):
         self.schema_editor_tabs.addTab(self.pattern_editor, "Pattern Editor")
         self.schema_editor_tabs.addTab(self.sequence_editor, "Sequence Editor")
 
-        schema_splitter = QSplitter()
-        schema_splitter.addWidget(schema_left)
-        schema_splitter.addWidget(self.schema_editor_tabs)
-        schema_splitter.setStretchFactor(1, 1)
+        self.schema_splitter = QSplitter()
+        self.schema_splitter.addWidget(schema_left)
+        self.schema_splitter.addWidget(self.schema_editor_tabs)
+        self.schema_splitter.setStretchFactor(1, 1)
 
         self.main_tabs = QTabWidget()
         self.main_tabs.addTab(self.scanimage_control, "ScanImage Control")
-        self.main_tabs.addTab(schema_splitter, "Stimulation Schema")
+        self.main_tabs.addTab(self.schema_splitter, "Stimulation Schema")
         self.setCentralWidget(self.main_tabs)
 
         self.add_pattern_btn.clicked.connect(self.add_pattern)
@@ -1784,6 +2319,42 @@ class MainWindow(QMainWindow):
         self.copy_sequence_btn.clicked.connect(self.copy_sequence)
         self.delete_sequence_btn.clicked.connect(self.delete_sequence)
         self.update_save_path_label()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._initial_layout_applied:
+            self._initial_layout_applied = True
+            QTimer.singleShot(0, self._apply_initial_layout)
+            QTimer.singleShot(100, self._apply_initial_layout)
+
+    def _apply_initial_layout(self) -> None:
+        central = self.centralWidget()
+        if central is not None:
+            central.updateGeometry()
+            if central.layout() is not None:
+                central.layout().activate()
+        self.main_tabs.updateGeometry()
+        self.scanimage_control.updateGeometry()
+        self.schema_editor_tabs.updateGeometry()
+        total_width = max(1, self.schema_splitter.width())
+        left_width = max(280, int(total_width * 0.24))
+        right_width = max(480, total_width - left_width)
+        self.schema_splitter.setSizes([left_width, right_width])
+        for splitter in self.findChildren(QSplitter):
+            sizes = splitter.sizes()
+            if sizes:
+                splitter.setSizes([max(1, size) for size in sizes])
+        self.updateGeometry()
+        self.repaint()
+        QTimer.singleShot(0, self._trigger_post_show_resize)
+
+    def _trigger_post_show_resize(self) -> None:
+        width = self.width()
+        height = self.height()
+        if width <= 0 or height <= 1:
+            return
+        self.resize(width, height - 1)
+        self.resize(width, height)
 
     def _start_gui_control_listener(self) -> None:
         if not self.gui_control_config.enabled or self.gui_control_config.port <= 0:
@@ -2514,21 +3085,14 @@ class MainWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
-    screen_index = None
-    machine_name = autodetect_machine_name(_repo_root())
-    if machine_name:
-        machine_ui = load_machine_ui_config(_repo_root(), machine_name)
-        screen_index = machine_ui.screen_index
-
-    screens = app.screens()
-    if screen_index is not None and 0 <= screen_index < len(screens):
-        geometry = screens[screen_index].availableGeometry()
-    elif screens:
-        geometry = screens[0].availableGeometry()
-    else:
-        geometry = None
-
+    geometry = _preferred_startup_geometry(app)
     if geometry is not None:
-        window.setGeometry(geometry)
-    window.showMaximized()
+        target_width = max(1200, int(round(geometry.width() * 0.8)))
+        target_height = max(800, int(round(geometry.height() * 0.8)))
+        target_width = min(target_width, geometry.width())
+        target_height = min(target_height, geometry.height())
+        target_x = geometry.x() + max(0, (geometry.width() - target_width) // 2)
+        target_y = geometry.y() + max(0, (geometry.height() - target_height) // 2)
+        window.setGeometry(target_x, target_y, target_width, target_height)
+    window.show()
     sys.exit(app.exec())

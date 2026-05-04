@@ -774,8 +774,9 @@ class ScanImageControlWidget(QWidget):
 
         log_box = QGroupBox("Debug Log")
         log_layout = QVBoxLayout(log_box)
-        filter_box = QGroupBox("Shown")
-        filter_layout = QHBoxLayout(filter_box)
+        filter_row = QWidget()
+        filter_layout = QHBoxLayout(filter_row)
+        filter_layout.setContentsMargins(0, 0, 0, 0)
         self.show_general_debug_checkbox = QCheckBox("General")
         self.show_udp_debug_checkbox = QCheckBox("UDP commands")
         self.show_experiment_debug_checkbox = QCheckBox("Experiment info")
@@ -799,7 +800,7 @@ class ScanImageControlWidget(QWidget):
         filter_layout.addStretch(1)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        log_layout.addWidget(filter_box)
+        log_layout.addWidget(filter_row)
         log_layout.addWidget(self.log_text, 1)
         layout.addWidget(log_box, 1)
 

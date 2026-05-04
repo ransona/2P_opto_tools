@@ -80,6 +80,22 @@ class ProcessedCellOverlay:
     title: str
 
 
+@dataclass(frozen=True)
+class ProcessedFovGroup:
+    exp_id: str
+    user_id: str
+    channel: int
+    imaging_path: str
+    roi_folder_name: str
+    plane_index: int
+    depth_value: int
+    z_um: float
+    mean_image: np.ndarray
+    roi_map: np.ndarray
+    processed_cell_ids: tuple[int, ...]
+    title: str
+
+
 def list_imaging_scanfields(
     repo_root: Path,
     exp_id: str,
@@ -313,6 +329,95 @@ def load_processed_cell_overlay(
     )
 
 
+def list_processed_channels(exp_id: str, user_id: str | None = None) -> tuple[int, ...]:
+    animal_id = _animal_id_from_exp_id(exp_id)
+    resolved_user_id = (user_id or "").strip() or getpass.getuser()
+    roots = [
+        Path("/home") / resolved_user_id / "data" / "Repository" / animal_id / exp_id / "recordings",
+        Path("/home") / resolved_user_id / "data" / "Local_Repository" / animal_id / exp_id / "recordings",
+        Path("/home") / resolved_user_id / "data" / "tif_meso" / "processed_repository" / animal_id / exp_id / "recordings",
+    ]
+    channels: set[int] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.glob("s2p_ch*.pickle"):
+            match = re.fullmatch(r"s2p_ch(\d+)\.pickle", path.name)
+            if match:
+                channels.add(int(match.group(1)))
+    return tuple(sorted(channels))
+
+
+def list_processed_fov_groups(
+    repo_root: Path,
+    exp_id: str,
+    user_id: str | None = None,
+    channel: int = 0,
+    default_imaging_path: str = "P1",
+    photostim_path: str = "PS",
+) -> tuple[ProcessedFovGroup, ...]:
+    _require_linux_roi_import()
+    processed_data, _processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=user_id)
+    neuron_count = _processed_neuron_count(processed_data)
+    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
+    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
+
+    scanfield_bundles: dict[str, MetadataBundle] = {}
+    groups: dict[tuple[int, int, int], list[int]] = {}
+    for processed_cell_id in range(neuron_count):
+        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+        depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+        key = (
+            int(scanpath_number if has_scanpath else 1),
+            int(siroi_number if has_siroi else 1),
+            int(depth_value),
+        )
+        groups.setdefault(key, []).append(processed_cell_id)
+
+    resolved_user_id = (user_id or "").strip() or getpass.getuser()
+    result: list[ProcessedFovGroup] = []
+    for (scanpath_number, siroi_number, depth_value), processed_cell_ids in sorted(groups.items()):
+        first_id = processed_cell_ids[0]
+        imaging_path = f"P{scanpath_number}" if has_scanpath else default_imaging_path
+        roi_folder_name = f"R{siroi_number:03d}" if has_siroi else "R001"
+        plane_index = int(depth_value - 1 if has_scanpath else depth_value)
+
+        if imaging_path not in scanfield_bundles:
+            scanfield_bundles[imaging_path] = list_imaging_scanfields(
+                repo_root,
+                exp_id,
+                imaging_path=imaging_path,
+                photostim_path=photostim_path,
+            )
+        bundle = scanfield_bundles[imaging_path]
+        scanfield_index = _match_processed_cell_to_scanfield_index(
+            bundle,
+            depth_value=depth_value,
+            roi_folder_name=roi_folder_name if has_siroi else None,
+            depth_is_one_based=has_scanpath,
+        )
+        scanfield = bundle.scanfields[scanfield_index - 1]
+        plane_index = _scanfield_plane_index(bundle, scanfield)
+        result.append(
+            ProcessedFovGroup(
+                exp_id=exp_id,
+                user_id=resolved_user_id,
+                channel=channel,
+                imaging_path=imaging_path,
+                roi_folder_name=roi_folder_name,
+                plane_index=plane_index,
+                depth_value=int(depth_value),
+                z_um=float(scanfield.z_um),
+                mean_image=_lookup_processed_fov_image(processed_data, first_id, default_imaging_path),
+                roi_map=_lookup_processed_roi_map(processed_data, first_id, default_imaging_path),
+                processed_cell_ids=tuple(processed_cell_ids),
+                title=f"{imaging_path} {roi_folder_name} plane{plane_index} z={float(scanfield.z_um):g}",
+            )
+        )
+    return tuple(result)
+
+
 def _load_v1_configs(repo_root: Path, imaging_path: str, photostim_path: str):
     machine_name = autodetect_machine_name(repo_root) or "ar-lab-si2"
     imaging_machine_config = load_machine_config(repo_root, machine_name, "P1_imaging")
@@ -337,12 +442,14 @@ def _load_processed_s2p_pickle(exp_id: str, channel: int, user_id: str | None = 
         if not candidate.is_file():
             continue
         with candidate.open("rb") as handle:
-            payload = pickle.load(handle)
+            payload = _compat_pickle_load(handle)
         if not isinstance(payload, dict):
             raise TypeError(f"Processed file '{candidate}' did not contain a dict payload.")
         return payload, candidate
     searched = ", ".join(str(candidate) for candidate in candidates)
-    raise FileNotFoundError(f"Could not find processed s2p pickle for '{exp_id}'. Checked: {searched}")
+    raise FileNotFoundError(
+        f"Could not find processed s2p pickle for '{exp_id}' from user '{resolved_user_id}'. Checked: {searched}"
+    )
 
 
 def _processed_neuron_count(processed_data: dict) -> int:
@@ -448,6 +555,33 @@ def _lookup_processed_fov_shape(processed_data: dict, processed_cell_id: int, de
     return int(image.shape[0]), int(image.shape[1])
 
 
+def _lookup_processed_roi_map(processed_data: dict, processed_cell_id: int, default_imaging_path: str) -> np.ndarray:
+    roi_maps = processed_data.get("AllRoiMaps")
+    if not isinstance(roi_maps, dict):
+        raise ValueError("Processed payload is missing AllRoiMaps.")
+
+    depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
+    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+        try:
+            scanpath_block = _lookup_nested_dict_value(roi_maps, int(scanpath_number))
+            roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
+            return np.asarray(_lookup_nested_dict_value(roi_block, int(depth_value), one_based_fallback=True))
+        except Exception as exc:
+            raise KeyError(
+                "Processed AllRoiMaps layout did not match expected mesoscope structure "
+                "{scanpath -> si_roi -> depth -> roi map}."
+            ) from exc
+    if int(depth_value) not in roi_maps:
+        available = sorted(roi_maps.keys())
+        raise KeyError(
+            f"Processed AllRoiMaps does not contain depth key {int(depth_value)}. "
+            f"Available keys: {available}. This looks like an unsupported legacy processed layout."
+        )
+    return np.asarray(roi_maps[int(depth_value)])
+
+
 def _lookup_processed_fov_image(processed_data: dict, processed_cell_id: int, default_imaging_path: str) -> np.ndarray:
     all_fov = processed_data.get("AllFOV")
     if not isinstance(all_fov, dict):
@@ -520,11 +654,10 @@ def _scanfield_plane_index(bundle: MetadataBundle, scanfield: ScanfieldChoice) -
 
 
 def _lookup_nested_dict_value(mapping: dict, key: int, one_based_fallback: bool = False):
-    if key in mapping:
-        return mapping[key]
     candidates: list[int] = []
     if one_based_fallback:
         candidates.append(key - 1)
+    candidates.append(key)
     for candidate in candidates:
         if candidate in mapping:
             return mapping[candidate]
@@ -731,7 +864,7 @@ def _load_stack_relative_zs(exp_dir: Path) -> list[float]:
         return []
     try:
         with meta_path.open("rb") as handle:
-            payload = pickle.load(handle)
+            payload = _compat_pickle_load(handle)
     except Exception:
         return []
     if not isinstance(payload, dict):
@@ -757,6 +890,23 @@ def _flatten_numeric_values(raw: object) -> list[float]:
         return []
     arr = np.asarray(raw, dtype=float).reshape(-1)
     return [float(value) for value in arr.tolist()]
+
+
+def _compat_pickle_load(handle):
+    # NumPy 2.x pickles can reference numpy._core; allow loading under older NumPy
+    # environments that still expose numpy.core.
+    added_aliases: list[str] = []
+    if "numpy._core" not in sys.modules:
+        sys.modules["numpy._core"] = np.core
+        added_aliases.append("numpy._core")
+    if "numpy._core.multiarray" not in sys.modules:
+        sys.modules["numpy._core.multiarray"] = np.core.multiarray
+        added_aliases.append("numpy._core.multiarray")
+    try:
+        return pickle.load(handle)
+    finally:
+        for alias in added_aliases:
+            sys.modules.pop(alias, None)
 
 
 def _extract_bool(text: str, pattern: str) -> bool:
