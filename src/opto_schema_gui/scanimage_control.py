@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QTableWidget,
@@ -772,7 +773,7 @@ class ScanImageControlWidget(QWidget):
         layout.addWidget(self.paths_box, 1)
 
         log_box = QGroupBox("Debug Log")
-        log_layout = QHBoxLayout(log_box)
+        log_layout = QVBoxLayout(log_box)
         filter_box = QGroupBox("Shown")
         filter_layout = QHBoxLayout(filter_box)
         self.show_general_debug_checkbox = QCheckBox("General")
@@ -796,13 +797,10 @@ class ScanImageControlWidget(QWidget):
             filter_layout.addWidget(checkbox)
         filter_layout.addWidget(self.clear_log_btn)
         filter_layout.addStretch(1)
-        log_layout.addWidget(filter_box)
-        output_container = QWidget()
-        output_layout = QVBoxLayout(output_container)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        output_layout.addWidget(self.log_text)
-        log_layout.addWidget(output_container, 1)
+        log_layout.addWidget(filter_box)
+        log_layout.addWidget(self.log_text, 1)
         layout.addWidget(log_box, 1)
 
         self.reload_btn.clicked.connect(self.reload_discovery)
