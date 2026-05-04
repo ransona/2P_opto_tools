@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 import yaml
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -178,11 +178,7 @@ class TestSlmPatternWidgets:
 @dataclass
 class PathTabWidgets:
     tab: QWidget
-    status_label: QLabel
-    listener_label: QLabel
-    external_trial_trigger_label: QLabel | None
-    photostim_trigger_input_label: QLabel | None
-    photostim_trigger_output_label: QLabel | None
+    info_label: QLabel
     udp_text: QPlainTextEdit
     launch_btn: QPushButton
     focus_btn: QPushButton
@@ -720,9 +716,30 @@ class ScanImageControlWidget(QWidget):
         layout = QVBoxLayout(self)
 
         config_box = QGroupBox("ScanImage Config")
-        config_layout = QHBoxLayout(config_box)
-        button_column = QVBoxLayout()
-        button_column.setSpacing(6)
+        config_layout = QVBoxLayout(config_box)
+
+        controls_row = QHBoxLayout()
+        controls_row.addWidget(QLabel("Machine"))
+        self.machine_combo = QComboBox()
+        controls_row.addWidget(self.machine_combo)
+        controls_row.addWidget(QLabel("Config"))
+        self.config_combo = QComboBox()
+        controls_row.addWidget(self.config_combo)
+        self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
+        self.ignore_incomplete_trigger_checkbox = QCheckBox("Send mismatch errors upstream")
+        self.ignore_incomplete_trigger_checkbox.setChecked(True)
+        self.trigger_mode_combo = QComboBox()
+        self.trigger_mode_combo.addItem("Software trigger (debug)", "software")
+        self.trigger_mode_combo.addItem("Hardware external trigger", "hardware")
+        self.trigger_mode_combo.setCurrentIndex(1)
+        controls_row.addWidget(self.force_simulated_checkbox)
+        controls_row.addWidget(self.ignore_incomplete_trigger_checkbox)
+        controls_row.addWidget(QLabel("Trigger mode"))
+        controls_row.addWidget(self.trigger_mode_combo)
+        controls_row.addStretch(1)
+        config_layout.addLayout(controls_row)
+
+        buttons_row = QHBoxLayout()
         self.clear_all_logs_btn = QPushButton("All")
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
@@ -733,34 +750,19 @@ class ScanImageControlWidget(QWidget):
         self.test_stim_waveform_external_btn = QPushButton("Test stim waveform ext")
         self.start_config_btn.setStyleSheet("color: #15803d;")
         self.stop_config_btn.setStyleSheet("color: #b91c1c;")
-        button_column.addWidget(self.clear_all_logs_btn)
-        button_column.addWidget(self.start_config_btn)
-        button_column.addWidget(self.stop_config_btn)
-        button_column.addWidget(self.reload_btn)
-        button_column.addWidget(self.update_restart_btn)
-        button_column.addWidget(self.test_prep_patterns_btn)
-        button_column.addWidget(self.test_stim_waveform_btn)
-        button_column.addWidget(self.test_stim_waveform_external_btn)
-        button_column.addStretch(1)
-        config_layout.addLayout(button_column)
-
-        config_form_container = QWidget()
-        config_form = QFormLayout(config_form_container)
-        self.machine_combo = QComboBox()
-        self.config_combo = QComboBox()
-        self.force_simulated_checkbox = QCheckBox("Force Simulated Mode")
-        self.ignore_incomplete_trigger_checkbox = QCheckBox("Send mismatch errors upstream")
-        self.ignore_incomplete_trigger_checkbox.setChecked(True)
-        self.trigger_mode_combo = QComboBox()
-        self.trigger_mode_combo.addItem("Software trigger (debug)", "software")
-        self.trigger_mode_combo.addItem("Hardware external trigger", "hardware")
-        self.trigger_mode_combo.setCurrentIndex(1)
-        config_form.addRow("Machine", self.machine_combo)
-        config_form.addRow("Config", self.config_combo)
-        config_form.addRow("", self.force_simulated_checkbox)
-        config_form.addRow("", self.ignore_incomplete_trigger_checkbox)
-        config_form.addRow("Trigger mode", self.trigger_mode_combo)
-        config_layout.addWidget(config_form_container, 1)
+        for button in (
+            self.clear_all_logs_btn,
+            self.start_config_btn,
+            self.stop_config_btn,
+            self.reload_btn,
+            self.update_restart_btn,
+            self.test_prep_patterns_btn,
+            self.test_stim_waveform_btn,
+            self.test_stim_waveform_external_btn,
+        ):
+            buttons_row.addWidget(button)
+        buttons_row.addStretch(1)
+        config_layout.addLayout(buttons_row)
         layout.addWidget(config_box)
 
         self.paths_box = QGroupBox("Paths")
@@ -772,7 +774,7 @@ class ScanImageControlWidget(QWidget):
         log_box = QGroupBox("Debug Log")
         log_layout = QHBoxLayout(log_box)
         filter_box = QGroupBox("Shown")
-        filter_layout = QVBoxLayout(filter_box)
+        filter_layout = QHBoxLayout(filter_box)
         self.show_general_debug_checkbox = QCheckBox("General")
         self.show_udp_debug_checkbox = QCheckBox("UDP commands")
         self.show_experiment_debug_checkbox = QCheckBox("Experiment info")
@@ -1441,22 +1443,10 @@ class ScanImageControlWidget(QWidget):
         layout = QVBoxLayout(tab)
 
         info_box = QGroupBox("Path")
-        info_form = QFormLayout(info_box)
-        status_label = QLabel("stopped")
-        listener_label = QLabel(self._listener_summary(path_name))
-        listener_label.setWordWrap(True)
-        info_form.addRow("Status", status_label)
-        info_form.addRow("UDP listener", listener_label)
-        external_trial_trigger_label: QLabel | None = None
-        photostim_trigger_input_label: QLabel | None = None
-        photostim_trigger_output_label: QLabel | None = None
-        if self.machine_config is not None and path_name == self.machine_config.photostim_path:
-            external_trial_trigger_label = QLabel(runtime.path_config.trial_waveform_start_trigger_port)
-            photostim_trigger_input_label = QLabel(runtime.path_config.trial_waveform_photostim_trigger_term)
-            photostim_trigger_output_label = QLabel(runtime.path_config.trial_waveform_output_port)
-            info_form.addRow("External trial trigger input", external_trial_trigger_label)
-            info_form.addRow("Photostim trigger input", photostim_trigger_input_label)
-            info_form.addRow("Photostim trigger output", photostim_trigger_output_label)
+        info_layout = QHBoxLayout(info_box)
+        info_label = QLabel(self._path_summary(path_name))
+        info_label.setWordWrap(True)
+        info_layout.addWidget(info_label)
         layout.addWidget(info_box)
 
         buttons_box = QGroupBox("Actions")
@@ -1487,16 +1477,18 @@ class ScanImageControlWidget(QWidget):
         udp_layout = QVBoxLayout(udp_box)
         udp_text = QPlainTextEdit()
         udp_text.setReadOnly(True)
+        udp_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        udp_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        udp_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        udp_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        one_line_height = udp_text.fontMetrics().lineSpacing() + (2 * udp_text.frameWidth()) + 10
+        udp_text.setFixedHeight(one_line_height)
         udp_layout.addWidget(udp_text)
-        layout.addWidget(udp_box, 1)
+        layout.addWidget(udp_box)
 
         widgets = PathTabWidgets(
             tab=tab,
-            status_label=status_label,
-            listener_label=listener_label,
-            external_trial_trigger_label=external_trial_trigger_label,
-            photostim_trigger_input_label=photostim_trigger_input_label,
-            photostim_trigger_output_label=photostim_trigger_output_label,
+            info_label=info_label,
             udp_text=udp_text,
             launch_btn=launch_btn,
             focus_btn=focus_btn,
@@ -1972,7 +1964,7 @@ class ScanImageControlWidget(QWidget):
             runtime.status = status
         widgets = self._path_tabs.get(path_name)
         if widgets is not None:
-            widgets.status_label.setText(status)
+            widgets.info_label.setText(self._path_summary(path_name))
             index = self.path_tabs.indexOf(widgets.tab)
             if index >= 0:
                 self.path_tabs.setTabText(index, f"{path_name} [{status}]")
@@ -1994,11 +1986,27 @@ class ScanImageControlWidget(QWidget):
         cfg = runtime.path_config
         return f"{cfg.listener_host}:{cfg.listener_port} [{state}]"
 
+    def _path_summary(self, path_name: str) -> str:
+        runtime = self._runtimes[path_name]
+        parts = [
+            f"Status: {runtime.status}",
+            f"UDP listener: {self._listener_summary(path_name)}",
+        ]
+        if self.machine_config is not None and path_name == self.machine_config.photostim_path:
+            parts.extend(
+                [
+                    f"External trial trigger input: {runtime.path_config.trial_waveform_start_trigger_port}",
+                    f"Photostim trigger input: {runtime.path_config.trial_waveform_photostim_trigger_term}",
+                    f"Photostim trigger output: {runtime.path_config.trial_waveform_output_port}",
+                ]
+            )
+        return " | ".join(parts)
+
     def _refresh_path_listener_info(self, path_name: str) -> None:
         widgets = self._path_tabs.get(path_name)
         if widgets is None:
             return
-        widgets.listener_label.setText(self._listener_summary(path_name))
+        widgets.info_label.setText(self._path_summary(path_name))
 
     def _handle_udp_message(self, path_name: str, payload: bytes, address: tuple) -> None:
         json_message = self._extract_json_command(payload)

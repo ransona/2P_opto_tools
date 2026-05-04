@@ -2515,22 +2515,20 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
     screen_index = None
-    start_maximized = True
     machine_name = autodetect_machine_name(_repo_root())
     if machine_name:
         machine_ui = load_machine_ui_config(_repo_root(), machine_name)
         screen_index = machine_ui.screen_index
-        start_maximized = machine_ui.start_maximized
 
     screens = app.screens()
     if screen_index is not None and 0 <= screen_index < len(screens):
         geometry = screens[screen_index].availableGeometry()
-        window.setGeometry(geometry)
+    elif screens:
+        geometry = screens[0].availableGeometry()
     else:
-        window.resize(1400, 900)
+        geometry = None
 
-    if start_maximized:
-        window.showMaximized()
-    else:
-        window.show()
+    if geometry is not None:
+        window.setGeometry(geometry)
+    window.showMaximized()
     sys.exit(app.exec())
