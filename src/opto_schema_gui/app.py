@@ -1816,7 +1816,6 @@ class SequenceEditor(QWidget):
         self.add_step_btn = QPushButton("Add Step")
         self.remove_step_btn = QPushButton("Remove Step")
         self.copy_btn = QPushButton("Copy Sequence")
-        self.save_btn = QPushButton("Save Sequence")
         button_row.addWidget(QLabel("Pattern"))
         button_row.addWidget(self.pattern_select, 2)
         button_row.addWidget(QLabel("Start"))
@@ -1825,7 +1824,6 @@ class SequenceEditor(QWidget):
         button_row.addWidget(self.remove_step_btn)
         button_row.addWidget(self.copy_btn)
         button_row.addStretch(1)
-        button_row.addWidget(self.save_btn)
         editor_layout.addLayout(button_row)
 
         self.add_step_btn.clicked.connect(self.add_step)
@@ -1836,7 +1834,6 @@ class SequenceEditor(QWidget):
         self.notes_edit.textChanged.connect(self._on_form_changed)
         self.start_spin.valueChanged.connect(self._on_form_changed)
         self.steps_table.itemChanged.connect(self._on_steps_table_item_changed)
-        self.save_btn.clicked.connect(self.save_current_sequence)
 
         splitter.addWidget(editor_panel)
         splitter.addWidget(self.preview)
