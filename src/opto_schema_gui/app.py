@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -273,6 +274,411 @@ class ClickableImageLabel(QLabel):
             Qt.TransformationMode.FastTransformation,
         )
         self.setPixmap(scaled)
+
+
+class TracePlotWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._completed_trials: list[dict[str, object]] = []
+        self._current_trial: dict[str, object] | None = None
+        self._mode = "scaled"
+        self._pre_s = 1.0
+        self._post_s = 3.0
+        self.setMinimumHeight(180)
+
+    def set_trace_data(
+        self,
+        completed_trials: list[dict[str, object]],
+        current_trial: dict[str, object] | None,
+        *,
+        mode: str,
+        pre_s: float,
+        post_s: float,
+    ) -> None:
+        self._completed_trials = completed_trials
+        self._current_trial = current_trial
+        self._mode = mode
+        self._pre_s = max(0.0, float(pre_s))
+        self._post_s = max(0.1, float(post_s))
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return QSize(900, 180)
+
+    def _normalize_series(
+        self,
+        times: list[float],
+        values: list[float],
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        x = np.asarray(times, dtype=float)
+        y = np.asarray(values, dtype=float)
+        if x.size == 0 or y.size == 0 or x.size != y.size:
+            return None
+        valid = np.isfinite(x) & np.isfinite(y)
+        if not np.any(valid):
+            return None
+        x = x[valid]
+        y = y[valid]
+        order = np.argsort(x)
+        x = x[order]
+        y = y[order]
+        if self._mode == "dff":
+            if y.size >= 3:
+                kernel = np.ones(5, dtype=float) / 5.0
+                smooth = np.convolve(y, kernel, mode="same")
+            else:
+                smooth = y
+            f0 = float(np.nanpercentile(smooth, 5.0))
+            if not np.isfinite(f0) or abs(f0) < 1e-9:
+                transformed = np.zeros_like(y)
+            else:
+                transformed = (y - f0) / f0
+            return x, transformed
+        return x, y
+
+    def _mean_trace(
+        self,
+        series: list[tuple[np.ndarray, np.ndarray]],
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        if not series:
+            return None
+        grid = np.linspace(-self._pre_s, self._post_s, 240)
+        stacked: list[np.ndarray] = []
+        for x, y in series:
+            if x.size == 0:
+                continue
+            interp = np.full(grid.shape, np.nan, dtype=float)
+            lo = max(grid[0], x[0])
+            hi = min(grid[-1], x[-1])
+            if hi < lo:
+                continue
+            mask = (grid >= lo) & (grid <= hi)
+            interp[mask] = np.interp(grid[mask], x, y)
+            stacked.append(interp)
+        if not stacked:
+            return None
+        matrix = np.vstack(stacked)
+        with np.errstate(invalid="ignore"):
+            mean_y = np.nanmean(matrix, axis=0)
+        valid = np.isfinite(mean_y)
+        if not np.any(valid):
+            return None
+        return grid[valid], mean_y[valid]
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#ffffff"))
+
+        plot_rect = self.rect().adjusted(48, 16, -12, -24)
+        if plot_rect.width() <= 10 or plot_rect.height() <= 10:
+            return
+
+        completed_series = [
+            normalized
+            for trial in self._completed_trials
+            if (normalized := self._normalize_series(
+                list(trial.get("times", [])),
+                list(trial.get("values", [])),
+            )) is not None
+        ]
+        current_series = None
+        if isinstance(self._current_trial, dict):
+            current_series = self._normalize_series(
+                list(self._current_trial.get("times", [])),
+                list(self._current_trial.get("values", [])),
+            )
+        mean_trace = self._mean_trace(
+            completed_series + ([current_series] if current_series is not None else [])
+        )
+
+        if not completed_series and current_series is None:
+            painter.setPen(QColor("#64748b"))
+            painter.drawText(plot_rect, Qt.AlignmentFlag.AlignCenter, "No online activity data yet")
+            return
+
+        y_min = 0.0
+        y_max = 1.0
+        if mean_trace is not None:
+            mean_y = mean_trace[1]
+            y_min = float(np.nanmin(mean_y))
+            y_max = float(np.nanmax(mean_y))
+            if not np.isfinite(y_min) or not np.isfinite(y_max):
+                y_min, y_max = 0.0, 1.0
+            if abs(y_max - y_min) < 1e-9:
+                y_min -= 0.5
+                y_max += 0.5
+            else:
+                margin = 0.1 * (y_max - y_min)
+                y_min -= margin
+                y_max += margin
+        elif current_series is not None:
+            y_min = float(np.nanmin(current_series[1]))
+            y_max = float(np.nanmax(current_series[1]))
+            if abs(y_max - y_min) < 1e-9:
+                y_min -= 0.5
+                y_max += 0.5
+
+        x_min = -self._pre_s
+        x_max = self._post_s
+
+        def map_point(x_value: float, y_value: float) -> tuple[float, float]:
+            x_norm = (x_value - x_min) / max(1e-9, x_max - x_min)
+            y_norm = (y_value - y_min) / max(1e-9, y_max - y_min)
+            px = plot_rect.left() + x_norm * plot_rect.width()
+            py = plot_rect.bottom() - y_norm * plot_rect.height()
+            return px, py
+
+        painter.setPen(QPen(QColor("#e2e8f0"), 1))
+        for frac in (0.0, 0.5, 1.0):
+            y_line = plot_rect.top() + frac * plot_rect.height()
+            painter.drawLine(plot_rect.left(), int(y_line), plot_rect.right(), int(y_line))
+
+        zero_x, _ = map_point(0.0, y_min)
+        painter.setPen(QPen(QColor("#94a3b8"), 1, Qt.PenStyle.DashLine))
+        painter.drawLine(int(zero_x), plot_rect.top(), int(zero_x), plot_rect.bottom())
+
+        def draw_series(series: tuple[np.ndarray, np.ndarray], pen: QPen) -> None:
+            x_vals, y_vals = series
+            if x_vals.size == 0:
+                return
+            points = [map_point(float(x_val), float(y_val)) for x_val, y_val in zip(x_vals, y_vals, strict=False)]
+            if len(points) < 2:
+                return
+            painter.setPen(pen)
+            for start, end in zip(points[:-1], points[1:], strict=False):
+                painter.drawLine(int(start[0]), int(start[1]), int(end[0]), int(end[1]))
+
+        completed_pen = QPen(QColor("#cbd5e1"), 1)
+        for series in completed_series:
+            draw_series(series, completed_pen)
+        if mean_trace is not None:
+            draw_series(mean_trace, QPen(QColor("#111827"), 2))
+        if current_series is not None:
+            draw_series(current_series, QPen(QColor("#15803d"), 2))
+
+        painter.setPen(QColor("#0f172a"))
+        painter.drawRect(plot_rect)
+        painter.drawText(6, plot_rect.top() + 4, "y")
+        painter.drawText(plot_rect.left(), self.height() - 6, f"{x_min:.1f}s")
+        painter.drawText(int(zero_x) - 8, self.height() - 6, "0")
+        painter.drawText(plot_rect.right() - 28, self.height() - 6, f"{x_max:.1f}s")
+
+
+class OnlineActivityCellPanel(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.title_label = QLabel()
+        self.title_label.setWordWrap(True)
+        self.plot = TracePlotWidget()
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.plot)
+
+    def set_payload(
+        self,
+        payload: dict[str, object],
+        *,
+        mode: str,
+        pre_s: float,
+        post_s: float,
+    ) -> None:
+        patterns = ", ".join(str(pattern) for pattern in payload.get("patterns", []))
+        origin = str(payload.get("origin", "")).strip()
+        title = (
+            f"{payload.get('label', '')} | x={float(payload.get('x_um', 0.0)):.1f} "
+            f"y={float(payload.get('y_um', 0.0)):.1f} z={float(payload.get('z_um', 0.0)):.1f}"
+        )
+        if patterns:
+            title += f" | patterns: {patterns}"
+        if origin:
+            title += f" | {origin}"
+        self.title_label.setText(title)
+        self.plot.set_trace_data(
+            list(payload.get("completed_trials", [])),
+            payload.get("current_trial") if isinstance(payload.get("current_trial"), dict) else None,
+            mode=mode,
+            pre_s=pre_s,
+            post_s=post_s,
+        )
+
+
+class OnlineActivityWidget(QWidget):
+    def __init__(self, scanimage_control: ScanImageControlWidget, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.scanimage_control = scanimage_control
+        self._suppress_refresh = False
+        self._panels: dict[str, OnlineActivityCellPanel] = {}
+        self._build_ui()
+        self._timer = QTimer(self)
+        self._timer.setInterval(500)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start()
+        self.refresh()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        controls_row = QHBoxLayout()
+        self.condition_combo = QComboBox()
+        self.auto_jump_checkbox = QCheckBox("Auto-jump to current condition")
+        self.auto_jump_checkbox.setChecked(True)
+        self.channel_spin = QSpinBox()
+        self.channel_spin.setRange(1, 8)
+        self.roi_diameter_spin = QSpinBox()
+        self.roi_diameter_spin.setRange(1, 512)
+        self.pre_spin = QDoubleSpinBox()
+        self.pre_spin.setRange(0.0, 60.0)
+        self.pre_spin.setDecimals(2)
+        self.pre_spin.setSingleStep(0.1)
+        self.post_spin = QDoubleSpinBox()
+        self.post_spin.setRange(0.1, 120.0)
+        self.post_spin.setDecimals(2)
+        self.post_spin.setSingleStep(0.1)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Scaled", "scaled")
+        self.mode_combo.addItem("dF/F", "dff")
+        controls_row.addWidget(QLabel("Condition"))
+        controls_row.addWidget(self.condition_combo, 1)
+        controls_row.addWidget(self.auto_jump_checkbox)
+        controls_row.addWidget(QLabel("Channel"))
+        controls_row.addWidget(self.channel_spin)
+        controls_row.addWidget(QLabel("ROI diameter px"))
+        controls_row.addWidget(self.roi_diameter_spin)
+        controls_row.addWidget(QLabel("Pre s"))
+        controls_row.addWidget(self.pre_spin)
+        controls_row.addWidget(QLabel("Post s"))
+        controls_row.addWidget(self.post_spin)
+        controls_row.addWidget(QLabel("Mode"))
+        controls_row.addWidget(self.mode_combo)
+        layout.addLayout(controls_row)
+
+        self.status_label = QLabel("Online Analysis disabled")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_contents = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_contents)
+        self.scroll_layout.setContentsMargins(8, 8, 8, 8)
+        self.scroll_layout.setSpacing(10)
+        self.scroll_layout.addStretch(1)
+        self.scroll_area.setWidget(self.scroll_contents)
+        layout.addWidget(self.scroll_area, 1)
+
+        self.condition_combo.currentIndexChanged.connect(self.refresh)
+        self.channel_spin.valueChanged.connect(self._push_settings)
+        self.roi_diameter_spin.valueChanged.connect(self._push_settings)
+        self.pre_spin.valueChanged.connect(self._push_settings)
+        self.post_spin.valueChanged.connect(self._push_settings)
+        self.mode_combo.currentIndexChanged.connect(self.refresh)
+
+    def _selected_condition_index(self) -> int | None:
+        data = self.condition_combo.currentData()
+        return int(data) if data is not None else None
+
+    def _push_settings(self) -> None:
+        if self._suppress_refresh:
+            return
+        self.scanimage_control.set_online_analysis_settings(
+            channel=self.channel_spin.value(),
+            roi_diameter_px=self.roi_diameter_spin.value(),
+            pre_s=self.pre_spin.value(),
+            post_s=self.post_spin.value(),
+        )
+
+    def _clear_panels(self) -> None:
+        while self.scroll_layout.count() > 1:
+            item = self.scroll_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._panels.clear()
+
+    def refresh(self) -> None:
+        selected_condition = self._selected_condition_index()
+        snapshot = self.scanimage_control.get_online_analysis_snapshot(selected_condition)
+
+        self._suppress_refresh = True
+        try:
+            current_condition_index = snapshot.get("current_condition_index")
+            conditions = list(snapshot.get("conditions", []))
+            desired_index = selected_condition
+            if self.auto_jump_checkbox.isChecked() and current_condition_index is not None:
+                desired_index = int(current_condition_index)
+            elif selected_condition is None:
+                snap_selected = snapshot.get("selected_condition_index")
+                desired_index = int(snap_selected) if snap_selected is not None else None
+
+            self.condition_combo.blockSignals(True)
+            self.condition_combo.clear()
+            for condition in conditions:
+                label = str(condition.get("label", f"Condition {condition.get('index', '?')}"))
+                supported = bool(condition.get("supported"))
+                reason = str(condition.get("reason", "")).strip()
+                if not supported and reason:
+                    label = f"{label} [unsupported: {reason}]"
+                self.condition_combo.addItem(label, int(condition["index"]))
+            combo_index = self.condition_combo.findData(desired_index) if desired_index is not None else -1
+            if combo_index >= 0:
+                self.condition_combo.setCurrentIndex(combo_index)
+            elif self.condition_combo.count():
+                self.condition_combo.setCurrentIndex(0)
+            self.condition_combo.blockSignals(False)
+
+            self.channel_spin.setValue(int(snapshot.get("channel", 1)))
+            self.roi_diameter_spin.setValue(int(snapshot.get("roi_diameter_px", 11)))
+            self.pre_spin.setValue(float(snapshot.get("pre_s", 1.0)))
+            self.post_spin.setValue(float(snapshot.get("post_s", 3.0)))
+        finally:
+            self._suppress_refresh = False
+
+        enabled = bool(snapshot.get("enabled"))
+        configured = bool(snapshot.get("configured"))
+        status_bits = []
+        if not enabled:
+            status_bits.append("Online Analysis disabled")
+        else:
+            status_bits.append("Online Analysis enabled")
+        exp_id = str(snapshot.get("exp_id", "")).strip()
+        imaging_path = str(snapshot.get("imaging_path", "")).strip()
+        if exp_id:
+            status_bits.append(f"expID={exp_id}")
+        if imaging_path:
+            status_bits.append(f"path={imaging_path}")
+        if configured:
+            status_bits.append("configured")
+        else:
+            status_bits.append("not configured")
+        last_error = str(snapshot.get("last_error", "")).strip()
+        if last_error:
+            status_bits.append(f"error: {last_error}")
+        self.status_label.setText(" | ".join(status_bits))
+
+        cells = list(snapshot.get("cells", []))
+        self._clear_panels()
+        if not enabled:
+            placeholder = QLabel("Enable Online Analysis next to Save Schema to activate live ROI plotting.")
+            placeholder.setWordWrap(True)
+            self.scroll_layout.insertWidget(0, placeholder)
+            return
+        if not cells:
+            placeholder = QLabel("No plottable cells for the selected condition yet.")
+            placeholder.setWordWrap(True)
+            self.scroll_layout.insertWidget(0, placeholder)
+            return
+
+        mode = str(self.mode_combo.currentData() or "scaled")
+        pre_s = float(snapshot.get("pre_s", 1.0))
+        post_s = float(snapshot.get("post_s", 3.0))
+        for payload in cells:
+            roi_name = str(payload.get("roi_name", ""))
+            panel = OnlineActivityCellPanel()
+            panel.set_payload(payload, mode=mode, pre_s=pre_s, post_s=post_s)
+            self._panels[roi_name] = panel
+            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, panel)
 
 
 def _parse_cell_id_list(raw_text: str) -> list[int]:
@@ -2212,7 +2618,11 @@ class MainWindow(QMainWindow):
             self.refresh_lists,
             self._refresh_lists_live,
         )
-        self.scanimage_control = ScanImageControlWidget(self.ensure_schema_path_for_external_use)
+        self.scanimage_control = ScanImageControlWidget(
+            self.ensure_schema_path_for_external_use,
+            lambda: self.project,
+        )
+        self.online_activity_widget = OnlineActivityWidget(self.scanimage_control)
 
         self.pattern_list = QListWidget()
         self.sequence_list = QListWidget()
@@ -2236,14 +2646,18 @@ class MainWindow(QMainWindow):
         new_btn = QPushButton("New")
         load_schema_btn = QPushButton("Load Schema")
         save_schema_btn = QPushButton("Save Schema")
+        self.online_analysis_checkbox = QCheckBox("Online Analysis")
 
         toolbar.addWidget(new_btn)
         toolbar.addWidget(load_schema_btn)
         toolbar.addWidget(save_schema_btn)
+        toolbar.addWidget(self.online_analysis_checkbox)
 
         new_btn.clicked.connect(self.new_project)
         load_schema_btn.clicked.connect(self.load_schema_dialog)
         save_schema_btn.clicked.connect(self.save_schema_dialog)
+        self.online_analysis_checkbox.setChecked(self.scanimage_control.online_analysis_enabled())
+        self.online_analysis_checkbox.toggled.connect(self.scanimage_control.set_online_analysis_enabled)
 
         schema_left = QWidget()
         schema_left_layout = QVBoxLayout(schema_left)
@@ -2307,6 +2721,7 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.addTab(self.scanimage_control, "ScanImage Control")
         self.main_tabs.addTab(self.schema_splitter, "Stimulation Schema")
+        self.main_tabs.addTab(self.online_activity_widget, "Online activity")
         self.setCentralWidget(self.main_tabs)
 
         self.add_pattern_btn.clicked.connect(self.add_pattern)

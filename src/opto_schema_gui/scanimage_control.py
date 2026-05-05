@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import configparser
 import math
 import html
@@ -57,12 +58,15 @@ from .matlab_bridge import (
     build_global_preamble,
     build_import_command,
     build_inspect_photostim_command,
+    build_online_analysis_delta_command,
     build_prepare_schema_photostim_command,
     build_prepare_trial_waveform_command,
     build_photostim_sequence_status_command,
     build_raw_vdaq_do_test_status_command,
+    build_restore_online_analysis_command,
     build_run_script_command,
     build_schema_payload_load_command,
+    build_configure_online_analysis_command,
     build_software_trigger_command,
     build_start_trial_waveform_command,
     build_stop_trial_waveform_command,
@@ -80,6 +84,7 @@ from .matlab_bridge import (
     matlab_string,
     matlab_engine,
 )
+from .models import ExperimentProject
 
 
 class ScanImageSignals(QObject):
@@ -164,6 +169,80 @@ class PathRuntime:
     software_trigger_thread: threading.Thread | None = None
     waveform_monitor_stop: threading.Event | None = None
     waveform_monitor_thread: threading.Thread | None = None
+
+
+@dataclass
+class OnlineAnalysisCellState:
+    roi_name: str
+    label: str
+    x_um: float
+    y_um: float
+    z_um: float
+    origin: str
+    imaging_path: str
+    pattern_names: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OnlineAnalysisConditionState:
+    index: int
+    label: str
+    sequence_name: str = ""
+    seq_num: int | None = None
+    stimulus_id: object | None = None
+    supported: bool = False
+    reason: str = ""
+    cell_roi_names: list[str] = field(default_factory=list)
+    cell_patterns: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass
+class OnlineAnalysisSample:
+    timestamp: float
+    frame_number: int
+    value: float
+
+
+@dataclass
+class OnlineAnalysisTrial:
+    condition_index: int
+    ordinal: int
+    start_timestamp: float | None = None
+    samples_by_roi: dict[str, list[OnlineAnalysisSample]] = field(default_factory=dict)
+
+
+@dataclass
+class OnlineAnalysisState:
+    enabled: bool = False
+    imaging_path: str = ""
+    exp_id: str = ""
+    configured: bool = False
+    channel: int = 1
+    roi_diameter_px: int = 11
+    pre_s: float = 1.0
+    post_s: float = 3.0
+    history_length: int = 1024
+    last_error: str = ""
+    conditions: dict[int, OnlineAnalysisConditionState] = field(default_factory=dict)
+    cells_by_roi_name: dict[str, OnlineAnalysisCellState] = field(default_factory=dict)
+    roi_names_in_order: list[str] = field(default_factory=list)
+    last_cursors: list[int] = field(default_factory=list)
+    last_frame_by_roi: dict[str, int] = field(default_factory=dict)
+    recent_samples_by_roi: dict[str, deque[OnlineAnalysisSample]] = field(default_factory=dict)
+    completed_trials_by_condition: dict[int, list[OnlineAnalysisTrial]] = field(default_factory=dict)
+    active_trial: OnlineAnalysisTrial | None = None
+    current_condition_index: int | None = None
+    poll_stop: threading.Event | None = None
+    poll_thread: threading.Thread | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def clear_runtime_buffers(self) -> None:
+        self.last_cursors = []
+        self.last_frame_by_roi = {}
+        self.recent_samples_by_roi = {}
+        self.completed_trials_by_condition = {}
+        self.active_trial = None
+        self.roi_names_in_order = []
 
 
 @dataclass
@@ -649,9 +728,15 @@ class StimWaveformTestDialog(QDialog):
 
 
 class ScanImageControlWidget(QWidget):
-    def __init__(self, schema_path_provider: Callable[[], Path | None], parent: QWidget | None = None):
+    def __init__(
+        self,
+        schema_path_provider: Callable[[], Path | None],
+        project_provider: Callable[[], ExperimentProject],
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.schema_path_provider = schema_path_provider
+        self.project_provider = project_provider
         self.repo_root = Path(__file__).resolve().parents[2]
         self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
@@ -682,6 +767,7 @@ class ScanImageControlWidget(QWidget):
             "software_trigger_count": True,
             "stimuli": True,
         }
+        self._online_analysis = OnlineAnalysisState()
         self._gui_state_path = self.repo_root / ".gui_state.ini"
         self.save_root, self.schema_root = self._load_path_roots()
         self._build_ui()
@@ -712,6 +798,620 @@ class ScanImageControlWidget(QWidget):
                 preview = preview + " ..."
             parts.append(f"sequenceHead=[{preview}]")
         return ", ".join(parts)
+
+    def online_analysis_enabled(self) -> bool:
+        with self._online_analysis.lock:
+            return self._online_analysis.enabled
+
+    def set_online_analysis_enabled(self, enabled: bool) -> None:
+        with self._online_analysis.lock:
+            if self._online_analysis.enabled == enabled:
+                return
+            self._online_analysis.enabled = enabled
+        if not enabled:
+            try:
+                self._restore_online_analysis(clear_runtime=True)
+            except Exception as exc:
+                self.signals.log_message.emit(f"[online analysis] restore failed: {exc}")
+        else:
+            self._configure_online_analysis_if_possible_async()
+
+    def set_online_analysis_settings(
+        self,
+        *,
+        channel: int,
+        roi_diameter_px: int,
+        pre_s: float,
+        post_s: float,
+    ) -> None:
+        reconfigure = False
+        with self._online_analysis.lock:
+            if self._online_analysis.channel != int(channel):
+                self._online_analysis.channel = int(channel)
+                reconfigure = True
+            if self._online_analysis.roi_diameter_px != int(roi_diameter_px):
+                self._online_analysis.roi_diameter_px = int(roi_diameter_px)
+                reconfigure = True
+            self._online_analysis.pre_s = max(0.0, float(pre_s))
+            self._online_analysis.post_s = max(0.1, float(post_s))
+            self._online_analysis.clear_runtime_buffers()
+        if reconfigure and self.online_analysis_enabled():
+            self._configure_online_analysis_if_possible_async()
+
+    def get_online_analysis_snapshot(self, selected_condition_index: int | None = None) -> dict[str, object]:
+        with self._online_analysis.lock:
+            state = self._online_analysis
+            conditions_payload: list[dict[str, object]] = []
+            for index in sorted(state.conditions):
+                condition = state.conditions[index]
+                conditions_payload.append(
+                    {
+                        "index": condition.index,
+                        "label": condition.label,
+                        "sequence_name": condition.sequence_name,
+                        "seq_num": condition.seq_num,
+                        "stimulus_id": condition.stimulus_id,
+                        "supported": condition.supported,
+                        "reason": condition.reason,
+                        "trial_count": len(state.completed_trials_by_condition.get(index, [])),
+                    }
+                )
+
+            selected_index = selected_condition_index
+            if selected_index is None or selected_index not in state.conditions:
+                selected_index = state.current_condition_index
+            if selected_index is None:
+                supported_indices = [idx for idx, cond in state.conditions.items() if cond.supported]
+                selected_index = supported_indices[0] if supported_indices else None
+
+            cell_payloads: list[dict[str, object]] = []
+            if selected_index is not None and selected_index in state.conditions:
+                condition = state.conditions[selected_index]
+                completed_trials = state.completed_trials_by_condition.get(selected_index, [])
+                active_trial = (
+                    state.active_trial
+                    if state.active_trial is not None
+                    and state.active_trial.condition_index == selected_index
+                    and state.active_trial.start_timestamp is not None
+                    else None
+                )
+                for roi_name in condition.cell_roi_names:
+                    cell = state.cells_by_roi_name.get(roi_name)
+                    if cell is None:
+                        continue
+                    completed = [
+                        self._trial_series_payload(trial, roi_name, state.pre_s, state.post_s)
+                        for trial in completed_trials
+                    ]
+                    completed = [series for series in completed if series is not None]
+                    current = (
+                        self._trial_series_payload(active_trial, roi_name, state.pre_s, state.post_s)
+                        if active_trial is not None
+                        else None
+                    )
+                    cell_payloads.append(
+                        {
+                            "roi_name": roi_name,
+                            "label": cell.label,
+                            "x_um": cell.x_um,
+                            "y_um": cell.y_um,
+                            "z_um": cell.z_um,
+                            "origin": cell.origin,
+                            "patterns": condition.cell_patterns.get(roi_name, cell.pattern_names),
+                            "completed_trials": completed,
+                            "current_trial": current,
+                        }
+                    )
+
+            return {
+                "enabled": state.enabled,
+                "configured": state.configured,
+                "exp_id": state.exp_id,
+                "imaging_path": state.imaging_path,
+                "channel": state.channel,
+                "roi_diameter_px": state.roi_diameter_px,
+                "pre_s": state.pre_s,
+                "post_s": state.post_s,
+                "last_error": state.last_error,
+                "conditions": conditions_payload,
+                "current_condition_index": state.current_condition_index,
+                "selected_condition_index": selected_index,
+                "cells": cell_payloads,
+            }
+
+    def _trial_series_payload(
+        self,
+        trial: OnlineAnalysisTrial | None,
+        roi_name: str,
+        pre_s: float,
+        post_s: float,
+    ) -> dict[str, object] | None:
+        if trial is None or trial.start_timestamp is None:
+            return None
+        samples = trial.samples_by_roi.get(roi_name, [])
+        if not samples:
+            return None
+        times: list[float] = []
+        values: list[float] = []
+        for sample in samples:
+            rel_t = sample.timestamp - trial.start_timestamp
+            if rel_t < -pre_s or rel_t > post_s:
+                continue
+            times.append(rel_t)
+            values.append(sample.value)
+        if not times:
+            return None
+        return {
+            "times": times,
+            "values": values,
+            "ordinal": trial.ordinal,
+        }
+
+    def _configure_online_analysis_if_possible_async(self) -> None:
+        threading.Thread(target=self._configure_online_analysis_if_possible, daemon=True).start()
+
+    def _configure_online_analysis_if_possible(self) -> None:
+        if not self.online_analysis_enabled():
+            return
+        tracking_runtime_name = self._online_analysis_tracking_runtime_name()
+        if not tracking_runtime_name:
+            return
+        runtime = self._runtimes.get(tracking_runtime_name)
+        if runtime is None or not runtime.experiment_tracking.params:
+            return
+        try:
+            self._configure_online_analysis_for_tracking(runtime.experiment_tracking)
+        except Exception as exc:
+            with self._online_analysis.lock:
+                self._online_analysis.last_error = str(exc)
+            self.signals.log_message.emit(f"[online analysis] configure failed: {exc}")
+
+    def _online_analysis_tracking_runtime_name(self) -> str:
+        if self.machine_config is not None:
+            photostim_path = self.machine_config.photostim_path
+            if photostim_path and photostim_path in self._runtimes:
+                return photostim_path
+        for path_name, runtime in self._runtimes.items():
+            if runtime.experiment_tracking.params:
+                return path_name
+        return ""
+
+    def _default_online_analysis_imaging_path(self) -> str:
+        if self.machine_config is not None:
+            photostim_path = self.machine_config.photostim_path
+            for path_name in self.machine_config.launch_order:
+                if path_name != photostim_path:
+                    return path_name
+        return "P1"
+
+    def _configure_online_analysis_for_tracking(self, tracking: ExperimentTrackingState) -> None:
+        project = self.project_provider()
+        sequence_names = list(project.sequences.keys())
+        default_imaging_path = self._default_online_analysis_imaging_path()
+
+        conditions: dict[int, OnlineAnalysisConditionState] = {}
+        cells_by_key: dict[str, OnlineAnalysisCellState] = {}
+        cell_key_to_roi_name: dict[str, str] = {}
+        imaging_paths: set[str] = set()
+
+        roi_counter = 1
+        for index, condition_payload in enumerate(tracking.stimulus_conditions):
+            condition = OnlineAnalysisConditionState(
+                index=index,
+                label=self._online_analysis_condition_label(index, condition_payload),
+                stimulus_id=condition_payload.get("stimulus_id"),
+            )
+            conditions[index] = condition
+
+            features = condition_payload.get("features")
+            if not isinstance(features, list):
+                condition.reason = "Condition does not contain a valid feature list."
+                continue
+            opto_features = [
+                feature
+                for feature in features
+                if isinstance(feature, dict)
+                and str(feature.get("name", "")).strip() == "opto_2p"
+                and not (
+                    isinstance(feature.get("params"), dict)
+                    and int(feature["params"].get("enable", 1)) == 0
+                )
+            ]
+            if len(opto_features) != 1:
+                condition.reason = "Condition must contain exactly one enabled opto_2p feature."
+                continue
+            params = opto_features[0].get("params")
+            if not isinstance(params, dict) or "seq_num" not in params:
+                condition.reason = "opto_2p feature is missing seq_num."
+                continue
+            seq_num = int(params["seq_num"])
+            if seq_num < 0 or seq_num >= len(sequence_names):
+                condition.reason = f"seq_num {seq_num} is out of range for the current schema."
+                continue
+            sequence_name = sequence_names[seq_num]
+            sequence = project.sequences[sequence_name]
+            condition.sequence_name = sequence_name
+            condition.seq_num = seq_num
+
+            for step in sequence.steps:
+                pattern = project.patterns.get(step.pattern)
+                if pattern is None:
+                    continue
+                for cell in pattern.cells:
+                    key = (
+                        f"proc:{int(cell.origin_processed_cell_id)}"
+                        if cell.origin_processed_cell_id is not None
+                        else f"xyz:{cell.x:.6f}:{cell.y:.6f}:{cell.z:.6f}"
+                    )
+                    roi_name = cell_key_to_roi_name.get(key)
+                    if roi_name is None:
+                        roi_name = f"OA_{roi_counter:03d}"
+                        roi_counter += 1
+                        imaging_path = (cell.origin_imaging_path or default_imaging_path).strip() or default_imaging_path
+                        imaging_paths.add(imaging_path)
+                        cells_by_key[key] = OnlineAnalysisCellState(
+                            roi_name=roi_name,
+                            label=cell.label or roi_name,
+                            x_um=float(cell.x),
+                            y_um=float(cell.y),
+                            z_um=float(cell.z),
+                            origin=cell.origin or f"x={cell.x:g} y={cell.y:g} z={cell.z:g}",
+                            imaging_path=imaging_path,
+                            pattern_names=[],
+                        )
+                        cell_key_to_roi_name[key] = roi_name
+                    condition.cell_roi_names.append(roi_name)
+                    patterns = condition.cell_patterns.setdefault(roi_name, [])
+                    if pattern.name not in patterns:
+                        patterns.append(pattern.name)
+
+            if condition.cell_roi_names:
+                deduped = list(dict.fromkeys(condition.cell_roi_names))
+                condition.cell_roi_names = deduped
+                condition.supported = True
+            else:
+                condition.reason = "No cells were found in the condition sequence."
+
+        if not cells_by_key:
+            with self._online_analysis.lock:
+                self._online_analysis.conditions = conditions
+                self._online_analysis.cells_by_roi_name = {}
+                self._online_analysis.imaging_path = ""
+                self._online_analysis.exp_id = tracking.exp_id
+                self._online_analysis.configured = False
+                self._online_analysis.last_error = "No plottable cells were found for the current experiment conditions."
+                self._online_analysis.clear_runtime_buffers()
+            self._stop_online_analysis_poller()
+            return
+
+        if len(imaging_paths) != 1:
+            raise ValueError(
+                "Online analysis currently supports exactly one imaging path across all used cells."
+            )
+        imaging_path = next(iter(imaging_paths))
+        imaging_runtime = self._runtimes.get(imaging_path)
+        if imaging_runtime is None or imaging_runtime.session is None:
+            with self._online_analysis.lock:
+                self._online_analysis.conditions = conditions
+                self._online_analysis.cells_by_roi_name = {
+                    cell.roi_name: cell for cell in cells_by_key.values()
+                }
+                self._online_analysis.imaging_path = imaging_path
+                self._online_analysis.exp_id = tracking.exp_id
+                self._online_analysis.configured = False
+                self._online_analysis.last_error = f"Imaging path '{imaging_path}' is not launched."
+                self._online_analysis.clear_runtime_buffers()
+            self._stop_online_analysis_poller()
+            return
+
+        with self._online_analysis.lock:
+            channel = self._online_analysis.channel
+            roi_diameter_px = self._online_analysis.roi_diameter_px
+            history_length = self._online_analysis.history_length
+
+        roi_specs = [
+            {
+                "roi_name": cell.roi_name,
+                "label": cell.label,
+                "x_um": cell.x_um,
+                "y_um": cell.y_um,
+                "z_um": cell.z_um,
+            }
+            for cell in cells_by_key.values()
+        ]
+
+        lines = self.eval_matlab_command(
+            imaging_path,
+            build_configure_online_analysis_command(
+                imaging_runtime.path_config,
+                roi_specs,
+                channel=channel,
+                roi_diameter_px=roi_diameter_px,
+                history_length=history_length,
+            ),
+            prepend_preamble=False,
+        )
+        payload = self._extract_json_marker(lines, "ONLINE_ANALYSIS_CONFIG_JSON")
+        added = {
+            str(name)
+            for name in payload.get("added", [])
+            if isinstance(name, str)
+        }
+        if not added:
+            raise RuntimeError("ScanImage did not accept any online analysis ROIs.")
+
+        conditions_filtered: dict[int, OnlineAnalysisConditionState] = {}
+        cells_by_roi_name: dict[str, OnlineAnalysisCellState] = {}
+        for condition_index, condition in conditions.items():
+            filtered_roi_names = [roi_name for roi_name in condition.cell_roi_names if roi_name in added]
+            filtered_patterns = {
+                roi_name: patterns
+                for roi_name, patterns in condition.cell_patterns.items()
+                if roi_name in added
+            }
+            condition.cell_roi_names = filtered_roi_names
+            condition.cell_patterns = filtered_patterns
+            if condition.supported and not filtered_roi_names:
+                condition.supported = False
+                condition.reason = "No Online Analysis ROIs could be created for this condition."
+            conditions_filtered[condition_index] = condition
+
+        for cell in cells_by_key.values():
+            if cell.roi_name in added:
+                cells_by_roi_name[cell.roi_name] = cell
+
+        with self._online_analysis.lock:
+            self._online_analysis.conditions = conditions_filtered
+            self._online_analysis.cells_by_roi_name = cells_by_roi_name
+            self._online_analysis.imaging_path = imaging_path
+            self._online_analysis.exp_id = tracking.exp_id
+            self._online_analysis.configured = True
+            self._online_analysis.last_error = ""
+            self._online_analysis.current_condition_index = tracking.current_trial_index
+            self._online_analysis.clear_runtime_buffers()
+        self._start_online_analysis_poller()
+        self.signals.log_message.emit(
+            f"[online analysis] configured {len(cells_by_roi_name)} ROI(s) on {imaging_path}"
+        )
+
+    def _restore_online_analysis(self, clear_runtime: bool) -> None:
+        self._stop_online_analysis_poller()
+        imaging_path = ""
+        with self._online_analysis.lock:
+            imaging_path = self._online_analysis.imaging_path
+        if imaging_path:
+            runtime = self._runtimes.get(imaging_path)
+            if runtime is not None and runtime.session is not None:
+                try:
+                    self.eval_matlab_command(
+                        imaging_path,
+                        build_restore_online_analysis_command(runtime.path_config),
+                        prepend_preamble=False,
+                    )
+                except Exception as exc:
+                    self.signals.log_message.emit(f"[online analysis] restore warning: {exc}")
+        with self._online_analysis.lock:
+            self._online_analysis.configured = False
+            self._online_analysis.clear_runtime_buffers()
+            if clear_runtime:
+                self._online_analysis.conditions = {}
+                self._online_analysis.cells_by_roi_name = {}
+                self._online_analysis.imaging_path = ""
+                self._online_analysis.exp_id = ""
+                self._online_analysis.current_condition_index = None
+                self._online_analysis.last_error = ""
+
+    def _stop_online_analysis_poller(self) -> None:
+        with self._online_analysis.lock:
+            stop_event = self._online_analysis.poll_stop
+            thread = self._online_analysis.poll_thread
+            self._online_analysis.poll_stop = None
+            self._online_analysis.poll_thread = None
+        if stop_event is not None:
+            stop_event.set()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+
+    def _start_online_analysis_poller(self) -> None:
+        with self._online_analysis.lock:
+            if not self._online_analysis.enabled or not self._online_analysis.configured:
+                return
+            if self._online_analysis.poll_thread is not None and self._online_analysis.poll_thread.is_alive():
+                return
+            stop_event = threading.Event()
+            imaging_path = self._online_analysis.imaging_path
+            self._online_analysis.poll_stop = stop_event
+            thread = threading.Thread(
+                target=self._online_analysis_poll_loop,
+                args=(imaging_path, stop_event),
+                daemon=True,
+            )
+            self._online_analysis.poll_thread = thread
+        thread.start()
+
+    def _online_analysis_poll_loop(self, imaging_path: str, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            try:
+                self._poll_online_analysis_once(imaging_path)
+            except Exception as exc:
+                with self._online_analysis.lock:
+                    self._online_analysis.last_error = str(exc)
+                self.signals.log_message.emit(f"[online analysis] poll warning: {exc}")
+            stop_event.wait(0.5)
+
+    def _poll_online_analysis_once(self, imaging_path: str) -> None:
+        runtime = self._runtimes.get(imaging_path)
+        if runtime is None or runtime.session is None:
+            return
+        with self._online_analysis.lock:
+            last_cursors = list(self._online_analysis.last_cursors)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_online_analysis_delta_command(runtime.path_config, last_cursors),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+        payload = self._extract_json_marker(lines, "ONLINE_ANALYSIS_DELTA_JSON")
+        roi_names = [str(name) for name in payload.get("roi_names", [])]
+        cursors_raw = payload.get("cursors", [])
+        cursors = [int(value) for value in cursors_raw] if isinstance(cursors_raw, list) else []
+        values = payload.get("values", [])
+        timestamps = payload.get("timestamps", [])
+        frame_numbers = payload.get("frame_numbers", [])
+
+        with self._online_analysis.lock:
+            state = self._online_analysis
+            if state.roi_names_in_order and state.roi_names_in_order != roi_names:
+                state.clear_runtime_buffers()
+            if not state.roi_names_in_order:
+                state.roi_names_in_order = list(roi_names)
+
+            all_new_samples: list[tuple[str, OnlineAnalysisSample]] = []
+            for index, roi_name in enumerate(roi_names):
+                roi_values = values[index] if isinstance(values, list) and index < len(values) and isinstance(values[index], list) else []
+                roi_timestamps = (
+                    timestamps[index]
+                    if isinstance(timestamps, list) and index < len(timestamps) and isinstance(timestamps[index], list)
+                    else []
+                )
+                roi_frames = (
+                    frame_numbers[index]
+                    if isinstance(frame_numbers, list) and index < len(frame_numbers) and isinstance(frame_numbers[index], list)
+                    else []
+                )
+                sample_count = min(len(roi_values), len(roi_timestamps), len(roi_frames))
+                for sample_index in range(sample_count):
+                    timestamp = float(roi_timestamps[sample_index])
+                    frame_number = int(float(roi_frames[sample_index]))
+                    value = float(roi_values[sample_index])
+                    if timestamp <= 0 or frame_number <= 0:
+                        continue
+                    if frame_number <= state.last_frame_by_roi.get(roi_name, -1):
+                        continue
+                    sample = OnlineAnalysisSample(timestamp=timestamp, frame_number=frame_number, value=value)
+                    state.last_frame_by_roi[roi_name] = frame_number
+                    recent = state.recent_samples_by_roi.setdefault(roi_name, deque())
+                    recent.append(sample)
+                    all_new_samples.append((roi_name, sample))
+            state.last_cursors = cursors
+            self._trim_recent_samples_locked()
+            if all_new_samples:
+                all_new_samples.sort(key=lambda item: (item[1].timestamp, item[1].frame_number))
+                if state.active_trial is not None and state.active_trial.start_timestamp is None:
+                    state.active_trial.start_timestamp = all_new_samples[0][1].timestamp
+                    self._seed_active_trial_from_recent_locked(state.active_trial)
+                if state.active_trial is not None and state.active_trial.start_timestamp is not None:
+                    self._append_samples_to_active_trial_locked(all_new_samples)
+                    end_timestamp = state.active_trial.start_timestamp + state.post_s
+                    if all_new_samples[-1][1].timestamp >= end_timestamp:
+                        self._finalize_active_trial_locked()
+
+    def _trim_recent_samples_locked(self) -> None:
+        state = self._online_analysis
+        latest_timestamp = max(
+            (samples[-1].timestamp for samples in state.recent_samples_by_roi.values() if samples),
+            default=None,
+        )
+        if latest_timestamp is None:
+            return
+        keep_after = latest_timestamp - max(state.pre_s + state.post_s + 2.0, 10.0)
+        for samples in state.recent_samples_by_roi.values():
+            while samples and samples[0].timestamp < keep_after:
+                samples.popleft()
+
+    def _seed_active_trial_from_recent_locked(self, trial: OnlineAnalysisTrial) -> None:
+        if trial.start_timestamp is None:
+            return
+        state = self._online_analysis
+        condition = state.conditions.get(trial.condition_index)
+        if condition is None:
+            return
+        start_min = trial.start_timestamp - state.pre_s
+        for roi_name in condition.cell_roi_names:
+            seeded = [
+                sample
+                for sample in state.recent_samples_by_roi.get(roi_name, deque())
+                if start_min <= sample.timestamp <= trial.start_timestamp
+            ]
+            trial.samples_by_roi[roi_name] = list(seeded)
+
+    def _append_samples_to_active_trial_locked(
+        self,
+        new_samples: list[tuple[str, OnlineAnalysisSample]],
+    ) -> None:
+        trial = self._online_analysis.active_trial
+        if trial is None or trial.start_timestamp is None:
+            return
+        state = self._online_analysis
+        condition = state.conditions.get(trial.condition_index)
+        if condition is None:
+            return
+        end_timestamp = trial.start_timestamp + state.post_s
+        valid_roi_names = set(condition.cell_roi_names)
+        for roi_name, sample in new_samples:
+            if roi_name not in valid_roi_names:
+                continue
+            if sample.timestamp > end_timestamp:
+                continue
+            bucket = trial.samples_by_roi.setdefault(roi_name, [])
+            if bucket and bucket[-1].frame_number == sample.frame_number:
+                continue
+            bucket.append(sample)
+
+    def _finalize_active_trial_locked(self) -> None:
+        state = self._online_analysis
+        trial = state.active_trial
+        if trial is None:
+            return
+        state.completed_trials_by_condition.setdefault(trial.condition_index, []).append(trial)
+        state.completed_trials_by_condition[trial.condition_index] = state.completed_trials_by_condition[
+            trial.condition_index
+        ][-50:]
+        state.active_trial = None
+
+    def _mark_online_analysis_trial_start(self) -> None:
+        if not self.online_analysis_enabled():
+            return
+        tracking_runtime_name = self._online_analysis_tracking_runtime_name()
+        if not tracking_runtime_name:
+            return
+        runtime = self._runtimes.get(tracking_runtime_name)
+        if runtime is None:
+            return
+        condition_index = runtime.experiment_tracking.current_trial_index
+        if condition_index is None:
+            return
+        with self._online_analysis.lock:
+            state = self._online_analysis
+            state.current_condition_index = condition_index
+            condition = state.conditions.get(condition_index)
+            if condition is None or not condition.supported:
+                return
+            if state.active_trial is not None:
+                self._finalize_active_trial_locked()
+            ordinal = len(state.completed_trials_by_condition.get(condition_index, [])) + 1
+            state.active_trial = OnlineAnalysisTrial(condition_index=condition_index, ordinal=ordinal)
+
+    def _online_analysis_condition_label(self, index: int, condition_payload: dict[str, object]) -> str:
+        stimulus_id = condition_payload.get("stimulus_id")
+        if stimulus_id is None:
+            return f"Condition {index}"
+        return f"Condition {index} (stimulus_id={stimulus_id})"
+
+    def _extract_json_marker(self, lines: list[str], marker_name: str) -> dict[str, object]:
+        marker = False
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if marker:
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    return payload
+                raise ValueError(f"{marker_name} did not produce an object payload")
+            if line == marker_name:
+                marker = True
+        raise ValueError(f"Marker '{marker_name}' was not found in MATLAB output.")
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -1615,12 +2315,21 @@ class ScanImageControlWidget(QWidget):
 
     def _launch_path(self, path_name: str) -> None:
         self._ensure_session(path_name)
+        try:
+            self._configure_online_analysis_if_possible()
+        except Exception as exc:
+            self.signals.log_message.emit(f"[online analysis] launch hook warning: {exc}")
 
     def _stop_path(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
         self._cancel_software_trigger(path_name)
         self._cancel_waveform_monitor(path_name)
         self._stop_listener(path_name)
+        try:
+            if path_name == self._online_analysis.imaging_path:
+                self._restore_online_analysis(clear_runtime=False)
+        except Exception as exc:
+            self.signals.log_message.emit(f"[online analysis] stop hook warning: {exc}")
         with runtime.lock:
             if runtime.session is not None:
                 runtime.session.stop()
@@ -2310,6 +3019,10 @@ class ScanImageControlWidget(QWidget):
                 "stimulus_condition_count": len(stimulus_conditions),
             },
         )
+        try:
+            self._configure_online_analysis_if_possible()
+        except Exception as exc:
+            self.signals.log_message.emit(f"[online analysis] experiment update hook warning: {exc}")
 
     def _handle_start_trial_request(
         self,
@@ -2336,6 +3049,8 @@ class ScanImageControlWidget(QWidget):
             f"[{request_path_name}] current trial set to index={trial_index}"
             + (f" stimulus_id={selected_stimulus_id}" if selected_stimulus_id is not None else "")
         )
+        with self._online_analysis.lock:
+            self._online_analysis.current_condition_index = trial_index
 
         self._send_json_reply(
             request_path_name,
@@ -3153,6 +3868,10 @@ class ScanImageControlWidget(QWidget):
                 active, done = self._query_trial_waveform_status(path_name)
                 if active or not done:
                     started = True
+                    try:
+                        self._mark_online_analysis_trial_start()
+                    except Exception as exc:
+                        self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
                     break
                 time.sleep(0.02)
             if not started:
@@ -3342,6 +4061,10 @@ class ScanImageControlWidget(QWidget):
             else:
                 remaining_trigger_times_s = []
             self._fire_software_trigger(path_name)
+            try:
+                self._mark_online_analysis_trial_start()
+            except Exception as exc:
+                self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
             ready_position, ready_completed = self._wait_for_leading_park_advance(
                 path_name,
                 baseline_position,
