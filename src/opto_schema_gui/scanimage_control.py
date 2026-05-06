@@ -1006,7 +1006,7 @@ class ScanImageControlWidget(QWidget):
         return list(self._runtimes.keys())
 
     def _configure_online_analysis_for_tracking(self, tracking: ExperimentTrackingState) -> None:
-        project = self.project_provider()
+        project = self._online_analysis_project(tracking)
         sequence_names = list(project.sequences.keys())
 
         conditions: dict[int, OnlineAnalysisConditionState] = {}
@@ -1186,6 +1186,17 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit(
             f"[online analysis] configured {len(cells_by_roi_name)} ROI(s) on {imaging_path}"
         )
+
+    def _online_analysis_project(self, tracking: ExperimentTrackingState) -> ExperimentProject:
+        schema_path = self.schema_path_provider()
+        if schema_path is not None and schema_path.is_file():
+            try:
+                return load_schema(schema_path)
+            except Exception as exc:
+                self.signals.log_message.emit(
+                    f"[online analysis] warning: failed to load schema from '{schema_path}': {exc}"
+                )
+        return self.project_provider()
 
     def _restore_online_analysis(self, clear_runtime: bool) -> None:
         self._stop_online_analysis_poller()
