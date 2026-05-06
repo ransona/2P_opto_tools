@@ -536,6 +536,7 @@ class OnlineActivityWidget(QWidget):
         self.condition_combo = QComboBox()
         self.auto_jump_checkbox = QCheckBox("Auto-jump to current condition")
         self.auto_jump_checkbox.setChecked(True)
+        self.path_combo = QComboBox()
         self.channel_spin = QSpinBox()
         self.channel_spin.setRange(1, 8)
         self.roi_diameter_spin = QSpinBox()
@@ -554,6 +555,8 @@ class OnlineActivityWidget(QWidget):
         controls_row.addWidget(QLabel("Condition"))
         controls_row.addWidget(self.condition_combo, 1)
         controls_row.addWidget(self.auto_jump_checkbox)
+        controls_row.addWidget(QLabel("Path"))
+        controls_row.addWidget(self.path_combo)
         controls_row.addWidget(QLabel("Channel"))
         controls_row.addWidget(self.channel_spin)
         controls_row.addWidget(QLabel("ROI diameter px"))
@@ -581,6 +584,7 @@ class OnlineActivityWidget(QWidget):
         layout.addWidget(self.scroll_area, 1)
 
         self.condition_combo.currentIndexChanged.connect(self.refresh)
+        self.path_combo.currentIndexChanged.connect(self._push_settings)
         self.channel_spin.valueChanged.connect(self._push_settings)
         self.roi_diameter_spin.valueChanged.connect(self._push_settings)
         self.pre_spin.valueChanged.connect(self._push_settings)
@@ -594,7 +598,9 @@ class OnlineActivityWidget(QWidget):
     def _push_settings(self) -> None:
         if self._suppress_refresh:
             return
+        imaging_path = str(self.path_combo.currentData() or self.path_combo.currentText() or "").strip()
         self.scanimage_control.set_online_analysis_settings(
+            imaging_path=imaging_path,
             channel=self.channel_spin.value(),
             roi_diameter_px=self.roi_diameter_spin.value(),
             pre_s=self.pre_spin.value(),
@@ -617,6 +623,9 @@ class OnlineActivityWidget(QWidget):
         try:
             current_condition_index = snapshot.get("current_condition_index")
             conditions = list(snapshot.get("conditions", []))
+            available_paths = [str(path) for path in snapshot.get("available_imaging_paths", [])]
+            requested_path = str(snapshot.get("requested_imaging_path", "")).strip()
+            active_path = str(snapshot.get("imaging_path", "")).strip()
             desired_index = selected_condition
             if self.auto_jump_checkbox.isChecked() and current_condition_index is not None:
                 desired_index = int(current_condition_index)
@@ -639,6 +648,18 @@ class OnlineActivityWidget(QWidget):
             elif self.condition_combo.count():
                 self.condition_combo.setCurrentIndex(0)
             self.condition_combo.blockSignals(False)
+
+            selected_path = requested_path or active_path
+            self.path_combo.blockSignals(True)
+            self.path_combo.clear()
+            for path_name in available_paths:
+                self.path_combo.addItem(path_name, path_name)
+            path_index = self.path_combo.findData(selected_path) if selected_path else -1
+            if path_index >= 0:
+                self.path_combo.setCurrentIndex(path_index)
+            elif self.path_combo.count():
+                self.path_combo.setCurrentIndex(0)
+            self.path_combo.blockSignals(False)
 
             self.channel_spin.setValue(int(snapshot.get("channel", 1)))
             self.roi_diameter_spin.setValue(int(snapshot.get("roi_diameter_px", 11)))

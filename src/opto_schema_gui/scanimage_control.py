@@ -215,6 +215,7 @@ class OnlineAnalysisTrial:
 class OnlineAnalysisState:
     enabled: bool = False
     imaging_path: str = ""
+    requested_imaging_path: str = ""
     exp_id: str = ""
     configured: bool = False
     channel: int = 1
@@ -819,6 +820,7 @@ class ScanImageControlWidget(QWidget):
     def set_online_analysis_settings(
         self,
         *,
+        imaging_path: str | None = None,
         channel: int,
         roi_diameter_px: int,
         pre_s: float,
@@ -826,6 +828,10 @@ class ScanImageControlWidget(QWidget):
     ) -> None:
         reconfigure = False
         with self._online_analysis.lock:
+            normalized_path = (imaging_path or "").strip()
+            if normalized_path != self._online_analysis.requested_imaging_path:
+                self._online_analysis.requested_imaging_path = normalized_path
+                reconfigure = True
             if self._online_analysis.channel != int(channel):
                 self._online_analysis.channel = int(channel)
                 reconfigure = True
@@ -908,6 +914,8 @@ class ScanImageControlWidget(QWidget):
                 "configured": state.configured,
                 "exp_id": state.exp_id,
                 "imaging_path": state.imaging_path,
+                "requested_imaging_path": state.requested_imaging_path,
+                "available_imaging_paths": self._available_online_analysis_paths(),
                 "channel": state.channel,
                 "roi_diameter_px": state.roi_diameter_px,
                 "pre_s": state.pre_s,
@@ -977,22 +985,34 @@ class ScanImageControlWidget(QWidget):
         return ""
 
     def _default_online_analysis_imaging_path(self) -> str:
+        with self._online_analysis.lock:
+            requested = self._online_analysis.requested_imaging_path.strip()
+        if requested:
+            return requested
         if self.machine_config is not None:
+            if len(self.machine_config.launch_order) == 1:
+                return self.machine_config.launch_order[0]
             photostim_path = self.machine_config.photostim_path
             for path_name in self.machine_config.launch_order:
                 if path_name != photostim_path:
                     return path_name
+            if photostim_path:
+                return photostim_path
         return "P1"
+
+    def _available_online_analysis_paths(self) -> list[str]:
+        if self.machine_config is not None:
+            return list(self.machine_config.launch_order)
+        return list(self._runtimes.keys())
 
     def _configure_online_analysis_for_tracking(self, tracking: ExperimentTrackingState) -> None:
         project = self.project_provider()
         sequence_names = list(project.sequences.keys())
-        default_imaging_path = self._default_online_analysis_imaging_path()
 
         conditions: dict[int, OnlineAnalysisConditionState] = {}
         cells_by_key: dict[str, OnlineAnalysisCellState] = {}
         cell_key_to_roi_name: dict[str, str] = {}
-        imaging_paths: set[str] = set()
+        imaging_path = self._default_online_analysis_imaging_path()
 
         roi_counter = 1
         for index, condition_payload in enumerate(tracking.stimulus_conditions):
@@ -1047,8 +1067,6 @@ class ScanImageControlWidget(QWidget):
                     if roi_name is None:
                         roi_name = f"OA_{roi_counter:03d}"
                         roi_counter += 1
-                        imaging_path = (cell.origin_imaging_path or default_imaging_path).strip() or default_imaging_path
-                        imaging_paths.add(imaging_path)
                         cells_by_key[key] = OnlineAnalysisCellState(
                             roi_name=roi_name,
                             label=cell.label or roi_name,
@@ -1084,11 +1102,6 @@ class ScanImageControlWidget(QWidget):
             self._stop_online_analysis_poller()
             return
 
-        if len(imaging_paths) != 1:
-            raise ValueError(
-                "Online analysis currently supports exactly one imaging path across all used cells."
-            )
-        imaging_path = next(iter(imaging_paths))
         imaging_runtime = self._runtimes.get(imaging_path)
         if imaging_runtime is None or imaging_runtime.session is None:
             with self._online_analysis.lock:
