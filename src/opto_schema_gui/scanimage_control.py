@@ -1054,7 +1054,7 @@ class ScanImageControlWidget(QWidget):
                             label=cell.label or roi_name,
                             x_um=float(cell.x),
                             y_um=float(cell.y),
-                            z_um=float(cell.z),
+                            z_um=float(cell.origin_z_um if cell.origin_z_um is not None else cell.z),
                             origin=cell.origin or f"x={cell.x:g} y={cell.y:g} z={cell.z:g}",
                             imaging_path=imaging_path,
                             pattern_names=[],

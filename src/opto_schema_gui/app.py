@@ -148,6 +148,18 @@ def _unique_name(base: str, existing: dict[str, object]) -> str:
     return candidate
 
 
+def _lowest_available_numbered_name(prefix: str, existing: dict[str, object]) -> str:
+    used_numbers: set[int] = set()
+    for name in existing:
+        match = re.fullmatch(rf"{re.escape(prefix)}(\d+)", name)
+        if match is not None:
+            used_numbers.add(int(match.group(1)))
+    candidate = 1
+    while candidate in used_numbers:
+        candidate += 1
+    return f"{prefix}{candidate}"
+
+
 def _selected_or_last_row(table: QTableWidget) -> int | None:
     rows = sorted({index.row() for index in table.selectedIndexes()})
     if rows:
@@ -772,14 +784,16 @@ def _format_origin_from_scanfield(
     scanfield_index: int,
     x_px: float,
     y_px: float,
+    z_um: float | None = None,
 ) -> str:
     matched = next((scanfield for scanfield in scanfields if scanfield.index == scanfield_index), None)
     if matched is None:
         return ""
     plane_index = _scanfield_plane_index(scanfields, scanfield_index)
+    display_z_um = float(z_um) if z_um is not None else float(matched.z_um)
     return (
         f"{imaging_path} {matched.roi_folder_name} plane{plane_index} "
-        f"x={x_px:.1f} y={y_px:.1f} z={float(matched.z_um):g}"
+        f"x={x_px:.1f} y={y_px:.1f} z={display_z_um:g}"
     )
 
 
@@ -1170,13 +1184,17 @@ class ImagingPixelImportDialog(QDialog):
             y_px=self.y_spin.value(),
             imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
         )
+        matched_scanfield = self.bundle.scanfields[scanfield_index - 1]
+        imaging_path = self.imaging_path_combo.currentText().strip() or "P1"
+        plane_index = _scanfield_plane_index(self.bundle.scanfields, scanfield_index)
         label = self.label_edit.text().strip() or f"img_{exp_id}_{scanfield_index}"
         origin = self._resolved_origin or _format_origin_from_scanfield(
-            self.imaging_path_combo.currentText().strip() or "P1",
+            imaging_path,
             self.bundle.scanfields,
             scanfield_index,
             self.x_spin.value(),
             self.y_spin.value(),
+            result.z_um,
         )
         cell = CellSpec(
             label=label,
@@ -1184,13 +1202,13 @@ class ImagingPixelImportDialog(QDialog):
             y=result.y_um,
             z=result.z_um,
             origin=origin,
-            origin_exp_id=exp_id if self._resolved_processed_cell_id is not None else "",
+            origin_exp_id=exp_id,
             origin_user_id=self.parent().project.origin_user_id if hasattr(self.parent(), "project") and self._resolved_processed_cell_id is not None else "",
             origin_processed_cell_id=self._resolved_processed_cell_id,
-            origin_imaging_path=self._resolved_imaging_path,
-            origin_roi_folder_name=self._resolved_roi_folder_name,
-            origin_plane_index=self._resolved_plane_index,
-            origin_z_um=result.z_um if self._resolved_processed_cell_id is not None else None,
+            origin_imaging_path=self._resolved_imaging_path or imaging_path,
+            origin_roi_folder_name=self._resolved_roi_folder_name or matched_scanfield.roi_folder_name,
+            origin_plane_index=self._resolved_plane_index if self._resolved_plane_index is not None else plane_index,
+            origin_z_um=result.plane_z_um,
         )
         return exp_id, cell, result.source, result.note
 
@@ -1294,7 +1312,7 @@ class ProcessedCellGroupImportDialog(QDialog):
                         origin_imaging_path=resolved.imaging_path,
                         origin_roi_folder_name=resolved.roi_folder_name,
                         origin_plane_index=resolved.plane_index,
-                        origin_z_um=resolved.z_um,
+                        origin_z_um=resolved.plane_z_um,
                     )
                 )
                 detail_lines.append(f"cell {processed_cell_id}: {resolved.origin}")
@@ -1495,7 +1513,10 @@ class AddCellsFromFovDialog(QDialog):
         self.plane_combo.blockSignals(True)
         self.plane_combo.clear()
         for group in candidates:
-            self.plane_combo.addItem(f"plane{group.plane_index} (z={group.z_um:g})", group.plane_index)
+            self.plane_combo.addItem(
+                f"plane{group.plane_index} (z={group.z_um:.1f}, true z {group.true_z_start_um:.1f}:{group.true_z_end_um:.1f})",
+                group.plane_index,
+            )
         self.plane_combo.blockSignals(False)
         self._refresh_images()
 
@@ -1578,7 +1599,7 @@ class AddCellsFromFovDialog(QDialog):
                 origin_imaging_path=resolved.imaging_path,
                 origin_roi_folder_name=resolved.roi_folder_name,
                 origin_plane_index=resolved.plane_index,
-                origin_z_um=resolved.z_um,
+                origin_z_um=resolved.plane_z_um,
             )
         except Exception as exc:
             QMessageBox.warning(self, "Failed to resolve clicked cell", str(exc))
@@ -3137,7 +3158,7 @@ class MainWindow(QMainWindow):
             self.preview.set_sequence(name)
 
     def add_pattern(self) -> None:
-        name = _unique_name("pattern", self.project.patterns)
+        name = _lowest_available_numbered_name("P", self.project.patterns)
         self.project.patterns[name] = Pattern(
             name=name,
             duration_s=1.0,
@@ -3203,7 +3224,7 @@ class MainWindow(QMainWindow):
         self.refresh_lists()
 
     def add_sequence(self) -> None:
-        name = _unique_name("sequence", self.project.sequences)
+        name = _lowest_available_numbered_name("S", self.project.sequences)
         self.project.sequences[name] = Sequence(name=name)
         self.sequence_dirty = True
         self.refresh_lists()

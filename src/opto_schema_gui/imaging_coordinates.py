@@ -27,6 +27,12 @@ class ScanfieldChoice:
 
 
 @dataclass(frozen=True)
+class ZRangeSummary:
+    z_start_um: float
+    z_end_um: float
+
+
+@dataclass(frozen=True)
 class MetadataBundle:
     source: str
     exp_dir: Path
@@ -39,6 +45,7 @@ class ConvertedPatternCoordinate:
     x_um: float
     y_um: float
     z_um: float
+    plane_z_um: float
     source: str
     note: str
     exp_dir: Path
@@ -58,6 +65,7 @@ class ResolvedProcessedCell:
     x_px: float
     y_px: float
     z_um: float
+    plane_z_um: float
     scanfield_index: int
     scanfield_label: str
     origin: str
@@ -90,6 +98,8 @@ class ProcessedFovGroup:
     plane_index: int
     depth_value: int
     z_um: float
+    true_z_start_um: float
+    true_z_end_um: float
     mean_image: np.ndarray
     roi_map: np.ndarray
     processed_cell_ids: tuple[int, ...]
@@ -153,6 +163,7 @@ def convert_imaging_pixel_to_pattern_coords(
 
     scanfield = bundle.scanfields[scanfield_index - 1]
     x_ref, y_ref = _pixel_zero_based_to_ref_xy(scanfield, x_px, y_px)
+    z_um = _pixel_zero_based_to_photostim_z_um(bundle, scanfield, x_px, y_px)
 
     objective_resolution = _normalize_resolution_xy(_load_objective_resolution_um_per_ref(photostim_config))
     x_um = float(x_ref * objective_resolution[0])
@@ -162,12 +173,16 @@ def convert_imaging_pixel_to_pattern_coords(
     if bundle.note:
         notes.append(bundle.note)
     if len(bundle.scanfields) > 1:
-        notes.append("Fast-Z / multi-plane conversion returns nominal plane Z only.")
+        notes.append(
+            "Fast-Z / multi-plane conversion computes photostim Z from continuous volume scan order; "
+            "nominal plane Z is retained separately for ScanImage plane-based uses."
+        )
 
     return ConvertedPatternCoordinate(
         x_um=x_um,
         y_um=y_um,
-        z_um=float(scanfield.z_um),
+        z_um=float(z_um),
+        plane_z_um=float(scanfield.z_um),
         source=bundle.source,
         note=" ".join(notes).strip(),
         exp_dir=bundle.exp_dir,
@@ -244,14 +259,19 @@ def resolve_processed_cell_to_imaging_pixel(
     )
     scanfield = bundle.scanfields[scanfield_index - 1]
     plane_index = _scanfield_plane_index(bundle, scanfield)
+    actual_z_um = _pixel_zero_based_to_photostim_z_um(bundle, scanfield, x_px, y_px)
+    z_range = _scanfield_true_z_range(bundle, scanfield)
     origin = (
         f"{imaging_path} {roi_folder_name} plane{plane_index} "
-        f"x={x_px:.1f} y={y_px:.1f} z={float(scanfield.z_um):g}"
+        f"x={x_px:.1f} y={y_px:.1f} z={float(actual_z_um):.1f}"
     )
 
     debug_lines = processed_debug_lines + [
         f"Matched scanfield: {scanfield.label}",
         f"Resolved plane index: {plane_index}",
+        f"Resolved nominal plane z: {float(scanfield.z_um):.1f}",
+        f"Resolved true z range for plane: {float(z_range.z_start_um):.1f}..{float(z_range.z_end_um):.1f}",
+        f"Resolved photostim z: {float(actual_z_um):.1f}",
         f"Resolved origin: {origin}",
     ]
 
@@ -266,7 +286,8 @@ def resolve_processed_cell_to_imaging_pixel(
         local_cell_index=local_cell_index,
         x_px=x_px,
         y_px=y_px,
-        z_um=float(scanfield.z_um),
+        z_um=float(actual_z_um),
+        plane_z_um=float(scanfield.z_um),
         scanfield_index=scanfield_index,
         scanfield_label=scanfield.label,
         origin=origin,
@@ -323,7 +344,7 @@ def load_processed_cell_overlay(
         y_px=y_px,
         title=(
             f"{resolved_imaging_path} {resolved_roi_folder_name} "
-            f"plane{int(resolved_plane_index)} z={resolved_z_um:g} "
+            f"plane{int(resolved_plane_index)} z={resolved_z_um:.1f} "
             f"cell {processed_cell_id}"
         ),
     )
@@ -399,6 +420,7 @@ def list_processed_fov_groups(
         )
         scanfield = bundle.scanfields[scanfield_index - 1]
         plane_index = _scanfield_plane_index(bundle, scanfield)
+        z_range = _scanfield_true_z_range(bundle, scanfield)
         result.append(
             ProcessedFovGroup(
                 exp_id=exp_id,
@@ -409,10 +431,15 @@ def list_processed_fov_groups(
                 plane_index=plane_index,
                 depth_value=int(depth_value),
                 z_um=float(scanfield.z_um),
+                true_z_start_um=float(z_range.z_start_um),
+                true_z_end_um=float(z_range.z_end_um),
                 mean_image=_lookup_processed_fov_image(processed_data, first_id, default_imaging_path),
                 roi_map=_lookup_processed_roi_map(processed_data, first_id, default_imaging_path),
                 processed_cell_ids=tuple(processed_cell_ids),
-                title=f"{imaging_path} {roi_folder_name} plane{plane_index} z={float(scanfield.z_um):g}",
+                title=(
+                    f"{imaging_path} {roi_folder_name} plane{plane_index} "
+                    f"z={float(scanfield.z_um):.1f} true z {float(z_range.z_start_um):.1f}:{float(z_range.z_end_um):.1f}"
+                ),
             )
         )
     return tuple(result)
@@ -761,7 +788,7 @@ def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | 
     if not isinstance(rois, list):
         return None
 
-    scanfields: list[ScanfieldChoice] = []
+    scanfield_rows: list[dict[str, object]] = []
     for roi_idx, roi in enumerate(rois, start=1):
         if not isinstance(roi, dict):
             continue
@@ -785,25 +812,54 @@ def _load_scanfields_from_roi_file(path: Path) -> tuple[ScanfieldChoice, ...] | 
             else:
                 z_values = [_safe_float(scanfield.get("scanfieldZ"), default=0.0)]
             for plane_index, z_um in enumerate(z_values):
-                index = len(scanfields) + 1
-                plane_suffix = f" / plane{plane_index}" if len(z_values) > 1 else ""
-                scanfields.append(
-                    ScanfieldChoice(
-                        index=index,
-                        label=(
-                            f"{index}: {roi_folder_name} / {roi_name}{plane_suffix} / "
-                            f"{scanfield_name} / z={z_um:g} um / {pixel_resolution[0]}x{pixel_resolution[1]}"
-                        ),
-                        roi_name=roi_name,
-                        roi_folder_name=roi_folder_name,
-                        scanfield_name=scanfield_name,
-                        z_um=float(z_um),
-                        pixel_resolution_xy=pixel_resolution,
-                        pixel_to_ref_transform=transform,
-                    )
+                scanfield_rows.append(
+                    {
+                        "roi_name": roi_name,
+                        "roi_folder_name": roi_folder_name,
+                        "scanfield_name": scanfield_name,
+                        "z_um": float(z_um),
+                        "pixel_resolution_xy": pixel_resolution,
+                        "pixel_to_ref_transform": transform,
+                        "plane_index": plane_index,
+                        "plane_count": len(z_values),
+                    }
                 )
+    if not scanfield_rows:
+        return None
 
-    return tuple(scanfields) if scanfields else None
+    scanfields: list[ScanfieldChoice] = []
+    for index, row in enumerate(scanfield_rows, start=1):
+        provisional = ScanfieldChoice(
+            index=index,
+            label="",
+            roi_name=str(row["roi_name"]),
+            roi_folder_name=str(row["roi_folder_name"]),
+            scanfield_name=str(row["scanfield_name"]),
+            z_um=float(row["z_um"]),
+            pixel_resolution_xy=tuple(row["pixel_resolution_xy"]),
+            pixel_to_ref_transform=np.asarray(row["pixel_to_ref_transform"], dtype=float),
+        )
+        z_range = _scanfield_true_z_range_for_display(scanfield_rows, provisional)
+        plane_suffix = f" / plane{int(row['plane_index'])}" if int(row["plane_count"]) > 1 else ""
+        label = (
+            f"{index}: {provisional.roi_folder_name} / {provisional.roi_name}{plane_suffix} / "
+            f"{provisional.scanfield_name} / z={provisional.z_um:.1f} um / "
+            f"true z {z_range.z_start_um:.1f}:{z_range.z_end_um:.1f} um / "
+            f"{provisional.pixel_resolution_xy[0]}x{provisional.pixel_resolution_xy[1]}"
+        )
+        scanfields.append(
+            ScanfieldChoice(
+                index=index,
+                label=label,
+                roi_name=provisional.roi_name,
+                roi_folder_name=provisional.roi_folder_name,
+                scanfield_name=provisional.scanfield_name,
+                z_um=provisional.z_um,
+                pixel_resolution_xy=provisional.pixel_resolution_xy,
+                pixel_to_ref_transform=provisional.pixel_to_ref_transform,
+            )
+        )
+    return tuple(scanfields)
 
 
 def _load_scanfields_from_tiff_header(path: Path) -> tuple[ScanfieldChoice, ...] | None:
@@ -878,11 +934,7 @@ def _load_stack_relative_zs(exp_dir: Path) -> list[float]:
     raw_zs = state.get("SI.hStackManager.zsRelative")
     if raw_zs is None:
         raw_zs = state.get("SI.hStackManager.zs")
-    z_values = _flatten_numeric_values(raw_zs)
-    if len(z_values) <= 1:
-        return z_values
-    top_z = min(z_values)
-    return [float(value - top_z) for value in z_values]
+    return _flatten_numeric_values(raw_zs)
 
 
 def _flatten_numeric_values(raw: object) -> list[float]:
@@ -1080,6 +1132,100 @@ def _pixel_zero_based_to_ref_xy(scanfield: ScanfieldChoice, x_px: float, y_px: f
     if abs(ref_h[2]) < 1e-12:
         raise ValueError("Pixel-to-reference transform produced an invalid homogeneous coordinate.")
     return (float(ref_h[0] / ref_h[2]), float(ref_h[1] / ref_h[2]))
+
+
+def _pixel_zero_based_to_photostim_z_um(
+    bundle: MetadataBundle,
+    scanfield: ScanfieldChoice,
+    x_px: float,
+    y_px: float,
+) -> float:
+    ordered = _ordered_volume_scanfields(bundle)
+    if len(ordered) <= 1:
+        return float(scanfield.z_um)
+
+    height_px = int(scanfield.pixel_resolution_xy[1])
+    y_clamped = min(max(float(y_px), 0.0), max(0.0, height_px - 1.0))
+    cumulative_lines = 0.0
+    matched = False
+    for candidate in ordered:
+        candidate_height = int(candidate.pixel_resolution_xy[1])
+        if candidate.index == scanfield.index and candidate.roi_folder_name == scanfield.roi_folder_name:
+            matched = True
+            break
+        cumulative_lines += max(1, candidate_height)
+    if not matched:
+        return float(scanfield.z_um)
+
+    total_lines = float(sum(max(1, int(candidate.pixel_resolution_xy[1])) for candidate in ordered))
+    if total_lines <= 1.0:
+        fraction = 0.0
+    else:
+        fraction = (cumulative_lines + y_clamped) / (total_lines - 1.0)
+    top_z = float(min(candidate.z_um for candidate in ordered))
+    bottom_z = float(max(candidate.z_um for candidate in ordered))
+    return top_z + fraction * (bottom_z - top_z)
+
+
+def _roi_folder_sort_key(roi_folder_name: str) -> tuple[int, str]:
+    match = re.fullmatch(r"R(\d+)", roi_folder_name.strip())
+    if match is not None:
+        return (int(match.group(1)), roi_folder_name)
+    return (10**9, roi_folder_name)
+
+
+def _ordered_volume_scanfields(bundle: MetadataBundle) -> list[ScanfieldChoice]:
+    return sorted(
+        bundle.scanfields,
+        key=lambda candidate: (
+            _scanfield_plane_index(bundle, candidate),
+            _roi_folder_sort_key(candidate.roi_folder_name),
+        ),
+    )
+
+
+def _scanfield_true_z_range(bundle: MetadataBundle, scanfield: ScanfieldChoice) -> ZRangeSummary:
+    ordered = _ordered_volume_scanfields(bundle)
+    if len(ordered) <= 1:
+        return ZRangeSummary(float(scanfield.z_um), float(scanfield.z_um))
+    cumulative_lines = 0.0
+    matched_height = None
+    for candidate in ordered:
+        candidate_height = max(1, int(candidate.pixel_resolution_xy[1]))
+        if candidate.index == scanfield.index and candidate.roi_folder_name == scanfield.roi_folder_name:
+            matched_height = candidate_height
+            break
+        cumulative_lines += candidate_height
+    if matched_height is None:
+        return ZRangeSummary(float(scanfield.z_um), float(scanfield.z_um))
+    total_lines = float(sum(max(1, int(candidate.pixel_resolution_xy[1])) for candidate in ordered))
+    top_z = float(min(candidate.z_um for candidate in ordered))
+    bottom_z = float(max(candidate.z_um for candidate in ordered))
+    if total_lines <= 1.0:
+        return ZRangeSummary(top_z, top_z)
+    z_start = top_z + (cumulative_lines / (total_lines - 1.0)) * (bottom_z - top_z)
+    z_end = top_z + ((cumulative_lines + matched_height - 1.0) / (total_lines - 1.0)) * (bottom_z - top_z)
+    return ZRangeSummary(float(z_start), float(z_end))
+
+
+def _scanfield_true_z_range_for_display(
+    rows: list[dict[str, object]],
+    scanfield: ScanfieldChoice,
+) -> ZRangeSummary:
+    bundle = MetadataBundle(source="", exp_dir=Path("."), scanfields=tuple(
+        ScanfieldChoice(
+            index=index,
+            label="",
+            roi_name=str(row["roi_name"]),
+            roi_folder_name=str(row["roi_folder_name"]),
+            scanfield_name=str(row["scanfield_name"]),
+            z_um=float(row["z_um"]),
+            pixel_resolution_xy=tuple(row["pixel_resolution_xy"]),
+            pixel_to_ref_transform=np.asarray(row["pixel_to_ref_transform"], dtype=float),
+        )
+        for index, row in enumerate(rows, start=1)
+    ))
+    return _scanfield_true_z_range(bundle, scanfield)
 
 
 def _load_objective_resolution_um_per_ref(path_config) -> object:
