@@ -2982,6 +2982,8 @@ class MainWindow(QMainWindow):
         self.sequence_list = QListWidget()
         self.pattern_list.currentItemChanged.connect(self._pattern_selected)
         self.sequence_list.currentItemChanged.connect(self._sequence_selected)
+        self.pattern_list.itemClicked.connect(self._pattern_clicked)
+        self.sequence_list.itemClicked.connect(self._sequence_clicked)
 
         self.gui_control_config = _load_gui_control_config()
         self.gui_control_signals = GuiControlSignals()
@@ -3481,10 +3483,27 @@ class MainWindow(QMainWindow):
             self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
             self.pattern_editor.load_pattern(name)
 
+    def _pattern_clicked(self, item: QListWidgetItem) -> None:
+        if self._suppress_selection_load or item is None:
+            return
+        name = self._item_name(item)
+        if name in self.project.patterns:
+            self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
+            self.pattern_editor.load_pattern(name)
+
     def _sequence_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:  # noqa: ARG002
         if self._suppress_selection_load or not current:
             return
         name = self._item_name(current)
+        if name in self.project.sequences:
+            self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
+            self.sequence_editor.load_sequence(name)
+            self.preview.set_sequence(name)
+
+    def _sequence_clicked(self, item: QListWidgetItem) -> None:
+        if self._suppress_selection_load or item is None:
+            return
+        name = self._item_name(item)
         if name in self.project.sequences:
             self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
             self.sequence_editor.load_sequence(name)
