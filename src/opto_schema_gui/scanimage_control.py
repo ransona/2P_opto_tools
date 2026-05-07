@@ -1200,13 +1200,6 @@ class ScanImageControlWidget(QWidget):
                 emit_log=False,
             )
         self._start_online_analysis_poller()
-        self.signals.log_message.emit(
-            f"[online analysis] configured {len(cells_by_roi_name)} ROI(s) on {imaging_path}"
-        )
-        supported_condition_count = sum(1 for condition in conditions_filtered.values() if condition.supported)
-        self.signals.log_message.emit(
-            f"[online analysis] conditions={len(conditions_filtered)} supported={supported_condition_count} current_condition_index={tracking.current_trial_index}"
-        )
 
     def _online_analysis_project(self, tracking: ExperimentTrackingState) -> ExperimentProject:
         tracking_runtime_name = self._online_analysis_tracking_runtime_name()
@@ -1254,31 +1247,18 @@ class ScanImageControlWidget(QWidget):
         with self._online_analysis.lock:
             stop_event = self._online_analysis.poll_stop
             thread = self._online_analysis.poll_thread
-            imaging_path = self._online_analysis.imaging_path
             self._online_analysis.poll_stop = None
             self._online_analysis.poll_thread = None
         if stop_event is not None:
-            self.signals.log_message.emit(
-                f"[online analysis] stopping poller on {imaging_path or 'unknown'}"
-            )
             stop_event.set()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
-            self.signals.log_message.emit(
-                f"[online analysis] poller stopped on {imaging_path or 'unknown'} alive={thread.is_alive()}"
-            )
 
     def _start_online_analysis_poller(self) -> None:
         with self._online_analysis.lock:
             if not self._online_analysis.enabled or not self._online_analysis.configured:
-                self.signals.log_message.emit(
-                    "[online analysis] poller start skipped because online analysis is disabled or not configured"
-                )
                 return
             if self._online_analysis.poll_thread is not None and self._online_analysis.poll_thread.is_alive():
-                self.signals.log_message.emit(
-                    f"[online analysis] poller already running on {self._online_analysis.imaging_path or 'unknown'}"
-                )
                 return
             stop_event = threading.Event()
             imaging_path = self._online_analysis.imaging_path
@@ -1289,15 +1269,9 @@ class ScanImageControlWidget(QWidget):
                 daemon=True,
             )
             self._online_analysis.poll_thread = thread
-            self.signals.log_message.emit(
-                f"[online analysis] starting poller on {imaging_path or 'unknown'}"
-            )
         thread.start()
 
     def _online_analysis_poll_loop(self, imaging_path: str, stop_event: threading.Event) -> None:
-        self.signals.log_message.emit(
-            f"[online analysis] poll loop entered on {imaging_path or 'unknown'}"
-        )
         while not stop_event.is_set():
             try:
                 self._poll_online_analysis_once(imaging_path)
@@ -1306,23 +1280,14 @@ class ScanImageControlWidget(QWidget):
                     self._online_analysis.last_error = str(exc)
                 self.signals.log_message.emit(f"[online analysis] poll warning: {exc}")
             stop_event.wait(0.5)
-        self.signals.log_message.emit(
-            f"[online analysis] poll loop exiting on {imaging_path or 'unknown'}"
-        )
 
     def _poll_online_analysis_once(self, imaging_path: str) -> None:
         runtime = self._runtimes.get(imaging_path)
         if runtime is None or runtime.session is None:
-            self.signals.log_message.emit(
-                f"[online analysis] poll skipped because runtime '{imaging_path}' is unavailable"
-            )
             return
         poll_received_monotonic = time.monotonic()
         with self._online_analysis.lock:
             last_cursors = list(self._online_analysis.last_cursors)
-        self.signals.log_message.emit(
-            f"[online analysis] poll requesting delta on {imaging_path} with last_cursors={last_cursors}"
-        )
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
@@ -1369,9 +1334,6 @@ class ScanImageControlWidget(QWidget):
                     f"roi_order_changed previous={previous_order} new={roi_names}",
                     emit_log=False,
                 )
-                self.signals.log_message.emit(
-                    f"[online analysis] cleared runtime buffers because ROI order changed from {previous_order} to {roi_names}"
-                )
             if not state.roi_names_in_order:
                 state.roi_names_in_order = list(roi_names)
 
@@ -1417,21 +1379,6 @@ class ScanImageControlWidget(QWidget):
                     accepted_by_roi[roi_name] = accepted_by_roi.get(roi_name, 0) + 1
             state.last_cursors = cursors
             self._trim_recent_samples_locked()
-            self.signals.log_message.emit(
-                f"[online analysis] poll response roi_names={roi_names} cursors={cursors} "
-                f"raw={total_raw_samples} accepted={len(all_new_samples)} "
-                f"skipped_nonpositive={skipped_nonpositive} skipped_old_frame={skipped_old_frame} "
-                f"accepted_by_roi={accepted_by_roi}"
-            )
-            if total_raw_samples or all_new_samples:
-                active_trial_condition = state.active_trial.condition_index if state.active_trial is not None else None
-                active_trial_ordinal = state.active_trial.ordinal if state.active_trial is not None else None
-                self.signals.log_message.emit(
-                    f"[online analysis] poll raw={total_raw_samples} accepted={len(all_new_samples)} "
-                    f"skipped_nonpositive={skipped_nonpositive} skipped_old_frame={skipped_old_frame} "
-                    f"active_condition={active_trial_condition} active_ordinal={active_trial_ordinal} "
-                    f"accepted_by_roi={accepted_by_roi}"
-                )
             if all_new_samples:
                 all_new_samples.sort(key=lambda item: (item[1].timestamp, item[1].frame_number))
                 if state.active_trial is not None and state.active_trial.start_timestamp is None:
@@ -1440,31 +1387,8 @@ class ScanImageControlWidget(QWidget):
                         estimated_start_timestamp = all_new_samples[0][1].timestamp
                     state.active_trial.start_timestamp = estimated_start_timestamp
                     self._seed_active_trial_from_recent_locked(state.active_trial)
-                    seeded_counts = {
-                        roi_name: len(samples)
-                        for roi_name, samples in state.active_trial.samples_by_roi.items()
-                    }
-                    self.signals.log_message.emit(
-                        f"[online analysis] active trial started condition={state.active_trial.condition_index} "
-                        f"ordinal={state.active_trial.ordinal} start_t={state.active_trial.start_timestamp:.6f} "
-                        f"seeded={seeded_counts}"
-                    )
                 if state.active_trial is not None and state.active_trial.start_timestamp is not None:
-                    before_counts = {
-                        roi_name: len(state.active_trial.samples_by_roi.get(roi_name, []))
-                        for roi_name in state.conditions.get(state.active_trial.condition_index, OnlineAnalysisConditionState(index=-1, label='')).cell_roi_names
-                    }
                     self._append_samples_to_active_trial_locked(all_new_samples)
-                    after_counts = {
-                        roi_name: len(state.active_trial.samples_by_roi.get(roi_name, []))
-                        for roi_name in state.conditions.get(state.active_trial.condition_index, OnlineAnalysisConditionState(index=-1, label='')).cell_roi_names
-                    }
-                    if after_counts != before_counts:
-                        self.signals.log_message.emit(
-                            f"[online analysis] appended {len(all_new_samples)} sample(s) to active trial "
-                            f"condition={state.active_trial.condition_index} ordinal={state.active_trial.ordinal} "
-                            f"counts={after_counts}"
-                        )
                     end_timestamp = state.active_trial.start_timestamp + state.post_s
                     if all_new_samples[-1][1].timestamp >= end_timestamp:
                         self._finalize_active_trial_locked()
@@ -1544,17 +1468,10 @@ class ScanImageControlWidget(QWidget):
         trial = state.active_trial
         if trial is None:
             return
-        sample_counts = {
-            roi_name: len(samples)
-            for roi_name, samples in trial.samples_by_roi.items()
-        }
         state.completed_trials_by_condition.setdefault(trial.condition_index, []).append(trial)
         state.completed_trials_by_condition[trial.condition_index] = state.completed_trials_by_condition[
             trial.condition_index
         ][-50:]
-        self.signals.log_message.emit(
-            f"[online analysis] finalized trial condition={trial.condition_index} ordinal={trial.ordinal} sample_counts={sample_counts}"
-        )
         state.active_trial = None
 
     def _clear_online_analysis_runtime_buffers_locked(self, reason: str, emit_log: bool = True) -> None:
@@ -1580,10 +1497,6 @@ class ScanImageControlWidget(QWidget):
             f"active_trial={active_trial_summary}"
         )
         state.clear_runtime_buffers()
-        if emit_log:
-            self.signals.log_message.emit(
-                f"[online analysis] cleared runtime buffers reason={reason} {summary}"
-            )
 
     def _mark_online_analysis_trial_start(self) -> None:
         if not self.online_analysis_enabled():
@@ -1602,9 +1515,6 @@ class ScanImageControlWidget(QWidget):
             state.current_condition_index = condition_index
             condition = state.conditions.get(condition_index)
             if condition is None or not condition.supported:
-                self.signals.log_message.emit(
-                    f"[online analysis] trial-start ignored condition={condition_index} supported={False if condition is None else condition.supported}"
-                )
                 return
             if state.active_trial is not None:
                 self._finalize_active_trial_locked()
@@ -1619,22 +1529,6 @@ class ScanImageControlWidget(QWidget):
             if estimated_start_timestamp is not None:
                 state.active_trial.start_timestamp = estimated_start_timestamp
                 self._seed_active_trial_from_recent_locked(state.active_trial)
-                seeded_counts = {
-                    roi_name: len(samples)
-                    for roi_name, samples in state.active_trial.samples_by_roi.items()
-                }
-                self.signals.log_message.emit(
-                    f"[online analysis] trial trigger aligned condition={condition_index} ordinal={ordinal} "
-                    f"start_t={estimated_start_timestamp:.6f} seeded={seeded_counts}"
-                )
-            else:
-                self.signals.log_message.emit(
-                    f"[online analysis] trial trigger queued condition={condition_index} ordinal={ordinal} "
-                    f"host_t={trigger_host_monotonic:.6f}"
-                )
-            self.signals.log_message.emit(
-                f"[online analysis] opened active trial condition={condition_index} ordinal={ordinal} roi_count={len(condition.cell_roi_names)}"
-            )
 
     def _online_analysis_condition_label(self, index: int, condition_payload: dict[str, object]) -> str:
         stimulus_id = condition_payload.get("stimulus_id")
