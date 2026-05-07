@@ -3629,6 +3629,15 @@ class MainWindow(QMainWindow):
                 widget.setCurrentItem(item)
                 return
 
+    def _apply_project_path_context(self, schema_path: str) -> None:
+        path = Path(schema_path).resolve()
+        project_dir = path.parent
+        animal_dir = project_dir.parent
+        if project_dir.name:
+            self.project_edit.setText(project_dir.name)
+        if animal_dir.name:
+            self.animal_edit.setText(animal_dir.name)
+
     def new_project(self) -> None:
         if self.project_dirty or self.pattern_dirty or self.sequence_dirty:
             choice = QMessageBox.question(
@@ -3693,6 +3702,7 @@ class MainWindow(QMainWindow):
             self.sequence_editor.project = self.project
             self.preview.project = self.project
             self.schema_file_path = path
+            self._apply_project_path_context(path)
             self.pattern_editor.current_name = ""
             self.sequence_editor.current_name = ""
             self.pattern_editor.clear_form()
