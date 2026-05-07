@@ -792,13 +792,15 @@ def build_schema_payload_load_command(
 def build_prepare_schema_photostim_command(
     path_config: PathConfig,
     seq_num: int,
+    trial_seq_nums: list[int],
     schema_var_name: str = "schemaData",
 ) -> str:
+    trial_seq_nums_expr = "[]" if not trial_seq_nums else "[" + " ".join(str(int(v)) for v in trial_seq_nums) + "]"
     lines = [
         build_global_preamble(path_config),
         f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, {schema_var_name}, ...",
         f"    SequenceIndex={seq_num}, ...",
-        "    RepeatPreparedSequenceCount=3, ...",
+        f"    TrialSequenceIndices={trial_seq_nums_expr}, ...",
         "    PreStimPauseDuration=0.001, ...",
         "    BlankDuration=0.001, ...",
         "    ParkDuration=0.001, ...",

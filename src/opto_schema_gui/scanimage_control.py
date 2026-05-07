@@ -143,6 +143,7 @@ class ExperimentTrackingState:
     schema_name: str = ""
     params: dict[str, object] = field(default_factory=dict)
     stimulus_conditions: list[dict[str, object]] = field(default_factory=list)
+    trial_condition_indices: list[int] = field(default_factory=list)
     current_trial_index: int | None = None
     current_stimulus_condition: dict[str, object] | None = None
 
@@ -151,6 +152,7 @@ class ExperimentTrackingState:
         self.schema_name = ""
         self.params = {}
         self.stimulus_conditions = []
+        self.trial_condition_indices = []
         self.current_trial_index = None
         self.current_stimulus_condition = None
 
@@ -1015,6 +1017,34 @@ class ScanImageControlWidget(QWidget):
             return list(self.machine_config.launch_order)
         return list(self._runtimes.keys())
 
+    def _condition_opto_seq_num(
+        self,
+        condition_payload: dict[str, object],
+        sequence_count: int,
+    ) -> tuple[int | None, str]:
+        features = condition_payload.get("features")
+        if not isinstance(features, list):
+            return None, "Condition does not contain a valid feature list."
+        opto_features = [
+            feature
+            for feature in features
+            if isinstance(feature, dict)
+            and str(feature.get("name", "")).strip() == "opto_2p"
+            and not (
+                isinstance(feature.get("params"), dict)
+                and int(feature["params"].get("enable", 1)) == 0
+            )
+        ]
+        if len(opto_features) != 1:
+            return None, "Condition must contain exactly one enabled opto_2p feature."
+        params = opto_features[0].get("params")
+        if not isinstance(params, dict) or "seq_num" not in params:
+            return None, "opto_2p feature is missing seq_num."
+        seq_num = int(params["seq_num"])
+        if seq_num < 0 or seq_num >= sequence_count:
+            return None, f"seq_num {seq_num} is out of range for the current schema."
+        return seq_num, ""
+
     def _configure_online_analysis_for_tracking(self, tracking: ExperimentTrackingState) -> None:
         project = self._online_analysis_project(tracking)
         sequence_names = list(project.sequences.keys())
@@ -1033,30 +1063,9 @@ class ScanImageControlWidget(QWidget):
             )
             conditions[index] = condition
 
-            features = condition_payload.get("features")
-            if not isinstance(features, list):
-                condition.reason = "Condition does not contain a valid feature list."
-                continue
-            opto_features = [
-                feature
-                for feature in features
-                if isinstance(feature, dict)
-                and str(feature.get("name", "")).strip() == "opto_2p"
-                and not (
-                    isinstance(feature.get("params"), dict)
-                    and int(feature["params"].get("enable", 1)) == 0
-                )
-            ]
-            if len(opto_features) != 1:
-                condition.reason = "Condition must contain exactly one enabled opto_2p feature."
-                continue
-            params = opto_features[0].get("params")
-            if not isinstance(params, dict) or "seq_num" not in params:
-                condition.reason = "opto_2p feature is missing seq_num."
-                continue
-            seq_num = int(params["seq_num"])
-            if seq_num < 0 or seq_num >= len(sequence_names):
-                condition.reason = f"seq_num {seq_num} is out of range for the current schema."
+            seq_num, reason = self._condition_opto_seq_num(condition_payload, len(sequence_names))
+            if seq_num is None:
+                condition.reason = reason
                 continue
             sequence_name = sequence_names[seq_num]
             sequence = project.sequences[sequence_name]
@@ -2717,6 +2726,7 @@ class ScanImageControlWidget(QWidget):
         prepare_sequence: bool = False,
         start_photostim: bool = False,
         prepared_seq_num: int | None = None,
+        prepared_trial_seq_nums: list[int] | None = None,
     ) -> None:
         runtime = self._ensure_session(path_name)
         schema_json_path: Path | None = None
@@ -2737,6 +2747,7 @@ class ScanImageControlWidget(QWidget):
                     build_prepare_schema_photostim_command(
                         runtime.path_config,
                         0 if prepared_seq_num is None else int(prepared_seq_num),
+                        [] if prepared_trial_seq_nums is None else list(prepared_trial_seq_nums),
                     ),
                     timeout_s=runtime.path_config.command_timeout_s,
                 )
@@ -3172,12 +3183,25 @@ class ScanImageControlWidget(QWidget):
             if not isinstance(item, dict):
                 raise ValueError(f"stimulus_conditions[{idx}] must be an object")
             stimulus_conditions.append(dict(item))
+        trial_condition_indices_raw = message.get("trial_condition_indices")
+        trial_condition_indices: list[int] = []
+        if trial_condition_indices_raw is not None:
+            if not isinstance(trial_condition_indices_raw, list):
+                raise ValueError("update_experiment_params trial_condition_indices must be a list when provided")
+            for idx, item in enumerate(trial_condition_indices_raw):
+                trial_index = int(item)
+                if trial_index < 0 or trial_index >= len(stimulus_conditions):
+                    raise ValueError(
+                        f"trial_condition_indices[{idx}]={trial_index} is out of range for {len(stimulus_conditions)} stimulus condition(s)"
+                    )
+                trial_condition_indices.append(trial_index)
 
         tracking.reset()
         tracking.exp_id = exp_id
         tracking.schema_name = schema_name
         tracking.params = {k: v for k, v in message.items() if k != "action"}
         tracking.stimulus_conditions = stimulus_conditions
+        tracking.trial_condition_indices = trial_condition_indices
 
         self._send_json_reply(
             request_path_name,
@@ -3188,6 +3212,7 @@ class ScanImageControlWidget(QWidget):
                 "expID": exp_id,
                 "schema_name": schema_name,
                 "stimulus_condition_count": len(stimulus_conditions),
+                "trial_count": len(trial_condition_indices),
             },
         )
         try:
@@ -3280,6 +3305,15 @@ class ScanImageControlWidget(QWidget):
         project = load_schema(schema_path)
         runtime = self._runtimes[photostim_path]
         prep_state = runtime.prepared_photostim
+        tracking = runtime.experiment_tracking
+        if tracking.exp_id != exp_id:
+            raise ValueError(
+                "prep_patterns requires update_experiment_params for the same expID before prep so the full trial order is known."
+            )
+        if not tracking.trial_condition_indices:
+            raise ValueError(
+                "prep_patterns requires update_experiment_params to include trial_condition_indices for the full experiment trial order."
+            )
         if (
             prep_state.schema_path is None
             or prep_state.schema_path != schema_path
@@ -3292,7 +3326,16 @@ class ScanImageControlWidget(QWidget):
             prep_state.exp_id = exp_id
 
         sequence_names = list(project.sequences.keys())
-        prep_state.prepared_seq_nums = [seq_num]
+        planned_trial_seq_nums: list[int] = []
+        for trial_order_idx, condition_index in enumerate(tracking.trial_condition_indices):
+            condition_payload = tracking.stimulus_conditions[condition_index]
+            resolved_seq_num, reason = self._condition_opto_seq_num(condition_payload, len(sequence_names))
+            if resolved_seq_num is None:
+                raise ValueError(
+                    f"trial_condition_indices[{trial_order_idx}] -> condition {condition_index} is invalid for photostim prep: {reason}"
+                )
+            planned_trial_seq_nums.append(int(resolved_seq_num))
+        prep_state.prepared_seq_nums = list(dict.fromkeys(planned_trial_seq_nums))
         prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
             project,
             prep_state.prepared_seq_nums,
@@ -3309,6 +3352,7 @@ class ScanImageControlWidget(QWidget):
                     prepare_sequence=True,
                     start_photostim=True,
                     prepared_seq_num=seq_num,
+                    prepared_trial_seq_nums=planned_trial_seq_nums,
                 ),
             )
             prep_state_local = self._runtimes[photostim_path].prepared_photostim
@@ -3321,6 +3365,7 @@ class ScanImageControlWidget(QWidget):
                 "seq_num": seq_num,
                 "prepared_seq_nums": list(prep_state_local.prepared_seq_nums),
                 "prepared_sequence_names": list(prepared_sequence_names),
+                "planned_trial_seq_nums": list(planned_trial_seq_nums),
                 "pattern_names": pattern_names,
                 "stimulus_groups": [],
             }

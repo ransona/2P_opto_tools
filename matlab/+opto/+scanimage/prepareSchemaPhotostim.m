@@ -9,7 +9,7 @@ arguments
     opts.BlockDuration (1,1) double = 0.25
     opts.InitialBlockLeadInDuration (1,1) double = 0.010
     opts.SequenceIndex (1,1) double = 0
-    opts.RepeatPreparedSequenceCount (1,1) double = 1
+    opts.TrialSequenceIndices (1,:) double = []
     opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
@@ -42,7 +42,14 @@ sequenceIndex = double(opts.SequenceIndex) + 1;
 if sequenceIndex < 1 || sequenceIndex > numel(sequenceNames)
     error('Requested SequenceIndex %d is out of range for %d sequence(s).', double(opts.SequenceIndex), numel(sequenceNames));
 end
-repeatPreparedSequenceCount = max(1, round(double(opts.RepeatPreparedSequenceCount)));
+if isempty(opts.TrialSequenceIndices)
+    trialSequenceIndices = sequenceIndex;
+else
+    trialSequenceIndices = round(double(opts.TrialSequenceIndices(:))) + 1;
+end
+if any(trialSequenceIndices < 1) || any(trialSequenceIndices > numel(sequenceNames))
+    error('TrialSequenceIndices contains a sequence index outside the schema range.');
+end
 
 hPs = hSI.hPhotostim;
 disp('prepareSchemaPhotostim: photostim handle ready');
@@ -71,7 +78,8 @@ schemaPatternNames = getNamedStructKeys(schema.patterns);
 usedPatternNames = strings(0, 1);
 usedPatternNumbers = zeros(0, 1);
 
-preparedSequenceIndices = sequenceIndex;
+preparedSequenceIndices = unique(trialSequenceIndices, 'stable');
+sequenceGroupIndicesBySeq = cell(1, numel(sequenceNames));
 for idx = 1:numel(preparedSequenceIndices)
     sequenceName = sequenceNames(preparedSequenceIndices(idx));
     sequence = getStructByOriginalName(schema.sequences, sequenceName, "Sequence");
@@ -82,10 +90,12 @@ for idx = 1:numel(preparedSequenceIndices)
 
     sequenceDuration_s = computeSequenceDuration(sequenceSteps, schema.patterns);
     blockCount = max(1, ceil(double(sequenceDuration_s) ./ double(opts.BlockDuration)));
+    firstPreparedGroupIdx = numel(hPs.stimRoiGroups) + 1;
     for blockIdx = 1:blockCount
         hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, schema.patterns, schemaPatternNames, blockIdx, hSI, opts);
         hPs.stimRoiGroups(end + 1) = hGroup;
     end
+    sequenceGroupIndicesBySeq{preparedSequenceIndices(idx)} = firstPreparedGroupIdx:numel(hPs.stimRoiGroups);
 
     for stepIdx = 1:numel(sequenceSteps)
         stepPatternName = string(sequenceSteps(stepIdx).pattern);
@@ -105,9 +115,15 @@ importedPatternNames = usedPatternNames;
 patternNumbers = usedPatternNumbers;
 
 hPs.stimulusMode = 'sequence';
-allPreparedGroupIndices = 3:numel(hPs.stimRoiGroups);
-singleTrialTail = [allPreparedGroupIndices 2 2];
-hPs.sequenceSelectedStimuli = [2 singleTrialTail];
+hPs.sequenceSelectedStimuli = 2;
+for trialIdx = 1:numel(trialSequenceIndices)
+    seqIdx = trialSequenceIndices(trialIdx);
+    trialGroupIndices = sequenceGroupIndicesBySeq{seqIdx};
+    if isempty(trialGroupIndices)
+        error('No prepared group mapping exists for trial sequence index %d.', seqIdx - 1);
+    end
+    hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2, 2]; %#ok<AGROW>
+end
 hPs.numSequences = 1;
 if isprop(hPs, 'autoTriggerPeriod')
     hPs.autoTriggerPeriod = 0;
@@ -128,16 +144,9 @@ end
 disp('Starting photostim mask generation');
 disp('Initial photostim prep sequence:');
 disp(hPs.sequenceSelectedStimuli);
-disp('Prepared photostim repeat count:');
-disp(repeatPreparedSequenceCount);
+disp('Prepared photostim trial count:');
+disp(numel(trialSequenceIndices));
 hPs.start();
-drawnow();
-pause(0.1);
-if repeatPreparedSequenceCount > 1
-    hPs.sequenceSelectedStimuli = [2 repmat(singleTrialTail, 1, repeatPreparedSequenceCount)];
-    disp('Prep-time photostim sequence extended after start:');
-    disp(hPs.sequenceSelectedStimuli);
-end
 disp('Photostim mask generation ready');
 end
 
