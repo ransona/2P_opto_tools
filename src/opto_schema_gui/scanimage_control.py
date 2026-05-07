@@ -1188,15 +1188,16 @@ class ScanImageControlWidget(QWidget):
         )
 
     def _online_analysis_project(self, tracking: ExperimentTrackingState) -> ExperimentProject:
-        schema_path = self.schema_path_provider()
-        if schema_path is not None and schema_path.is_file():
-            try:
+        tracking_runtime_name = self._online_analysis_tracking_runtime_name()
+        runtime = self._runtimes.get(tracking_runtime_name) if tracking_runtime_name else None
+        if runtime is not None:
+            schema_path = runtime.prepared_photostim.schema_path
+            if schema_path is not None and schema_path.is_file():
                 return load_schema(schema_path)
-            except Exception as exc:
-                self.signals.log_message.emit(
-                    f"[online analysis] warning: failed to load schema from '{schema_path}': {exc}"
-                )
-        return self.project_provider()
+        raise RuntimeError(
+            "Online analysis requires a prepared running schema on the active photostim path. "
+            "Run prep_patterns for the current experiment before enabling Online Analysis."
+        )
 
     def _restore_online_analysis(self, clear_runtime: bool) -> None:
         self._stop_online_analysis_poller()
