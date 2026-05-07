@@ -4007,32 +4007,32 @@ class ScanImageControlWidget(QWidget):
     ) -> None:
         runtime = self._runtimes[path_name]
         prep_state = runtime.prepared_photostim
-        started = not wait_for_start
-        if wait_for_start:
-            try:
-                self._wait_for_leading_park_advance(
-                    path_name,
-                    prep_state.ready_sequence_position,
-                    prep_state.ready_completed_sequences,
-                    timeout_s=max(5.0, 4.0 * self._runtimes[path_name].path_config.sequence_block_duration_s),
-                )
-                started = True
-                try:
-                    self._mark_online_analysis_trial_start()
-                except Exception as exc:
-                    self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
-            except Exception:
-                self.signals.log_message.emit(
-                    f"[{path_name}] ERROR: waveform external start was not detected for sequence '{sequence_name}'"
-                )
-                return
+        trial_start_marked = not wait_for_start
 
         finish_wait_s = max(2.0, float(prep_state.waveform_expected_done_time_s or 0.0) + 2.0)
         finish_deadline = time.monotonic() + finish_wait_s
         while not stop_event.is_set() and time.monotonic() < finish_deadline:
             time.sleep(0.05)
 
-        mismatch_message = self._finalize_pending_photostim_check(path_name, "Waveform trigger count check")
+        def mark_trial_start_once() -> None:
+            nonlocal trial_start_marked
+            if trial_start_marked:
+                return
+            trial_start_marked = True
+            try:
+                self._mark_online_analysis_trial_start()
+            except Exception as exc:
+                self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
+
+        mismatch_message = self._finalize_pending_photostim_check(
+            path_name,
+            "Waveform trigger count check",
+            on_start=mark_trial_start_once if wait_for_start else None,
+        )
+        if wait_for_start and not trial_start_marked:
+            self.signals.log_message.emit(
+                f"[{path_name}] ERROR: waveform external start was not detected for sequence '{sequence_name}'"
+            )
         if (
             mismatch_message is not None
             and self.ignore_incomplete_trigger_checkbox.isChecked()
@@ -4095,12 +4095,14 @@ class ScanImageControlWidget(QWidget):
         ready_completed_sequences: int | None,
         expected_remaining: int,
         timeout_s: float = 2.0,
+        on_start: Callable[[], None] | None = None,
     ) -> tuple[bool, int | None, int | None, int]:
         deadline = time.monotonic() + timeout_s
         last_active = False
         last_position: int | None = None
         last_completed: int | None = None
         max_delivered = 0
+        start_marked = False
         while time.monotonic() < deadline:
             active, current_position, _, completed_sequences, _ = self._query_photostim_sequence_state(path_name)
             last_active = active
@@ -4110,6 +4112,17 @@ class ScanImageControlWidget(QWidget):
                 delivered = max(0, current_position - ready_position)
                 if delivered > max_delivered:
                     max_delivered = delivered
+            else:
+                delivered = 0
+            if not start_marked:
+                if delivered > 0 or (
+                    ready_completed_sequences is not None
+                    and completed_sequences is not None
+                    and completed_sequences > ready_completed_sequences
+                ):
+                    start_marked = True
+                    if on_start is not None:
+                        on_start()
             if (
                 ready_completed_sequences is not None
                 and completed_sequences is not None
@@ -4122,7 +4135,12 @@ class ScanImageControlWidget(QWidget):
             time.sleep(0.02)
         return last_active, last_position, last_completed, max_delivered
 
-    def _finalize_pending_photostim_check(self, path_name: str, label: str) -> str | None:
+    def _finalize_pending_photostim_check(
+        self,
+        path_name: str,
+        label: str,
+        on_start: Callable[[], None] | None = None,
+    ) -> str | None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
         expected_remaining = prep_state.remaining_expected_triggers
@@ -4139,6 +4157,7 @@ class ScanImageControlWidget(QWidget):
             ready_completed,
             expected_remaining,
             timeout_s=timeout_s,
+            on_start=on_start,
         )
         if (
             ready_completed is not None
