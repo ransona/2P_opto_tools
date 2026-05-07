@@ -2690,6 +2690,8 @@ class ScanImageControlWidget(QWidget):
         pattern_names: list[str] | None,
         prepare_sequence: bool = False,
         start_photostim: bool = False,
+        repeated_sequence_index: int = 0,
+        repeat_count: int = 1,
     ) -> None:
         runtime = self._ensure_session(path_name)
         schema_json_path: Path | None = None
@@ -2707,7 +2709,11 @@ class ScanImageControlWidget(QWidget):
                 )
                 self._emit_lines(path_name, lines)
                 lines = runtime.session.eval(
-                    build_prepare_schema_photostim_command(runtime.path_config),
+                    build_prepare_schema_photostim_command(
+                        runtime.path_config,
+                        repeated_sequence_index=repeated_sequence_index,
+                        repeat_count=repeat_count,
+                    ),
                     timeout_s=runtime.path_config.command_timeout_s,
                 )
             else:
@@ -3278,6 +3284,8 @@ class ScanImageControlWidget(QWidget):
                     pattern_names,
                     prepare_sequence=True,
                     start_photostim=True,
+                    repeated_sequence_index=seq_num + 1 if seq_num >= 0 else 0,
+                    repeat_count=32,
                 ),
             )
             prep_state_local = self._runtimes[photostim_path].prepared_photostim

@@ -9,6 +9,8 @@ arguments
     opts.BlockDuration (1,1) double = 0.25
     opts.InitialBlockLeadInDuration (1,1) double = 0.010
     opts.TriggerTerm string = ""
+    opts.RepeatedSequenceIndex (1,1) double = 0
+    opts.RepeatCount (1,1) double = 1
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
 end
@@ -60,6 +62,7 @@ patternNumbers = zeros(0, 1);
 schemaPatternNames = getNamedStructKeys(schema.patterns);
 usedPatternNames = strings(0, 1);
 usedPatternNumbers = zeros(0, 1);
+preparedSequenceGroupIndices = cell(numel(sequenceNames), 1);
 
 for idx = 1:numel(sequenceNames)
     sequenceName = sequenceNames(idx);
@@ -71,10 +74,13 @@ for idx = 1:numel(sequenceNames)
 
     sequenceDuration_s = computeSequenceDuration(sequenceSteps, schema.patterns);
     blockCount = max(1, ceil(double(sequenceDuration_s) ./ double(opts.BlockDuration)));
+    sequenceGroupIndices = zeros(1, blockCount);
     for blockIdx = 1:blockCount
         hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, schema.patterns, schemaPatternNames, blockIdx, hSI, opts);
         hPs.stimRoiGroups(end + 1) = hGroup;
+        sequenceGroupIndices(blockIdx) = numel(hPs.stimRoiGroups);
     end
+    preparedSequenceGroupIndices{idx} = sequenceGroupIndices;
 
     for stepIdx = 1:numel(sequenceSteps)
         stepPatternName = string(sequenceSteps(stepIdx).pattern);
@@ -95,7 +101,16 @@ patternNumbers = usedPatternNumbers;
 
 hPs.stimulusMode = 'sequence';
 allPreparedGroupIndices = 3:numel(hPs.stimRoiGroups);
-hPs.sequenceSelectedStimuli = [2 allPreparedGroupIndices 2];
+if opts.RepeatedSequenceIndex >= 1 && opts.RepeatedSequenceIndex <= numel(preparedSequenceGroupIndices) && opts.RepeatCount > 0
+    repeatedTail = [preparedSequenceGroupIndices{opts.RepeatedSequenceIndex} 2 2];
+    repeatedSequence = 2;
+    for repeatIdx = 1:opts.RepeatCount
+        repeatedSequence = [repeatedSequence repeatedTail]; %#ok<AGROW>
+    end
+    hPs.sequenceSelectedStimuli = repeatedSequence;
+else
+    hPs.sequenceSelectedStimuli = [2 allPreparedGroupIndices 2];
+end
 hPs.numSequences = 1;
 if isprop(hPs, 'autoTriggerPeriod')
     hPs.autoTriggerPeriod = 0;
