@@ -792,8 +792,6 @@ def build_schema_payload_load_command(
 def build_prepare_schema_photostim_command(
     path_config: PathConfig,
     schema_var_name: str = "schemaData",
-    repeated_sequence_index: int = 0,
-    repeat_count: int = 1,
 ) -> str:
     lines = [
         build_global_preamble(path_config),
@@ -803,8 +801,6 @@ def build_prepare_schema_photostim_command(
         "    ParkDuration=0.001, ...",
         f"    BlockDuration={path_config.sequence_block_duration_s}, ...",
         f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
-        f"    RepeatedSequenceIndex={int(repeated_sequence_index)}, ...",
-        f"    RepeatCount={int(repeat_count)}, ...",
         "    MinCenterDistanceUm=15, ...",
         "    Revolutions=5);",
         "disp('Prepared schema photostim patterns used by sequence groups:');",
