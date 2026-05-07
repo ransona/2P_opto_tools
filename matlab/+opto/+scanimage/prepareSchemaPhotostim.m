@@ -107,7 +107,7 @@ patternNumbers = usedPatternNumbers;
 hPs.stimulusMode = 'sequence';
 allPreparedGroupIndices = 3:numel(hPs.stimRoiGroups);
 singleTrialTail = [allPreparedGroupIndices 2 2];
-hPs.sequenceSelectedStimuli = [2 repmat(singleTrialTail, 1, repeatPreparedSequenceCount)];
+hPs.sequenceSelectedStimuli = [2 singleTrialTail];
 hPs.numSequences = 1;
 if isprop(hPs, 'autoTriggerPeriod')
     hPs.autoTriggerPeriod = 0;
@@ -131,6 +131,13 @@ disp(hPs.sequenceSelectedStimuli);
 disp('Prepared photostim repeat count:');
 disp(repeatPreparedSequenceCount);
 hPs.start();
+drawnow();
+pause(0.1);
+if repeatPreparedSequenceCount > 1
+    hPs.sequenceSelectedStimuli = [2 repmat(singleTrialTail, 1, repeatPreparedSequenceCount)];
+    disp('Prep-time photostim sequence extended after start:');
+    disp(hPs.sequenceSelectedStimuli);
+end
 disp('Photostim mask generation ready');
 end
 
