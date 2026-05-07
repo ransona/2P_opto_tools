@@ -474,6 +474,66 @@ class MultiCellActivityPlotWidget(QWidget):
             f"{y_min:.2g}",
         )
 
+    def _time_ticks(
+        self,
+        x_min: float,
+        x_max: float,
+        step_s: float,
+    ) -> list[float]:
+        if step_s <= 0:
+            return []
+        start = math.ceil(x_min / step_s) * step_s
+        values: list[float] = []
+        current = start
+        limit = x_max + 1e-9
+        while current <= limit:
+            values.append(round(current, 6))
+            current += step_s
+        return values
+
+    def _draw_time_guides(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        x_min: float,
+        x_max: float,
+        *,
+        zero_x: float,
+        axis_bottom_y: int,
+        label_y: int,
+        label_left_pad: int = 18,
+        label_right_pad: int = 18,
+        zero_label_half_width: int = 10,
+        guide_color: QColor = QColor("#cbd5e1"),
+        zero_color: QColor = QColor("#475569"),
+    ) -> None:
+        span = max(1e-9, x_max - x_min)
+        painter.setPen(QPen(guide_color, 1))
+        for tick_s in self._time_ticks(x_min, x_max, 0.25):
+            if abs(tick_s) < 1e-9:
+                continue
+            x = rect.left() + ((tick_s - x_min) / span) * rect.width()
+            painter.drawLine(int(x), rect.top(), int(x), rect.bottom())
+        painter.setPen(QPen(zero_color, 3))
+        painter.drawLine(int(zero_x), rect.top(), int(zero_x), rect.bottom())
+
+        painter.setPen(QColor("#0f172a"))
+        tick_labels = self._time_ticks(x_min, x_max, 0.5)
+        for tick_s in tick_labels:
+            x = rect.left() + ((tick_s - x_min) / span) * rect.width()
+            if abs(tick_s) < 1e-9:
+                label = "0"
+                text_x = int(x) - zero_label_half_width
+            else:
+                label = f"{tick_s:.1f}s"
+                if abs(tick_s - x_min) < 1e-9:
+                    text_x = rect.left()
+                elif abs(tick_s - x_max) < 1e-9:
+                    text_x = rect.right() - label_right_pad - 28
+                else:
+                    text_x = int(x) - label_left_pad
+            painter.drawText(text_x, label_y, label)
+
     def _render_line_mode(self, painter: QPainter, plot_rect: QRect) -> None:
         x_min = -self._pre_s
         x_max = self._post_s
@@ -497,8 +557,16 @@ class MultiCellActivityPlotWidget(QWidget):
             return px, py
 
         zero_x = rows_rect.left() + ((0.0 - x_min) / max(1e-9, x_max - x_min)) * rows_rect.width()
-        painter.setPen(QPen(QColor("#475569"), 3))
-        painter.drawLine(int(zero_x), summary_rect.top(), int(zero_x), rows_rect.bottom())
+        guide_rect = QRect(rows_rect.left(), summary_rect.top(), rows_rect.width(), rows_rect.bottom() - summary_rect.top())
+        self._draw_time_guides(
+            painter,
+            guide_rect,
+            x_min,
+            x_max,
+            zero_x=zero_x,
+            axis_bottom_y=plot_rect.bottom() - 6,
+            label_y=plot_rect.bottom() - 6,
+        )
 
         painter.setPen(QPen(QColor("#e2e8f0"), 1))
         for row_index in range(row_count):
@@ -630,9 +698,6 @@ class MultiCellActivityPlotWidget(QWidget):
         painter.setPen(QColor("#0f172a"))
         painter.drawRect(rows_rect)
         self._draw_y_axis_labels(painter, rows_rect, y_min, y_max)
-        painter.drawText(rows_rect.left(), plot_rect.bottom() - 6, f"{x_min:.1f}s")
-        painter.drawText(int(zero_x) - 8, plot_rect.bottom() - 6, "0")
-        painter.drawText(rows_rect.right() - 28, plot_rect.bottom() - 6, f"{x_max:.1f}s")
 
     def _render_heat_mode(self, painter: QPainter, plot_rect: QRect) -> None:
         x_min = -self._pre_s
@@ -689,13 +754,19 @@ class MultiCellActivityPlotWidget(QWidget):
                 painter.fillRect(QRectF(left, row_top, cell_width + 1.0, row_height), self._heat_color(float(value), heat_min, heat_max))
 
         zero_x = heat_rect.left() + ((0.0 - x_min) / max(1e-9, x_max - x_min)) * heat_rect.width()
-        painter.setPen(QPen(QColor("#ffffff"), 3))
-        painter.drawLine(int(zero_x), heat_rect.top(), int(zero_x), heat_rect.bottom())
+        self._draw_time_guides(
+            painter,
+            heat_rect,
+            x_min,
+            x_max,
+            zero_x=zero_x,
+            axis_bottom_y=plot_rect.bottom() - 6,
+            label_y=plot_rect.bottom() - 6,
+            guide_color=QColor(255, 255, 255, 70),
+            zero_color=QColor("#ffffff"),
+        )
         painter.setPen(QColor("#0f172a"))
         painter.drawRect(heat_rect)
-        painter.drawText(heat_rect.left(), plot_rect.bottom() - 6, f"{x_min:.1f}s")
-        painter.drawText(int(zero_x) - 8, plot_rect.bottom() - 6, "0")
-        painter.drawText(heat_rect.right() - 28, plot_rect.bottom() - 6, f"{x_max:.1f}s")
 
         colorbar_rect = QRect(
             heat_rect.right() + colorbar_gap,
