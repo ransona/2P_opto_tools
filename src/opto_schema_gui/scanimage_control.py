@@ -1192,6 +1192,10 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit(
             f"[online analysis] configured {len(cells_by_roi_name)} ROI(s) on {imaging_path}"
         )
+        supported_condition_count = sum(1 for condition in conditions_filtered.values() if condition.supported)
+        self.signals.log_message.emit(
+            f"[online analysis] conditions={len(conditions_filtered)} supported={supported_condition_count} current_condition_index={tracking.current_trial_index}"
+        )
 
     def _online_analysis_project(self, tracking: ExperimentTrackingState) -> ExperimentProject:
         tracking_runtime_name = self._online_analysis_tracking_runtime_name()
@@ -1331,8 +1335,31 @@ class ScanImageControlWidget(QWidget):
                 if state.active_trial is not None and state.active_trial.start_timestamp is None:
                     state.active_trial.start_timestamp = all_new_samples[0][1].timestamp
                     self._seed_active_trial_from_recent_locked(state.active_trial)
+                    seeded_counts = {
+                        roi_name: len(samples)
+                        for roi_name, samples in state.active_trial.samples_by_roi.items()
+                    }
+                    self.signals.log_message.emit(
+                        f"[online analysis] active trial started condition={state.active_trial.condition_index} "
+                        f"ordinal={state.active_trial.ordinal} start_t={state.active_trial.start_timestamp:.6f} "
+                        f"seeded={seeded_counts}"
+                    )
                 if state.active_trial is not None and state.active_trial.start_timestamp is not None:
+                    before_counts = {
+                        roi_name: len(state.active_trial.samples_by_roi.get(roi_name, []))
+                        for roi_name in state.conditions.get(state.active_trial.condition_index, OnlineAnalysisConditionState(index=-1, label='')).cell_roi_names
+                    }
                     self._append_samples_to_active_trial_locked(all_new_samples)
+                    after_counts = {
+                        roi_name: len(state.active_trial.samples_by_roi.get(roi_name, []))
+                        for roi_name in state.conditions.get(state.active_trial.condition_index, OnlineAnalysisConditionState(index=-1, label='')).cell_roi_names
+                    }
+                    if after_counts != before_counts:
+                        self.signals.log_message.emit(
+                            f"[online analysis] appended {len(all_new_samples)} sample(s) to active trial "
+                            f"condition={state.active_trial.condition_index} ordinal={state.active_trial.ordinal} "
+                            f"counts={after_counts}"
+                        )
                     end_timestamp = state.active_trial.start_timestamp + state.post_s
                     if all_new_samples[-1][1].timestamp >= end_timestamp:
                         self._finalize_active_trial_locked()
@@ -1394,10 +1421,17 @@ class ScanImageControlWidget(QWidget):
         trial = state.active_trial
         if trial is None:
             return
+        sample_counts = {
+            roi_name: len(samples)
+            for roi_name, samples in trial.samples_by_roi.items()
+        }
         state.completed_trials_by_condition.setdefault(trial.condition_index, []).append(trial)
         state.completed_trials_by_condition[trial.condition_index] = state.completed_trials_by_condition[
             trial.condition_index
         ][-50:]
+        self.signals.log_message.emit(
+            f"[online analysis] finalized trial condition={trial.condition_index} ordinal={trial.ordinal} sample_counts={sample_counts}"
+        )
         state.active_trial = None
 
     def _mark_online_analysis_trial_start(self) -> None:
@@ -1417,11 +1451,17 @@ class ScanImageControlWidget(QWidget):
             state.current_condition_index = condition_index
             condition = state.conditions.get(condition_index)
             if condition is None or not condition.supported:
+                self.signals.log_message.emit(
+                    f"[online analysis] trial-start ignored condition={condition_index} supported={False if condition is None else condition.supported}"
+                )
                 return
             if state.active_trial is not None:
                 self._finalize_active_trial_locked()
             ordinal = len(state.completed_trials_by_condition.get(condition_index, [])) + 1
             state.active_trial = OnlineAnalysisTrial(condition_index=condition_index, ordinal=ordinal)
+            self.signals.log_message.emit(
+                f"[online analysis] opened active trial condition={condition_index} ordinal={ordinal} roi_count={len(condition.cell_roi_names)}"
+            )
 
     def _online_analysis_condition_label(self, index: int, condition_payload: dict[str, object]) -> str:
         stimulus_id = condition_payload.get("stimulus_id")
