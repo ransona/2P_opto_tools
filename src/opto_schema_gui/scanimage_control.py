@@ -65,6 +65,7 @@ from .matlab_bridge import (
     build_raw_vdaq_do_test_status_command,
     build_restore_online_analysis_command,
     build_run_script_command,
+    build_debug_trigger_ladder_command,
     build_schema_payload_load_command,
     build_configure_online_analysis_command,
     build_software_trigger_command,
@@ -1590,6 +1591,7 @@ class ScanImageControlWidget(QWidget):
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
         self.test_stim_waveform_btn = QPushButton("Test stim waveform")
         self.test_stim_waveform_external_btn = QPushButton("Test stim waveform ext")
+        self.debug_trigger_ladder_btn = QPushButton("Debug Trigger Ladder")
         self.start_config_btn.setStyleSheet("color: #15803d;")
         self.stop_config_btn.setStyleSheet("color: #b91c1c;")
         for button in (
@@ -1601,6 +1603,7 @@ class ScanImageControlWidget(QWidget):
             self.test_prep_patterns_btn,
             self.test_stim_waveform_btn,
             self.test_stim_waveform_external_btn,
+            self.debug_trigger_ladder_btn,
         ):
             buttons_row.addWidget(button)
         buttons_row.addStretch(1)
@@ -1654,6 +1657,7 @@ class ScanImageControlWidget(QWidget):
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
         self.test_stim_waveform_btn.clicked.connect(self._run_test_stim_waveform)
         self.test_stim_waveform_external_btn.clicked.connect(self._run_test_stim_waveform_external)
+        self.debug_trigger_ladder_btn.clicked.connect(self._run_debug_trigger_ladder)
         self.clear_log_btn.clicked.connect(self._clear_all_logs)
         self.clear_all_logs_btn.clicked.connect(self._clear_all_logs)
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
@@ -2249,6 +2253,9 @@ class ScanImageControlWidget(QWidget):
         if normalized == "inspect_slm":
             self._spawn_action(path_name, "inspect slm", self._inspect_photostim_api)
             return {"started": True}
+        if normalized == "debug_trigger_ladder":
+            self._spawn_action(path_name, "debug trigger ladder", self._debug_trigger_ladder)
+            return {"started": True}
         if normalized == "start_listener":
             self._spawn_action(path_name, "start listener", self._start_listener)
             return {"started": True}
@@ -2589,6 +2596,13 @@ class ScanImageControlWidget(QWidget):
         )
         dialog.exec()
 
+    def _run_debug_trigger_ladder(self) -> None:
+        if self.machine_config is None or not self.machine_config.photostim_path:
+            self.signals.log_message.emit("Debug trigger ladder skipped: no photostim path configured")
+            return
+        path_name = self.machine_config.photostim_path
+        self._spawn_action(path_name, "debug trigger ladder", self._debug_trigger_ladder)
+
     def _test_photostim_api(self, path_name: str, patterns: list[dict[str, object]] | None = None) -> None:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
@@ -2679,6 +2693,18 @@ class ScanImageControlWidget(QWidget):
             completed_before=completed_before,
             expected_duration_s=(max(pulse_times_s) if pulse_times_s else 0.0) + pulse_width_s + 0.1,
         )
+
+    def _debug_trigger_ladder(self, path_name: str) -> None:
+        runtime = self._ensure_session(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_debug_trigger_ladder_command(runtime.path_config),
+                timeout_s=max(runtime.path_config.command_timeout_s, 180.0),
+            )
+            runtime.status = "debug trigger ladder"
+            self.signals.path_status.emit(path_name, runtime.status)
+            self._emit_lines(path_name, lines)
 
     def _import_patterns(self, path_name: str, schema_path: Path) -> None:
         self._import_pattern_subset(path_name, schema_path, None)

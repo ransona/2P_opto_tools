@@ -1504,6 +1504,25 @@ def build_test_stim_waveform_external_start_command_configurable(
     )
 
 
+def build_debug_trigger_ladder_command(path_config: PathConfig) -> str:
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "disp('----------');",
+            "disp('Debug trigger ladder');",
+            (
+                "opto.scanimage.debugTriggerLadder("
+                f"'hsiVar', {matlab_string(path_config.hsi_variable)}, "
+                f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
+                f"'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, "
+                "'pulseWidth_s', 0.1, "
+                "'pulseSpacing_s', 1.0);"
+            ),
+            "disp('DEBUG_TRIGGER_LADDER_READY');",
+        ]
+    )
+
+
 def build_raw_vdaq_do_test_status_command() -> str:
     return "\n".join(
         [
