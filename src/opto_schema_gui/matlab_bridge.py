@@ -401,11 +401,6 @@ class MatlabSession:
             self.sim_sequence_position = 2 if len(self.sim_sequence) > 1 else 1
             outputs.append("TRIGGER_PHOTOSTIM_INSERT_POSITION")
             outputs.append(str(insert_position))
-            outputs.append("TRIGGER_PHOTOSTIM_SEQUENCE")
-            outputs.append(str(sequence_values))
-            outputs.append("TRIGGER_PHOTOSTIM_NUM_SEQUENCES")
-            outputs.append("1")
-            outputs.append("TRIGGER_PHOTOSTIM_READY")
             return outputs
         if "photostimtrialtriggertimessec" in command_lower and "trial_waveform_ready" in command_lower:
             outputs.append("TRIAL_WAVEFORM_READY")
@@ -1004,10 +999,7 @@ def build_inspect_photostim_command(path_config: PathConfig) -> str:
     )
 
 
-def build_trigger_photostim_command(
-    path_config: PathConfig,
-    stimulus_group_indices: list[int],
-) -> str:
+def build_trigger_photostim_command(path_config: PathConfig, stimulus_group_indices: list[int]) -> str:
     hsi = path_config.hsi_variable
     sequence_expr = "[" + " ".join(str(int(idx)) for idx in stimulus_group_indices) + "]"
 
@@ -1034,8 +1026,6 @@ def build_trigger_photostim_command(
         "    reusePreparedTail = isequal(double(existingTail(:).'), double(trialTailSingle(:).'));",
         "end",
         "assert(reusePreparedTail, 'Prepared active photostim sequence does not contain the requested next trial tail. Run prep_patterns again.');",
-        "disp('TRIGGER_PHOTOSTIM_PRECOMPOSED_SEQUENCE_REUSED');",
-        "disp(1);",
         "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
         "disp(double(insertPosition));",
         "disp('TRIGGER_PHOTOSTIM_IDLE_POSITION');",
@@ -1043,19 +1033,8 @@ def build_trigger_photostim_command(
         "hPs.numSequences = 1;",
         "if isprop(hPs,'stimImmediately'); hPs.stimImmediately = false; end",
         "if ~hPs.active;",
-            "    hPs.start();",
+        "    hPs.start();",
         "end",
-        "disp('TRIGGER_PHOTOSTIM_SEQUENCE');",
-        "disp(triggerSequence);",
-        "disp('TRIGGER_PHOTOSTIM_MODE');",
-        "disp(string(hPs.stimulusMode));",
-        "disp('TRIGGER_PHOTOSTIM_NUM_SEQUENCES');",
-        "disp(double(hPs.numSequences));",
-        "disp('TRIGGER_PHOTOSTIM_ACTIVE');",
-        "disp(double(hPs.active));",
-        "disp('TRIGGER_PHOTOSTIM_SEQUENCE_POSITION');",
-        "if isempty(hPs.sequencePosition); disp('NaN'); else; disp(double(hPs.sequencePosition)); end",
-        "disp('TRIGGER_PHOTOSTIM_READY');",
     ]
     return "\n".join(lines)
 
@@ -1501,25 +1480,6 @@ def build_test_stim_waveform_external_start_command_configurable(
             f"disp({total_duration_s!r});",
             f"do_task = opto.scanimage.testVdaqDoTriggeredByDi('outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, 'startTrigger', {matlab_string(path_config.trial_waveform_start_trigger_port.split('/')[-1])}, 'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, 'pulseTimes_s', {pulse_times_expr}, 'pulseWidth_s', {pulse_width_s!r});",
             "disp('TRIAL_WAVEFORM_READY_FOR_EXTERNAL_START');",
-        ]
-    )
-
-
-def build_debug_trigger_ladder_command(path_config: PathConfig) -> str:
-    return "\n".join(
-        [
-            build_global_preamble(path_config),
-            "disp('----------');",
-            "disp('Debug trigger ladder');",
-            (
-                "opto.scanimage.debugTriggerLadder("
-                f"'hsiVar', {matlab_string(path_config.hsi_variable)}, "
-                f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
-                f"'sampleRate_Hz', {path_config.trial_waveform_sample_rate_hz!r}, "
-                "'pulseWidth_s', 0.1, "
-                "'pulseSpacing_s', 1.0);"
-            ),
-            "disp('DEBUG_TRIGGER_LADDER_READY');",
         ]
     )
 
