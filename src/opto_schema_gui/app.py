@@ -450,6 +450,27 @@ class MultiCellActivityPlotWidget(QWidget):
         t = (clipped - vmin) / span
         return QColor(int(20 + 235 * t), int(24 + 180 * t), int(40 + 40 * (1.0 - t)))
 
+    def _draw_y_axis_labels(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        y_min: float,
+        y_max: float,
+        *,
+        x_offset: int = 40,
+    ) -> None:
+        painter.setPen(QColor("#334155"))
+        painter.drawText(
+            QRect(rect.left() - x_offset, rect.top() - 8, x_offset - 6, 16),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            f"{y_max:.2g}",
+        )
+        painter.drawText(
+            QRect(rect.left() - x_offset, rect.bottom() - 8, x_offset - 6, 16),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            f"{y_min:.2g}",
+        )
+
     def _render_line_mode(self, painter: QPainter, plot_rect: QRect) -> None:
         x_min = -self._pre_s
         x_max = self._post_s
@@ -589,9 +610,11 @@ class MultiCellActivityPlotWidget(QWidget):
                 self._draw_polyline(painter, points, QPen(QColor("#15803d"), 2))
             painter.setPen(QColor("#0f172a"))
             painter.drawRect(summary_rect)
+            self._draw_y_axis_labels(painter, summary_rect, y_min, y_max)
 
         painter.setPen(QColor("#0f172a"))
         painter.drawRect(rows_rect)
+        self._draw_y_axis_labels(painter, rows_rect, y_min, y_max)
         painter.drawText(rows_rect.left(), plot_rect.bottom() - 6, f"{x_min:.1f}s")
         painter.drawText(int(zero_x) - 8, plot_rect.bottom() - 6, "0")
         painter.drawText(rows_rect.right() - 28, plot_rect.bottom() - 6, f"{x_max:.1f}s")
@@ -601,7 +624,9 @@ class MultiCellActivityPlotWidget(QWidget):
         x_max = self._post_s
         grid = np.linspace(x_min, x_max, 240)
         label_width = 180
-        heat_rect = plot_rect.adjusted(label_width, 8, -12, -28)
+        colorbar_width = 18
+        colorbar_gap = 10
+        heat_rect = plot_rect.adjusted(label_width, 8, -(colorbar_width + colorbar_gap + 12), -28)
         row_count = max(1, len(self._cell_payloads))
         row_height = max(12.0, heat_rect.height() / row_count)
         observed_min = 0.0
@@ -654,6 +679,35 @@ class MultiCellActivityPlotWidget(QWidget):
         painter.drawText(heat_rect.left(), plot_rect.bottom() - 6, f"{x_min:.1f}s")
         painter.drawText(int(zero_x) - 8, plot_rect.bottom() - 6, "0")
         painter.drawText(heat_rect.right() - 28, plot_rect.bottom() - 6, f"{x_max:.1f}s")
+
+        colorbar_rect = QRect(
+            heat_rect.right() + colorbar_gap,
+            heat_rect.top(),
+            colorbar_width,
+            heat_rect.height(),
+        )
+        for offset in range(colorbar_rect.height()):
+            frac = 1.0 - (offset / max(1, colorbar_rect.height() - 1))
+            value = heat_min + frac * (heat_max - heat_min)
+            painter.fillRect(
+                colorbar_rect.left(),
+                colorbar_rect.top() + offset,
+                colorbar_rect.width(),
+                1,
+                self._heat_color(value, heat_min, heat_max),
+            )
+        painter.setPen(QColor("#0f172a"))
+        painter.drawRect(colorbar_rect)
+        painter.drawText(
+            QRect(colorbar_rect.right() + 4, colorbar_rect.top() - 8, 56, 16),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"{heat_max:.2g}",
+        )
+        painter.drawText(
+            QRect(colorbar_rect.right() + 4, colorbar_rect.bottom() - 8, 56, 16),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"{heat_min:.2g}",
+        )
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
