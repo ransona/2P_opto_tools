@@ -378,7 +378,10 @@ class MultiCellActivityPlotWidget(QWidget):
             stacked.append(interp)
         if not stacked:
             return None
-        return np.vstack(stacked)
+        matrix = np.vstack(stacked)
+        if not np.any(np.isfinite(matrix)):
+            return None
+        return matrix
 
     def _draw_polyline(self, painter: QPainter, points: list[tuple[float, float]], pen: QPen) -> None:
         if len(points) < 2:
@@ -528,11 +531,15 @@ class MultiCellActivityPlotWidget(QWidget):
             mean_trace = None
             sem_trace = None
             if matrix is not None:
-                with np.errstate(invalid="ignore"):
+                with np.errstate(invalid="ignore", divide="ignore"):
                     mean_trace = np.nanmean(matrix, axis=0)
                     counts = np.sum(np.isfinite(matrix), axis=0)
                     sem_trace = np.nanstd(matrix, axis=0) / np.sqrt(np.maximum(counts, 1))
-                summary_mean_rows.append(mean_trace)
+                if np.any(np.isfinite(mean_trace)):
+                    summary_mean_rows.append(mean_trace)
+                else:
+                    mean_trace = None
+                    sem_trace = None
 
             if self._display_mode == "all":
                 for series in completed_series:
@@ -568,9 +575,12 @@ class MultiCellActivityPlotWidget(QWidget):
 
         if summary_mean_rows:
             summary_matrix = np.vstack(summary_mean_rows)
-            with np.errstate(invalid="ignore"):
+            with np.errstate(invalid="ignore", divide="ignore"):
                 summary_mean = np.nanmean(summary_matrix, axis=0)
                 summary_sem = np.nanstd(summary_matrix, axis=0) / np.sqrt(np.maximum(np.sum(np.isfinite(summary_matrix), axis=0), 1))
+            if not np.any(np.isfinite(summary_mean)):
+                summary_mean = None
+                summary_sem = None
 
             def map_summary_point(x_value: float, y_value: float) -> tuple[float, float]:
                 x_norm = (x_value - x_min) / max(1e-9, x_max - x_min)
@@ -585,7 +595,7 @@ class MultiCellActivityPlotWidget(QWidget):
             for frac in (0.0, 0.5, 1.0):
                 y_line = summary_rect.top() + frac * summary_rect.height()
                 painter.drawLine(summary_rect.left(), int(y_line), summary_rect.right(), int(y_line))
-            if self._display_mode == "mean_error":
+            if self._display_mode == "mean_error" and summary_mean is not None and summary_sem is not None:
                 self._draw_shaded_band(
                     painter,
                     grid,
@@ -594,20 +604,25 @@ class MultiCellActivityPlotWidget(QWidget):
                     map_summary_point,
                     QColor(148, 163, 184, 90),
                 )
-            points = [
-                map_summary_point(float(xv), float(yv))
-                for xv, yv in zip(grid, summary_mean, strict=False)
-                if np.isfinite(yv)
-            ]
-            self._draw_polyline(painter, points, QPen(QColor("#111827"), 2))
-            if summary_current_rows:
-                current_summary = np.nanmean(np.vstack(summary_current_rows), axis=0)
+            if summary_mean is not None:
                 points = [
                     map_summary_point(float(xv), float(yv))
-                    for xv, yv in zip(grid, current_summary, strict=False)
+                    for xv, yv in zip(grid, summary_mean, strict=False)
                     if np.isfinite(yv)
                 ]
-                self._draw_polyline(painter, points, QPen(QColor("#15803d"), 2))
+                self._draw_polyline(painter, points, QPen(QColor("#111827"), 2))
+            if summary_current_rows:
+                current_summary_matrix = np.vstack(summary_current_rows)
+                if np.any(np.isfinite(current_summary_matrix)):
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        current_summary = np.nanmean(current_summary_matrix, axis=0)
+                    if np.any(np.isfinite(current_summary)):
+                        points = [
+                            map_summary_point(float(xv), float(yv))
+                            for xv, yv in zip(grid, current_summary, strict=False)
+                            if np.isfinite(yv)
+                        ]
+                        self._draw_polyline(painter, points, QPen(QColor("#15803d"), 2))
             painter.setPen(QColor("#0f172a"))
             painter.drawRect(summary_rect)
             self._draw_y_axis_labels(painter, summary_rect, y_min, y_max)
@@ -647,8 +662,10 @@ class MultiCellActivityPlotWidget(QWidget):
             if matrix is None:
                 mean_trace = np.full(grid.shape, np.nan, dtype=float)
             else:
-                with np.errstate(invalid="ignore"):
+                with np.errstate(invalid="ignore", divide="ignore"):
                     mean_trace = np.nanmean(matrix, axis=0)
+                if not np.any(np.isfinite(mean_trace)):
+                    mean_trace = np.full(grid.shape, np.nan, dtype=float)
             mean_rows.append(mean_trace)
             valid = mean_trace[np.isfinite(mean_trace)]
             if valid.size:
