@@ -1032,6 +1032,8 @@ def build_trigger_photostim_command(
         "if ~reuseExistingTail;",
         "    triggerSequence = [preservedPrefix(:).' trialTail(:).'];",
         "    hPs.sequenceSelectedStimuli = triggerSequence;",
+        "    drawnow();",
+        "    pause(1.0);",
         "end",
         "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
         "disp(double(insertPosition));",
