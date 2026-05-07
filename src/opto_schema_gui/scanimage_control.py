@@ -1329,10 +1329,34 @@ class ScanImageControlWidget(QWidget):
         payload = self._extract_json_marker(lines, "ONLINE_ANALYSIS_DELTA_JSON")
         roi_names = [str(name) for name in payload.get("roi_names", [])]
         cursors_raw = payload.get("cursors", [])
-        cursors = [int(value) for value in cursors_raw] if isinstance(cursors_raw, list) else []
-        values = payload.get("values", [])
-        timestamps = payload.get("timestamps", [])
-        frame_numbers = payload.get("frame_numbers", [])
+        values_raw = payload.get("values", [])
+        timestamps_raw = payload.get("timestamps", [])
+        frame_numbers_raw = payload.get("frame_numbers", [])
+
+        if not isinstance(cursors_raw, list):
+            cursors_raw = [cursors_raw] if cursors_raw not in (None, "") else []
+        cursors = [int(float(value)) for value in cursors_raw]
+
+        def _normalize_roi_series(raw: object) -> list[list[object]]:
+            if not isinstance(raw, list):
+                return []
+            if not raw:
+                return []
+            if all(not isinstance(item, list) for item in raw):
+                return [raw]
+            normalized: list[list[object]] = []
+            for item in raw:
+                if isinstance(item, list):
+                    normalized.append(item)
+                elif item in (None, ""):
+                    normalized.append([])
+                else:
+                    normalized.append([item])
+            return normalized
+
+        values = _normalize_roi_series(values_raw)
+        timestamps = _normalize_roi_series(timestamps_raw)
+        frame_numbers = _normalize_roi_series(frame_numbers_raw)
 
         with self._online_analysis.lock:
             state = self._online_analysis
