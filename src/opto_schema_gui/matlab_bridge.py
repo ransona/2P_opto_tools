@@ -1029,6 +1029,8 @@ def build_trigger_photostim_command(
         "disp(1);",
         "drawnow();",
         "pause(3.0);",
+        "disp('TRIGGER_PHOTOSTIM_APPEND_SETTLE_DONE');",
+        "disp(1);",
         "disp('TRIGGER_PHOTOSTIM_INSERT_POSITION');",
         "disp(double(insertPosition));",
         "disp('TRIGGER_PHOTOSTIM_IDLE_POSITION');",
