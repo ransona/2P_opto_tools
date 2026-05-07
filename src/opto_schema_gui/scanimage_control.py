@@ -2716,6 +2716,7 @@ class ScanImageControlWidget(QWidget):
         pattern_names: list[str] | None,
         prepare_sequence: bool = False,
         start_photostim: bool = False,
+        prepared_seq_num: int | None = None,
     ) -> None:
         runtime = self._ensure_session(path_name)
         schema_json_path: Path | None = None
@@ -2733,7 +2734,10 @@ class ScanImageControlWidget(QWidget):
                 )
                 self._emit_lines(path_name, lines)
                 lines = runtime.session.eval(
-                    build_prepare_schema_photostim_command(runtime.path_config),
+                    build_prepare_schema_photostim_command(
+                        runtime.path_config,
+                        0 if prepared_seq_num is None else int(prepared_seq_num),
+                    ),
                     timeout_s=runtime.path_config.command_timeout_s,
                 )
             else:
@@ -3288,7 +3292,7 @@ class ScanImageControlWidget(QWidget):
             prep_state.exp_id = exp_id
 
         sequence_names = list(project.sequences.keys())
-        prep_state.prepared_seq_nums = list(range(len(sequence_names)))
+        prep_state.prepared_seq_nums = [seq_num]
         prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
             project,
             prep_state.prepared_seq_nums,
@@ -3304,6 +3308,7 @@ class ScanImageControlWidget(QWidget):
                     pattern_names,
                     prepare_sequence=True,
                     start_photostim=True,
+                    prepared_seq_num=seq_num,
                 ),
             )
             prep_state_local = self._runtimes[photostim_path].prepared_photostim

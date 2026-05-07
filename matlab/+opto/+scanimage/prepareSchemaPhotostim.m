@@ -8,6 +8,8 @@ arguments
     opts.ParkDuration (1,1) double = 0.001
     opts.BlockDuration (1,1) double = 0.25
     opts.InitialBlockLeadInDuration (1,1) double = 0.010
+    opts.SequenceIndex (1,1) double = 0
+    opts.RepeatPreparedSequenceCount (1,1) double = 1
     opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
@@ -33,6 +35,14 @@ end
 
 patternNames = getNamedStructKeys(schema.patterns);
 sequenceNames = getNamedStructKeys(schema.sequences);
+if isempty(sequenceNames)
+    error('Schema does not contain any sequences.');
+end
+sequenceIndex = double(opts.SequenceIndex) + 1;
+if sequenceIndex < 1 || sequenceIndex > numel(sequenceNames)
+    error('Requested SequenceIndex %d is out of range for %d sequence(s).', double(opts.SequenceIndex), numel(sequenceNames));
+end
+repeatPreparedSequenceCount = max(1, round(double(opts.RepeatPreparedSequenceCount)));
 
 hPs = hSI.hPhotostim;
 disp('prepareSchemaPhotostim: photostim handle ready');
@@ -61,8 +71,9 @@ schemaPatternNames = getNamedStructKeys(schema.patterns);
 usedPatternNames = strings(0, 1);
 usedPatternNumbers = zeros(0, 1);
 
-for idx = 1:numel(sequenceNames)
-    sequenceName = sequenceNames(idx);
+preparedSequenceIndices = sequenceIndex;
+for idx = 1:numel(preparedSequenceIndices)
+    sequenceName = sequenceNames(preparedSequenceIndices(idx));
     sequence = getStructByOriginalName(schema.sequences, sequenceName, "Sequence");
     sequenceSteps = getStructArrayField(sequence, 'steps');
     disp("Preparing schema sequence:");
@@ -95,7 +106,8 @@ patternNumbers = usedPatternNumbers;
 
 hPs.stimulusMode = 'sequence';
 allPreparedGroupIndices = 3:numel(hPs.stimRoiGroups);
-hPs.sequenceSelectedStimuli = [2 allPreparedGroupIndices 2];
+singleTrialTail = [allPreparedGroupIndices 2 2];
+hPs.sequenceSelectedStimuli = [2 repmat(singleTrialTail, 1, repeatPreparedSequenceCount)];
 hPs.numSequences = 1;
 if isprop(hPs, 'autoTriggerPeriod')
     hPs.autoTriggerPeriod = 0;
@@ -116,6 +128,8 @@ end
 disp('Starting photostim mask generation');
 disp('Initial photostim prep sequence:');
 disp(hPs.sequenceSelectedStimuli);
+disp('Prepared photostim repeat count:');
+disp(repeatPreparedSequenceCount);
 hPs.start();
 disp('Photostim mask generation ready');
 end
