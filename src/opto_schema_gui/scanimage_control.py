@@ -1302,6 +1302,10 @@ class ScanImageControlWidget(QWidget):
                 state.roi_names_in_order = list(roi_names)
 
             all_new_samples: list[tuple[str, OnlineAnalysisSample]] = []
+            total_raw_samples = 0
+            skipped_nonpositive = 0
+            skipped_old_frame = 0
+            accepted_by_roi: dict[str, int] = {}
             for index, roi_name in enumerate(roi_names):
                 roi_values = values[index] if isinstance(values, list) and index < len(values) and isinstance(values[index], list) else []
                 roi_timestamps = (
@@ -1315,21 +1319,34 @@ class ScanImageControlWidget(QWidget):
                     else []
                 )
                 sample_count = min(len(roi_values), len(roi_timestamps), len(roi_frames))
+                total_raw_samples += sample_count
                 for sample_index in range(sample_count):
                     timestamp = float(roi_timestamps[sample_index])
                     frame_number = int(float(roi_frames[sample_index]))
                     value = float(roi_values[sample_index])
                     if timestamp <= 0 or frame_number <= 0:
+                        skipped_nonpositive += 1
                         continue
                     if frame_number <= state.last_frame_by_roi.get(roi_name, -1):
+                        skipped_old_frame += 1
                         continue
                     sample = OnlineAnalysisSample(timestamp=timestamp, frame_number=frame_number, value=value)
                     state.last_frame_by_roi[roi_name] = frame_number
                     recent = state.recent_samples_by_roi.setdefault(roi_name, deque())
                     recent.append(sample)
                     all_new_samples.append((roi_name, sample))
+                    accepted_by_roi[roi_name] = accepted_by_roi.get(roi_name, 0) + 1
             state.last_cursors = cursors
             self._trim_recent_samples_locked()
+            if total_raw_samples or all_new_samples:
+                active_trial_condition = state.active_trial.condition_index if state.active_trial is not None else None
+                active_trial_ordinal = state.active_trial.ordinal if state.active_trial is not None else None
+                self.signals.log_message.emit(
+                    f"[online analysis] poll raw={total_raw_samples} accepted={len(all_new_samples)} "
+                    f"skipped_nonpositive={skipped_nonpositive} skipped_old_frame={skipped_old_frame} "
+                    f"active_condition={active_trial_condition} active_ordinal={active_trial_ordinal} "
+                    f"accepted_by_roi={accepted_by_roi}"
+                )
             if all_new_samples:
                 all_new_samples.sort(key=lambda item: (item[1].timestamp, item[1].frame_number))
                 if state.active_trial is not None and state.active_trial.start_timestamp is None:
