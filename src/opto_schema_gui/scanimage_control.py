@@ -4008,19 +4008,20 @@ class ScanImageControlWidget(QWidget):
         runtime = self._runtimes[path_name]
         prep_state = runtime.prepared_photostim
         started = not wait_for_start
-        start_deadline = time.monotonic() + 60.0
         if wait_for_start:
-            while not stop_event.is_set() and time.monotonic() < start_deadline:
-                active, done = self._query_trial_waveform_status(path_name)
-                if active or not done:
-                    started = True
-                    try:
-                        self._mark_online_analysis_trial_start()
-                    except Exception as exc:
-                        self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
-                    break
-                time.sleep(0.02)
-            if not started:
+            try:
+                self._wait_for_leading_park_advance(
+                    path_name,
+                    prep_state.ready_sequence_position,
+                    prep_state.ready_completed_sequences,
+                    timeout_s=max(5.0, 4.0 * self._runtimes[path_name].path_config.sequence_block_duration_s),
+                )
+                started = True
+                try:
+                    self._mark_online_analysis_trial_start()
+                except Exception as exc:
+                    self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
+            except Exception:
                 self.signals.log_message.emit(
                     f"[{path_name}] ERROR: waveform external start was not detected for sequence '{sequence_name}'"
                 )
