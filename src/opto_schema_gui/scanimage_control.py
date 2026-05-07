@@ -225,6 +225,7 @@ class OnlineAnalysisState:
     pre_s: float = 1.0
     post_s: float = 3.0
     history_length: int = 1024
+    poll_interval_s: float = 0.05
     last_error: str = ""
     conditions: dict[int, OnlineAnalysisConditionState] = field(default_factory=dict)
     cells_by_roi_name: dict[str, OnlineAnalysisCellState] = field(default_factory=dict)
@@ -1279,7 +1280,9 @@ class ScanImageControlWidget(QWidget):
                 with self._online_analysis.lock:
                     self._online_analysis.last_error = str(exc)
                 self.signals.log_message.emit(f"[online analysis] poll warning: {exc}")
-            stop_event.wait(0.5)
+            with self._online_analysis.lock:
+                poll_interval_s = max(0.01, float(self._online_analysis.poll_interval_s))
+            stop_event.wait(poll_interval_s)
 
     def _poll_online_analysis_once(self, imaging_path: str) -> None:
         runtime = self._runtimes.get(imaging_path)
