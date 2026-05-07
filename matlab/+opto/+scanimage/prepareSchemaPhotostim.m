@@ -319,7 +319,7 @@ end
 
 function group = makeParkOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
-group.add(makeParkRoi(durationSeconds, nBeams));
+group.add(makeZeroPowerPointRoi(durationSeconds, nBeams));
 end
 
 
@@ -363,6 +363,20 @@ sfPause.repetitions = 1;
 sfPause.powers = zeros(1, nBeams);
 roi = scanimage.mroi.Roi();
 roi.add(0, sfPause);
+end
+
+
+function roi = makeZeroPowerPointRoi(durationSeconds, nBeams)
+sfPoint = scanimage.mroi.scanfield.fields.StimulusField();
+sfPoint.centerXY = [0 0];
+sfPoint.sizeXY = [0 0];
+sfPoint.stimfcnhdl = @scanimage.mroi.stimulusfunctions.point;
+sfPoint.stimparams = {};
+sfPoint.duration = durationSeconds;
+sfPoint.repetitions = 1;
+sfPoint.powers = zeros(1, nBeams);
+roi = scanimage.mroi.Roi();
+roi.add(0, sfPoint);
 end
 
 
