@@ -201,6 +201,7 @@ class OnlineAnalysisSample:
     timestamp: float
     frame_number: int
     value: float
+    host_monotonic: float
 
 
 @dataclass
@@ -208,6 +209,7 @@ class OnlineAnalysisTrial:
     condition_index: int
     ordinal: int
     start_timestamp: float | None = None
+    trigger_host_monotonic: float | None = None
     samples_by_roi: dict[str, list[OnlineAnalysisSample]] = field(default_factory=dict)
 
 
@@ -1315,6 +1317,7 @@ class ScanImageControlWidget(QWidget):
                 f"[online analysis] poll skipped because runtime '{imaging_path}' is unavailable"
             )
             return
+        poll_received_monotonic = time.monotonic()
         with self._online_analysis.lock:
             last_cursors = list(self._online_analysis.last_cursors)
         self.signals.log_message.emit(
@@ -1401,7 +1404,12 @@ class ScanImageControlWidget(QWidget):
                     if frame_number <= state.last_frame_by_roi.get(roi_name, -1):
                         skipped_old_frame += 1
                         continue
-                    sample = OnlineAnalysisSample(timestamp=timestamp, frame_number=frame_number, value=value)
+                    sample = OnlineAnalysisSample(
+                        timestamp=timestamp,
+                        frame_number=frame_number,
+                        value=value,
+                        host_monotonic=poll_received_monotonic,
+                    )
                     state.last_frame_by_roi[roi_name] = frame_number
                     recent = state.recent_samples_by_roi.setdefault(roi_name, deque())
                     recent.append(sample)
@@ -1427,7 +1435,10 @@ class ScanImageControlWidget(QWidget):
             if all_new_samples:
                 all_new_samples.sort(key=lambda item: (item[1].timestamp, item[1].frame_number))
                 if state.active_trial is not None and state.active_trial.start_timestamp is None:
-                    state.active_trial.start_timestamp = all_new_samples[0][1].timestamp
+                    estimated_start_timestamp = self._estimate_trial_start_timestamp_locked(state.active_trial)
+                    if estimated_start_timestamp is None:
+                        estimated_start_timestamp = all_new_samples[0][1].timestamp
+                    state.active_trial.start_timestamp = estimated_start_timestamp
                     self._seed_active_trial_from_recent_locked(state.active_trial)
                     seeded_counts = {
                         roi_name: len(samples)
@@ -1498,10 +1509,13 @@ class ScanImageControlWidget(QWidget):
         condition = state.conditions.get(trial.condition_index)
         if condition is None:
             return
+        start_min = trial.start_timestamp - state.pre_s
         end_timestamp = trial.start_timestamp + state.post_s
         valid_roi_names = set(condition.cell_roi_names)
         for roi_name, sample in new_samples:
             if roi_name not in valid_roi_names:
+                continue
+            if sample.timestamp < start_min:
                 continue
             if sample.timestamp > end_timestamp:
                 continue
@@ -1509,6 +1523,21 @@ class ScanImageControlWidget(QWidget):
             if bucket and bucket[-1].frame_number == sample.frame_number:
                 continue
             bucket.append(sample)
+
+    def _estimate_trial_start_timestamp_locked(self, trial: OnlineAnalysisTrial) -> float | None:
+        if trial.trigger_host_monotonic is None:
+            return None
+        latest_sample: OnlineAnalysisSample | None = None
+        for samples in self._online_analysis.recent_samples_by_roi.values():
+            if not samples:
+                continue
+            candidate = samples[-1]
+            if latest_sample is None or candidate.host_monotonic > latest_sample.host_monotonic:
+                latest_sample = candidate
+        if latest_sample is None:
+            return None
+        host_delta = trial.trigger_host_monotonic - latest_sample.host_monotonic
+        return latest_sample.timestamp + host_delta
 
     def _finalize_active_trial_locked(self) -> None:
         state = self._online_analysis
@@ -1580,7 +1609,29 @@ class ScanImageControlWidget(QWidget):
             if state.active_trial is not None:
                 self._finalize_active_trial_locked()
             ordinal = len(state.completed_trials_by_condition.get(condition_index, [])) + 1
-            state.active_trial = OnlineAnalysisTrial(condition_index=condition_index, ordinal=ordinal)
+            trigger_host_monotonic = time.monotonic()
+            state.active_trial = OnlineAnalysisTrial(
+                condition_index=condition_index,
+                ordinal=ordinal,
+                trigger_host_monotonic=trigger_host_monotonic,
+            )
+            estimated_start_timestamp = self._estimate_trial_start_timestamp_locked(state.active_trial)
+            if estimated_start_timestamp is not None:
+                state.active_trial.start_timestamp = estimated_start_timestamp
+                self._seed_active_trial_from_recent_locked(state.active_trial)
+                seeded_counts = {
+                    roi_name: len(samples)
+                    for roi_name, samples in state.active_trial.samples_by_roi.items()
+                }
+                self.signals.log_message.emit(
+                    f"[online analysis] trial trigger aligned condition={condition_index} ordinal={ordinal} "
+                    f"start_t={estimated_start_timestamp:.6f} seeded={seeded_counts}"
+                )
+            else:
+                self.signals.log_message.emit(
+                    f"[online analysis] trial trigger queued condition={condition_index} ordinal={ordinal} "
+                    f"host_t={trigger_host_monotonic:.6f}"
+                )
             self.signals.log_message.emit(
                 f"[online analysis] opened active trial condition={condition_index} ordinal={ordinal} roi_count={len(condition.cell_roi_names)}"
             )
