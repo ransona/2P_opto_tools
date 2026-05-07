@@ -16,7 +16,7 @@ import numpy as np
 import yaml
 
 from PyQt6.QtCore import QObject, Qt, QRect, QRectF, QSize, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -288,34 +288,43 @@ class ClickableImageLabel(QLabel):
         self.setPixmap(scaled)
 
 
-class TracePlotWidget(QWidget):
+class MultiCellActivityPlotWidget(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._completed_trials: list[dict[str, object]] = []
-        self._current_trial: dict[str, object] | None = None
-        self._mode = "scaled"
+        self._cell_payloads: list[dict[str, object]] = []
+        self._normalization_mode = "scaled"
+        self._display_mode = "all"
         self._pre_s = 1.0
         self._post_s = 3.0
-        self.setMinimumHeight(180)
+        self._y_max_override: float | None = None
+        self._placeholder_text = "No online activity data yet"
+        self.setMinimumHeight(220)
 
-    def set_trace_data(
+    def set_plot_data(
         self,
-        completed_trials: list[dict[str, object]],
-        current_trial: dict[str, object] | None,
+        cell_payloads: list[dict[str, object]],
         *,
-        mode: str,
+        normalization_mode: str,
+        display_mode: str,
         pre_s: float,
         post_s: float,
+        y_max_override: float | None,
+        placeholder_text: str,
     ) -> None:
-        self._completed_trials = completed_trials
-        self._current_trial = current_trial
-        self._mode = mode
+        self._cell_payloads = cell_payloads
+        self._normalization_mode = normalization_mode
+        self._display_mode = display_mode
         self._pre_s = max(0.0, float(pre_s))
         self._post_s = max(0.1, float(post_s))
+        self._y_max_override = y_max_override if y_max_override is None else float(y_max_override)
+        self._placeholder_text = placeholder_text
+        self.updateGeometry()
         self.update()
 
     def sizeHint(self) -> QSize:
-        return QSize(900, 180)
+        row_height = 28 if self._display_mode == "heat" else 44
+        summary_height = 0 if self._display_mode == "heat" else 110
+        return QSize(1100, max(220, 64 + summary_height + row_height * max(1, len(self._cell_payloads))))
 
     def _normalize_series(
         self,
@@ -334,7 +343,7 @@ class TracePlotWidget(QWidget):
         order = np.argsort(x)
         x = x[order]
         y = y[order]
-        if self._mode == "dff":
+        if self._normalization_mode == "dff":
             if y.size >= 3:
                 kernel = np.ones(5, dtype=float) / 5.0
                 smooth = np.convolve(y, kernel, mode="same")
@@ -348,13 +357,13 @@ class TracePlotWidget(QWidget):
             return x, transformed
         return x, y
 
-    def _mean_trace(
+    def _series_matrix(
         self,
         series: list[tuple[np.ndarray, np.ndarray]],
-    ) -> tuple[np.ndarray, np.ndarray] | None:
+        grid: np.ndarray,
+    ) -> np.ndarray | None:
         if not series:
             return None
-        grid = np.linspace(-self._pre_s, self._post_s, 240)
         stacked: list[np.ndarray] = []
         for x, y in series:
             if x.size == 0:
@@ -369,151 +378,298 @@ class TracePlotWidget(QWidget):
             stacked.append(interp)
         if not stacked:
             return None
-        matrix = np.vstack(stacked)
-        with np.errstate(invalid="ignore"):
-            mean_y = np.nanmean(matrix, axis=0)
-        valid = np.isfinite(mean_y)
-        if not np.any(valid):
-            return None
-        return grid[valid], mean_y[valid]
+        return np.vstack(stacked)
+
+    def _draw_polyline(self, painter: QPainter, points: list[tuple[float, float]], pen: QPen) -> None:
+        if len(points) < 2:
+            return
+        painter.setPen(pen)
+        for start, end in zip(points[:-1], points[1:], strict=False):
+            painter.drawLine(int(start[0]), int(start[1]), int(end[0]), int(end[1]))
+
+    def _draw_shaded_band(
+        self,
+        painter: QPainter,
+        xs: np.ndarray,
+        lower: np.ndarray,
+        upper: np.ndarray,
+        map_point,
+        color: QColor,
+    ) -> None:
+        valid = np.isfinite(xs) & np.isfinite(lower) & np.isfinite(upper)
+        if np.count_nonzero(valid) < 2:
+            return
+        xs = xs[valid]
+        lower = lower[valid]
+        upper = upper[valid]
+        upper_points = [map_point(float(xv), float(yv)) for xv, yv in zip(xs, upper, strict=False)]
+        lower_points = [map_point(float(xv), float(yv)) for xv, yv in zip(xs[::-1], lower[::-1], strict=False)]
+        polygon = upper_points + lower_points
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawPolygon(QPolygonF([QRectF(px, py, 0.0, 0.0).topLeft() for px, py in polygon]))
+
+    def _line_limits(self) -> tuple[float, float]:
+        observed_min = 0.0
+        observed_max = 1.0
+        have_values = False
+        for payload in self._cell_payloads:
+            completed_trials = payload.get("completed_trials", [])
+            for trial in completed_trials:
+                normalized = self._normalize_series(list(trial.get("times", [])), list(trial.get("values", [])))
+                if normalized is None:
+                    continue
+                _x, y = normalized
+                if y.size:
+                    observed_min = min(observed_min, float(np.nanmin(y)))
+                    observed_max = max(observed_max, float(np.nanmax(y)))
+                    have_values = True
+            current_trial = payload.get("current_trial")
+            if isinstance(current_trial, dict):
+                normalized = self._normalize_series(list(current_trial.get("times", [])), list(current_trial.get("values", [])))
+                if normalized is not None:
+                    _x, y = normalized
+                    if y.size:
+                        observed_min = min(observed_min, float(np.nanmin(y)))
+                        observed_max = max(observed_max, float(np.nanmax(y)))
+                        have_values = True
+        if not have_values:
+            return 0.0, 1.0
+        if self._y_max_override is not None:
+            return observed_min, max(self._y_max_override, observed_min + 1e-6)
+        if abs(observed_max - observed_min) < 1e-9:
+            return observed_min - 0.5, observed_max + 0.5
+        margin = 0.1 * (observed_max - observed_min)
+        return observed_min - margin, observed_max + margin
+
+    def _heat_color(self, value: float, vmin: float, vmax: float) -> QColor:
+        if not np.isfinite(value):
+            return QColor("#0f172a")
+        span = max(1e-9, vmax - vmin)
+        clipped = min(vmax, max(vmin, value))
+        t = (clipped - vmin) / span
+        return QColor(int(20 + 235 * t), int(24 + 180 * t), int(40 + 40 * (1.0 - t)))
+
+    def _render_line_mode(self, painter: QPainter, plot_rect: QRect) -> None:
+        x_min = -self._pre_s
+        x_max = self._post_s
+        y_min, y_max = self._line_limits()
+        label_width = 180
+        time_axis_height = 26
+        row_gap = 6
+        summary_height = 96
+        summary_gap = 14
+        summary_rect = plot_rect.adjusted(label_width, 8, -12, -(plot_rect.height() - 8 - summary_height))
+        rows_rect = plot_rect.adjusted(label_width, summary_height + summary_gap + 8, -12, -time_axis_height)
+        row_count = max(1, len(self._cell_payloads))
+        row_height = max(18.0, (rows_rect.height() - row_gap * (row_count - 1)) / row_count)
+
+        def map_point(x_value: float, y_value: float, row_index: int) -> tuple[float, float]:
+            row_top = rows_rect.top() + row_index * (row_height + row_gap)
+            x_norm = (x_value - x_min) / max(1e-9, x_max - x_min)
+            y_norm = (y_value - y_min) / max(1e-9, y_max - y_min)
+            px = rows_rect.left() + x_norm * rows_rect.width()
+            py = row_top + row_height - y_norm * row_height
+            return px, py
+
+        zero_x = rows_rect.left() + ((0.0 - x_min) / max(1e-9, x_max - x_min)) * rows_rect.width()
+        painter.setPen(QPen(QColor("#475569"), 3))
+        painter.drawLine(int(zero_x), summary_rect.top(), int(zero_x), rows_rect.bottom())
+
+        painter.setPen(QPen(QColor("#e2e8f0"), 1))
+        for row_index in range(row_count):
+            row_bottom = rows_rect.top() + row_index * (row_height + row_gap) + row_height
+            painter.drawLine(rows_rect.left(), int(row_bottom), rows_rect.right(), int(row_bottom))
+
+        grid = np.linspace(x_min, x_max, 240)
+        summary_mean_rows: list[np.ndarray] = []
+        summary_current_rows: list[np.ndarray] = []
+        for row_index, payload in enumerate(self._cell_payloads):
+            label = str(payload.get("label", "")).strip() or str(payload.get("roi_name", ""))
+            row_mid = rows_rect.top() + row_index * (row_height + row_gap) + row_height / 2.0
+            painter.setPen(QColor("#0f172a"))
+            painter.drawText(
+                QRect(plot_rect.left() + 6, int(row_mid - 12), label_width - 18, 24),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                label,
+            )
+            completed_series = [
+                normalized
+                for trial in payload.get("completed_trials", [])
+                if (normalized := self._normalize_series(list(trial.get("times", [])), list(trial.get("values", [])))) is not None
+            ]
+            current_series = None
+            current_trial = payload.get("current_trial")
+            if isinstance(current_trial, dict):
+                current_series = self._normalize_series(list(current_trial.get("times", [])), list(current_trial.get("values", [])))
+            all_series = completed_series + ([current_series] if current_series is not None else [])
+            matrix = self._series_matrix(all_series, grid)
+            mean_trace = None
+            sem_trace = None
+            if matrix is not None:
+                with np.errstate(invalid="ignore"):
+                    mean_trace = np.nanmean(matrix, axis=0)
+                    counts = np.sum(np.isfinite(matrix), axis=0)
+                    sem_trace = np.nanstd(matrix, axis=0) / np.sqrt(np.maximum(counts, 1))
+                summary_mean_rows.append(mean_trace)
+
+            if self._display_mode == "all":
+                for series in completed_series:
+                    x_vals, y_vals = series
+                    points = [map_point(float(xv), float(yv), row_index) for xv, yv in zip(x_vals, y_vals, strict=False)]
+                    self._draw_polyline(painter, points, QPen(QColor("#cbd5e1"), 1))
+
+            if self._display_mode == "mean_error" and mean_trace is not None and sem_trace is not None:
+                self._draw_shaded_band(
+                    painter,
+                    grid,
+                    mean_trace - sem_trace,
+                    mean_trace + sem_trace,
+                    lambda xv, yv: map_point(xv, yv, row_index),
+                    QColor(148, 163, 184, 90),
+                )
+
+            if mean_trace is not None:
+                points = [
+                    map_point(float(xv), float(yv), row_index)
+                    for xv, yv in zip(grid, mean_trace, strict=False)
+                    if np.isfinite(yv)
+                ]
+                self._draw_polyline(painter, points, QPen(QColor("#111827"), 2))
+
+            if current_series is not None:
+                x_vals, y_vals = current_series
+                points = [map_point(float(xv), float(yv), row_index) for xv, yv in zip(x_vals, y_vals, strict=False)]
+                self._draw_polyline(painter, points, QPen(QColor("#15803d"), 2))
+                current_matrix = self._series_matrix([current_series], grid)
+                if current_matrix is not None:
+                    summary_current_rows.append(current_matrix[0])
+
+        if summary_mean_rows:
+            summary_matrix = np.vstack(summary_mean_rows)
+            with np.errstate(invalid="ignore"):
+                summary_mean = np.nanmean(summary_matrix, axis=0)
+                summary_sem = np.nanstd(summary_matrix, axis=0) / np.sqrt(np.maximum(np.sum(np.isfinite(summary_matrix), axis=0), 1))
+
+            def map_summary_point(x_value: float, y_value: float) -> tuple[float, float]:
+                x_norm = (x_value - x_min) / max(1e-9, x_max - x_min)
+                y_norm = (y_value - y_min) / max(1e-9, y_max - y_min)
+                px = summary_rect.left() + x_norm * summary_rect.width()
+                py = summary_rect.bottom() - y_norm * summary_rect.height()
+                return px, py
+
+            painter.setPen(QColor("#0f172a"))
+            painter.drawText(QRect(plot_rect.left() + 6, summary_rect.top(), label_width - 18, 24), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "Mean all ROIs")
+            painter.setPen(QPen(QColor("#e2e8f0"), 1))
+            for frac in (0.0, 0.5, 1.0):
+                y_line = summary_rect.top() + frac * summary_rect.height()
+                painter.drawLine(summary_rect.left(), int(y_line), summary_rect.right(), int(y_line))
+            if self._display_mode == "mean_error":
+                self._draw_shaded_band(
+                    painter,
+                    grid,
+                    summary_mean - summary_sem,
+                    summary_mean + summary_sem,
+                    map_summary_point,
+                    QColor(148, 163, 184, 90),
+                )
+            points = [
+                map_summary_point(float(xv), float(yv))
+                for xv, yv in zip(grid, summary_mean, strict=False)
+                if np.isfinite(yv)
+            ]
+            self._draw_polyline(painter, points, QPen(QColor("#111827"), 2))
+            if summary_current_rows:
+                current_summary = np.nanmean(np.vstack(summary_current_rows), axis=0)
+                points = [
+                    map_summary_point(float(xv), float(yv))
+                    for xv, yv in zip(grid, current_summary, strict=False)
+                    if np.isfinite(yv)
+                ]
+                self._draw_polyline(painter, points, QPen(QColor("#15803d"), 2))
+            painter.setPen(QColor("#0f172a"))
+            painter.drawRect(summary_rect)
+
+        painter.setPen(QColor("#0f172a"))
+        painter.drawRect(rows_rect)
+        painter.drawText(rows_rect.left(), plot_rect.bottom() - 6, f"{x_min:.1f}s")
+        painter.drawText(int(zero_x) - 8, plot_rect.bottom() - 6, "0")
+        painter.drawText(rows_rect.right() - 28, plot_rect.bottom() - 6, f"{x_max:.1f}s")
+
+    def _render_heat_mode(self, painter: QPainter, plot_rect: QRect) -> None:
+        x_min = -self._pre_s
+        x_max = self._post_s
+        grid = np.linspace(x_min, x_max, 240)
+        label_width = 180
+        heat_rect = plot_rect.adjusted(label_width, 8, -12, -28)
+        row_count = max(1, len(self._cell_payloads))
+        row_height = max(12.0, heat_rect.height() / row_count)
+        observed_min = 0.0
+        observed_max = 1.0
+        mean_rows: list[np.ndarray] = []
+        for payload in self._cell_payloads:
+            all_series = [
+                normalized
+                for trial in payload.get("completed_trials", [])
+                if (normalized := self._normalize_series(list(trial.get("times", [])), list(trial.get("values", [])))) is not None
+            ]
+            current_trial = payload.get("current_trial")
+            if isinstance(current_trial, dict):
+                normalized = self._normalize_series(list(current_trial.get("times", [])), list(current_trial.get("values", [])))
+                if normalized is not None:
+                    all_series.append(normalized)
+            matrix = self._series_matrix(all_series, grid)
+            if matrix is None:
+                mean_trace = np.full(grid.shape, np.nan, dtype=float)
+            else:
+                with np.errstate(invalid="ignore"):
+                    mean_trace = np.nanmean(matrix, axis=0)
+            mean_rows.append(mean_trace)
+            valid = mean_trace[np.isfinite(mean_trace)]
+            if valid.size:
+                observed_min = min(observed_min, float(np.nanmin(valid)))
+                observed_max = max(observed_max, float(np.nanmax(valid)))
+
+        heat_min = min(0.0, observed_min)
+        heat_max = self._y_max_override if self._y_max_override is not None else observed_max
+        cell_width = max(1.0, heat_rect.width() / max(1, grid.size))
+        for row_index, (payload, mean_trace) in enumerate(zip(self._cell_payloads, mean_rows, strict=False)):
+            label = str(payload.get("label", "")).strip() or str(payload.get("roi_name", ""))
+            row_top = heat_rect.top() + row_index * row_height
+            painter.setPen(QColor("#0f172a"))
+            painter.drawText(
+                QRect(plot_rect.left() + 6, int(row_top), label_width - 18, int(row_height)),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                label,
+            )
+            for col_index, value in enumerate(mean_trace):
+                left = heat_rect.left() + col_index * cell_width
+                painter.fillRect(QRectF(left, row_top, cell_width + 1.0, row_height), self._heat_color(float(value), heat_min, heat_max))
+
+        zero_x = heat_rect.left() + ((0.0 - x_min) / max(1e-9, x_max - x_min)) * heat_rect.width()
+        painter.setPen(QPen(QColor("#ffffff"), 3))
+        painter.drawLine(int(zero_x), heat_rect.top(), int(zero_x), heat_rect.bottom())
+        painter.setPen(QColor("#0f172a"))
+        painter.drawRect(heat_rect)
+        painter.drawText(heat_rect.left(), plot_rect.bottom() - 6, f"{x_min:.1f}s")
+        painter.drawText(int(zero_x) - 8, plot_rect.bottom() - 6, "0")
+        painter.drawText(heat_rect.right() - 28, plot_rect.bottom() - 6, f"{x_max:.1f}s")
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#ffffff"))
-
-        plot_rect = self.rect().adjusted(48, 16, -12, -24)
+        plot_rect = self.rect().adjusted(8, 8, -8, -8)
         if plot_rect.width() <= 10 or plot_rect.height() <= 10:
             return
-
-        completed_series = [
-            normalized
-            for trial in self._completed_trials
-            if (normalized := self._normalize_series(
-                list(trial.get("times", [])),
-                list(trial.get("values", [])),
-            )) is not None
-        ]
-        current_series = None
-        if isinstance(self._current_trial, dict):
-            current_series = self._normalize_series(
-                list(self._current_trial.get("times", [])),
-                list(self._current_trial.get("values", [])),
-            )
-        mean_trace = self._mean_trace(
-            completed_series + ([current_series] if current_series is not None else [])
-        )
-
-        if not completed_series and current_series is None:
+        if not self._cell_payloads:
             painter.setPen(QColor("#64748b"))
-            painter.drawText(plot_rect, Qt.AlignmentFlag.AlignCenter, "No online activity data yet")
+            painter.drawText(plot_rect, Qt.AlignmentFlag.AlignCenter, self._placeholder_text)
             return
-
-        y_min = 0.0
-        y_max = 1.0
-        if mean_trace is not None:
-            mean_y = mean_trace[1]
-            y_min = float(np.nanmin(mean_y))
-            y_max = float(np.nanmax(mean_y))
-            if not np.isfinite(y_min) or not np.isfinite(y_max):
-                y_min, y_max = 0.0, 1.0
-            if abs(y_max - y_min) < 1e-9:
-                y_min -= 0.5
-                y_max += 0.5
-            else:
-                margin = 0.1 * (y_max - y_min)
-                y_min -= margin
-                y_max += margin
-        elif current_series is not None:
-            y_min = float(np.nanmin(current_series[1]))
-            y_max = float(np.nanmax(current_series[1]))
-            if abs(y_max - y_min) < 1e-9:
-                y_min -= 0.5
-                y_max += 0.5
-
-        x_min = -self._pre_s
-        x_max = self._post_s
-
-        def map_point(x_value: float, y_value: float) -> tuple[float, float]:
-            x_norm = (x_value - x_min) / max(1e-9, x_max - x_min)
-            y_norm = (y_value - y_min) / max(1e-9, y_max - y_min)
-            px = plot_rect.left() + x_norm * plot_rect.width()
-            py = plot_rect.bottom() - y_norm * plot_rect.height()
-            return px, py
-
-        painter.setPen(QPen(QColor("#e2e8f0"), 1))
-        for frac in (0.0, 0.5, 1.0):
-            y_line = plot_rect.top() + frac * plot_rect.height()
-            painter.drawLine(plot_rect.left(), int(y_line), plot_rect.right(), int(y_line))
-
-        zero_x, _ = map_point(0.0, y_min)
-        painter.setPen(QPen(QColor("#94a3b8"), 1, Qt.PenStyle.DashLine))
-        painter.drawLine(int(zero_x), plot_rect.top(), int(zero_x), plot_rect.bottom())
-
-        def draw_series(series: tuple[np.ndarray, np.ndarray], pen: QPen) -> None:
-            x_vals, y_vals = series
-            if x_vals.size == 0:
-                return
-            points = [map_point(float(x_val), float(y_val)) for x_val, y_val in zip(x_vals, y_vals, strict=False)]
-            if len(points) < 2:
-                return
-            painter.setPen(pen)
-            for start, end in zip(points[:-1], points[1:], strict=False):
-                painter.drawLine(int(start[0]), int(start[1]), int(end[0]), int(end[1]))
-
-        completed_pen = QPen(QColor("#cbd5e1"), 1)
-        for series in completed_series:
-            draw_series(series, completed_pen)
-        if mean_trace is not None:
-            draw_series(mean_trace, QPen(QColor("#111827"), 2))
-        if current_series is not None:
-            draw_series(current_series, QPen(QColor("#15803d"), 2))
-
-        painter.setPen(QColor("#0f172a"))
-        painter.drawRect(plot_rect)
-        painter.drawText(6, plot_rect.top() + 4, "y")
-        painter.drawText(plot_rect.left(), self.height() - 6, f"{x_min:.1f}s")
-        painter.drawText(int(zero_x) - 8, self.height() - 6, "0")
-        painter.drawText(plot_rect.right() - 28, self.height() - 6, f"{x_max:.1f}s")
-
-
-class OnlineActivityCellPanel(QWidget):
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        self.title_label = QLabel()
-        self.title_label.setWordWrap(True)
-        self.plot = TracePlotWidget()
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.plot)
-
-    def set_payload(
-        self,
-        payload: dict[str, object],
-        *,
-        mode: str,
-        pre_s: float,
-        post_s: float,
-    ) -> None:
-        patterns = ", ".join(str(pattern) for pattern in payload.get("patterns", []))
-        origin = str(payload.get("origin", "")).strip()
-        title = (
-            f"{payload.get('label', '')} | x={float(payload.get('x_um', 0.0)):.1f} "
-            f"y={float(payload.get('y_um', 0.0)):.1f} z={float(payload.get('z_um', 0.0)):.1f}"
-        )
-        if patterns:
-            title += f" | patterns: {patterns}"
-        if origin:
-            title += f" | {origin}"
-        self.title_label.setText(title)
-        self.plot.set_trace_data(
-            list(payload.get("completed_trials", [])),
-            payload.get("current_trial") if isinstance(payload.get("current_trial"), dict) else None,
-            mode=mode,
-            pre_s=pre_s,
-            post_s=post_s,
-        )
+        if self._display_mode == "heat":
+            self._render_heat_mode(painter, plot_rect)
+        else:
+            self._render_line_mode(painter, plot_rect)
 
 
 class OnlineActivityWidget(QWidget):
@@ -521,7 +677,6 @@ class OnlineActivityWidget(QWidget):
         super().__init__(parent)
         self.scanimage_control = scanimage_control
         self._suppress_refresh = False
-        self._panels: dict[str, OnlineActivityCellPanel] = {}
         self._build_ui()
         self._timer = QTimer(self)
         self._timer.setInterval(500)
@@ -552,6 +707,14 @@ class OnlineActivityWidget(QWidget):
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("Scaled", "scaled")
         self.mode_combo.addItem("dF/F", "dff")
+        self.display_combo = QComboBox()
+        self.display_combo.addItem("All traces", "all")
+        self.display_combo.addItem("Mean only", "mean")
+        self.display_combo.addItem("Mean + shaded error", "mean_error")
+        self.display_combo.addItem("Heat map", "heat")
+        self.y_max_edit = QLineEdit()
+        self.y_max_edit.setPlaceholderText("auto")
+        self.y_max_edit.setMaximumWidth(90)
         controls_row.addWidget(QLabel("Condition"))
         controls_row.addWidget(self.condition_combo, 1)
         controls_row.addWidget(self.auto_jump_checkbox)
@@ -565,8 +728,12 @@ class OnlineActivityWidget(QWidget):
         controls_row.addWidget(self.pre_spin)
         controls_row.addWidget(QLabel("Post s"))
         controls_row.addWidget(self.post_spin)
-        controls_row.addWidget(QLabel("Mode"))
+        controls_row.addWidget(QLabel("Normalization"))
         controls_row.addWidget(self.mode_combo)
+        controls_row.addWidget(QLabel("Display"))
+        controls_row.addWidget(self.display_combo)
+        controls_row.addWidget(QLabel("Y max"))
+        controls_row.addWidget(self.y_max_edit)
         layout.addLayout(controls_row)
 
         self.status_label = QLabel("Online Analysis disabled")
@@ -575,12 +742,8 @@ class OnlineActivityWidget(QWidget):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_contents = QWidget()
-        self.scroll_layout = QVBoxLayout(self.scroll_contents)
-        self.scroll_layout.setContentsMargins(8, 8, 8, 8)
-        self.scroll_layout.setSpacing(10)
-        self.scroll_layout.addStretch(1)
-        self.scroll_area.setWidget(self.scroll_contents)
+        self.plot_widget = MultiCellActivityPlotWidget()
+        self.scroll_area.setWidget(self.plot_widget)
         layout.addWidget(self.scroll_area, 1)
 
         self.condition_combo.currentIndexChanged.connect(self.refresh)
@@ -590,6 +753,8 @@ class OnlineActivityWidget(QWidget):
         self.pre_spin.valueChanged.connect(self._push_settings)
         self.post_spin.valueChanged.connect(self._push_settings)
         self.mode_combo.currentIndexChanged.connect(self.refresh)
+        self.display_combo.currentIndexChanged.connect(self.refresh)
+        self.y_max_edit.textChanged.connect(self.refresh)
 
     def _selected_condition_index(self) -> int | None:
         data = self.condition_combo.currentData()
@@ -606,14 +771,6 @@ class OnlineActivityWidget(QWidget):
             pre_s=self.pre_spin.value(),
             post_s=self.post_spin.value(),
         )
-
-    def _clear_panels(self) -> None:
-        while self.scroll_layout.count() > 1:
-            item = self.scroll_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._panels.clear()
 
     def refresh(self) -> None:
         selected_condition = self._selected_condition_index()
@@ -677,10 +834,13 @@ class OnlineActivityWidget(QWidget):
             status_bits.append("Online Analysis enabled")
         exp_id = str(snapshot.get("exp_id", "")).strip()
         imaging_path = str(snapshot.get("imaging_path", "")).strip()
+        current_trial_stimulus_id = snapshot.get("current_trial_stimulus_id")
         if exp_id:
             status_bits.append(f"expID={exp_id}")
         if imaging_path:
             status_bits.append(f"path={imaging_path}")
+        if current_trial_stimulus_id is not None:
+            status_bits.append(f"current trial type ID={current_trial_stimulus_id}")
         if configured:
             status_bits.append("configured")
         else:
@@ -691,27 +851,37 @@ class OnlineActivityWidget(QWidget):
         self.status_label.setText(" | ".join(status_bits))
 
         cells = list(snapshot.get("cells", []))
-        self._clear_panels()
-        if not enabled:
-            placeholder = QLabel("Enable Online Analysis next to Save Schema to activate live ROI plotting.")
-            placeholder.setWordWrap(True)
-            self.scroll_layout.insertWidget(0, placeholder)
-            return
-        if not cells:
-            placeholder = QLabel("No plottable cells for the selected condition yet.")
-            placeholder.setWordWrap(True)
-            self.scroll_layout.insertWidget(0, placeholder)
-            return
-
-        mode = str(self.mode_combo.currentData() or "scaled")
+        normalization_mode = str(self.mode_combo.currentData() or "scaled")
+        display_mode = str(self.display_combo.currentData() or "all")
         pre_s = float(snapshot.get("pre_s", 1.0))
         post_s = float(snapshot.get("post_s", 3.0))
-        for payload in cells:
-            roi_name = str(payload.get("roi_name", ""))
-            panel = OnlineActivityCellPanel()
-            panel.set_payload(payload, mode=mode, pre_s=pre_s, post_s=post_s)
-            self._panels[roi_name] = panel
-            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, panel)
+        y_max_override = None
+        raw_y_max = self.y_max_edit.text().strip()
+        if raw_y_max:
+            try:
+                y_max_override = float(raw_y_max)
+            except ValueError:
+                y_max_override = None
+        if not enabled:
+            self.plot_widget.set_plot_data(
+                [],
+                normalization_mode=normalization_mode,
+                display_mode=display_mode,
+                pre_s=pre_s,
+                post_s=post_s,
+                y_max_override=None,
+                placeholder_text="Enable Online Analysis next to Save Schema to activate live ROI plotting.",
+            )
+            return
+        self.plot_widget.set_plot_data(
+            cells,
+            normalization_mode=normalization_mode,
+            display_mode=display_mode,
+            pre_s=pre_s,
+            post_s=post_s,
+            y_max_override=y_max_override,
+            placeholder_text="No plottable cells for the selected condition yet.",
+        )
 
 
 def _parse_cell_id_list(raw_text: str) -> list[int]:

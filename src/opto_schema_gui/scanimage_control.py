@@ -213,7 +213,7 @@ class OnlineAnalysisTrial:
 
 @dataclass
 class OnlineAnalysisState:
-    enabled: bool = False
+    enabled: bool = True
     imaging_path: str = ""
     requested_imaging_path: str = ""
     exp_id: str = ""
@@ -840,7 +840,6 @@ class ScanImageControlWidget(QWidget):
                 reconfigure = True
             self._online_analysis.pre_s = max(0.0, float(pre_s))
             self._online_analysis.post_s = max(0.1, float(post_s))
-            self._online_analysis.clear_runtime_buffers()
         if reconfigure and self.online_analysis_enabled():
             self._configure_online_analysis_if_possible_async()
 
@@ -869,6 +868,12 @@ class ScanImageControlWidget(QWidget):
             if selected_index is None:
                 supported_indices = [idx for idx, cond in state.conditions.items() if cond.supported]
                 selected_index = supported_indices[0] if supported_indices else None
+
+            current_trial_stimulus_id: object | None = None
+            if state.current_condition_index is not None:
+                current_condition = state.conditions.get(state.current_condition_index)
+                if current_condition is not None:
+                    current_trial_stimulus_id = current_condition.stimulus_id
 
             cell_payloads: list[dict[str, object]] = []
             if selected_index is not None and selected_index in state.conditions:
@@ -923,6 +928,7 @@ class ScanImageControlWidget(QWidget):
                 "last_error": state.last_error,
                 "conditions": conditions_payload,
                 "current_condition_index": state.current_condition_index,
+                "current_trial_stimulus_id": current_trial_stimulus_id,
                 "selected_condition_index": selected_index,
                 "cells": cell_payloads,
             }
