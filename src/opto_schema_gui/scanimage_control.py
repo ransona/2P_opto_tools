@@ -3211,6 +3211,11 @@ class ScanImageControlWidget(QWidget):
                     for index, sequence_name in enumerate(prepared_sequence_names)
                 ]
                 self.signals.log_message.emit(f"[{photostim_path}] prepared sequence block stimulus groups for {len(prepared_sequence_names)} sequence(s)")
+                if self.online_analysis_enabled():
+                    try:
+                        self._configure_online_analysis_if_possible()
+                    except Exception as exc:
+                        self.signals.log_message.emit(f"[online analysis] prep hook warning: {exc}")
             if not ok:
                 payload["error"] = "prep_patterns failed"
 
