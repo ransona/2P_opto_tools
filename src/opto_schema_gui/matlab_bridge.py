@@ -1116,6 +1116,7 @@ def build_prepare_trial_waveform_command(
             + "', pulses=' num2str(numel(trialTriggerTimesSec)) "
             + "', pulse_width_s=' num2str(trialPulseWidthSec, '%.4f') "
             + "', total_duration_s=' num2str(trialTotalDurationSec, '%.4f')]);",
+            "assignin('base', 'optoPhotostimTrialDoTaskStarted', false);",
             "do_task = opto.scanimage.testVdaqDoTriggeredByDi("
             + f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
             + f"'startTrigger', {start_trigger_expr}, "
@@ -1126,6 +1127,9 @@ def build_prepare_trial_waveform_command(
             + "'taskVarName', 'optoPhotostimTrialDoTask', "
             + f"'startTriggerEdge', {matlab_string(path_config.trial_waveform_start_trigger_edge)}, "
             + "'autoStart', false);",
+            "do_task.sampleCallbackAutoRead = false;",
+            "do_task.sampleCallbackN = 1;",
+            "do_task.sampleCallback = @(varargin) assignin('base', 'optoPhotostimTrialDoTaskStarted', true);",
             "disp('TRIAL_WAVEFORM_READY');",
         ]
     )
@@ -1169,6 +1173,8 @@ def build_trial_waveform_status_command(path_config: PathConfig) -> str:
             "if most.idioms.isValidObj(do_task); disp(double(do_task.active)); else; disp(0); end",
             "disp('TRIAL_WAVEFORM_TASK_DONE');",
             "if most.idioms.isValidObj(do_task); disp(double(~do_task.active)); else; disp(1); end",
+            "disp('TRIAL_WAVEFORM_TASK_STARTED');",
+            "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStarted'',''var'')'); disp(double(evalin('base', 'optoPhotostimTrialDoTaskStarted'))); else; disp(0); end",
             "disp('TRIAL_WAVEFORM_STATUS_READY');",
         ]
     )
@@ -1186,6 +1192,7 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
             "    end",
             "    evalin('base', 'clear optoPhotostimTrialDoTask');",
             "end",
+            "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStarted'',''var'')'); evalin('base', 'clear optoPhotostimTrialDoTaskStarted'); end",
             "disp('TRIAL_WAVEFORM_STOPPED');",
         ]
     )

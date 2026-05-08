@@ -3807,7 +3807,7 @@ class ScanImageControlWidget(QWidget):
         runtime.waveform_monitor_stop = None
         runtime.waveform_monitor_thread = None
 
-    def _query_trial_waveform_status(self, path_name: str) -> tuple[bool, bool]:
+    def _query_trial_waveform_status(self, path_name: str) -> tuple[bool, bool, bool]:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
@@ -3817,12 +3817,18 @@ class ScanImageControlWidget(QWidget):
             )
         active = False
         done = True
+        started = False
         marker = None
         for raw_line in lines:
             line = raw_line.strip()
             if not line:
                 continue
-            if line in {"TRIAL_WAVEFORM_TASK_ACTIVE", "TRIAL_WAVEFORM_TASK_DONE", "TRIAL_WAVEFORM_STATUS_READY"}:
+            if line in {
+                "TRIAL_WAVEFORM_TASK_ACTIVE",
+                "TRIAL_WAVEFORM_TASK_DONE",
+                "TRIAL_WAVEFORM_TASK_STARTED",
+                "TRIAL_WAVEFORM_STATUS_READY",
+            }:
                 marker = line
                 continue
             if marker == "TRIAL_WAVEFORM_TASK_ACTIVE":
@@ -3835,7 +3841,12 @@ class ScanImageControlWidget(QWidget):
                     done = bool(int(float(line)))
                 except ValueError:
                     done = True
-        return active, done
+            elif marker == "TRIAL_WAVEFORM_TASK_STARTED":
+                try:
+                    started = bool(int(float(line)))
+                except ValueError:
+                    started = False
+        return active, done, started
 
     def _query_raw_vdaq_do_test_status(self, path_name: str) -> tuple[bool, bool]:
         runtime = self._ensure_session(path_name)
@@ -4072,8 +4083,8 @@ class ScanImageControlWidget(QWidget):
         if wait_for_start:
             start_deadline = time.monotonic() + 30.0
             while not stop_event.is_set() and time.monotonic() < start_deadline:
-                active, done = self._query_trial_waveform_status(path_name)
-                if active:
+                active, done, started = self._query_trial_waveform_status(path_name)
+                if started:
                     mark_trial_start_once()
                     break
                 time.sleep(0.02)
