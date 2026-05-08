@@ -1094,19 +1094,6 @@ def build_abort_photostim_command(path_config: PathConfig) -> str:
     )
 
 
-def build_software_trigger_command(path_config: PathConfig) -> str:
-    hsi = path_config.hsi_variable
-    return "\n".join(
-        [
-            build_global_preamble(path_config),
-            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
-            "hPs = " + hsi + ".hPhotostim;",
-            "hPs.triggerStim();",
-            "disp('SOFTWARE_TRIGGER_FIRED');",
-        ]
-    )
-
-
 def build_prepare_trial_waveform_command(
     path_config: PathConfig,
     trigger_times_s: list[float],

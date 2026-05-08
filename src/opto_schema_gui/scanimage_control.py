@@ -67,7 +67,6 @@ from .matlab_bridge import (
     build_run_script_command,
     build_schema_payload_load_command,
     build_configure_online_analysis_command,
-    build_software_trigger_command,
     build_start_trial_waveform_command,
     build_stop_trial_waveform_command,
     build_test_stim_waveform_command,
@@ -3782,16 +3781,6 @@ class ScanImageControlWidget(QWidget):
         active, position, sequence, _, _ = self._query_photostim_sequence_state(path_name)
         return active, position, sequence
 
-    def _fire_software_trigger(self, path_name: str) -> None:
-        runtime = self._ensure_session(path_name)
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_software_trigger_command(runtime.path_config),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
-        self._emit_lines(path_name, lines)
-
     def _cancel_software_trigger(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
         if runtime.software_trigger_stop is not None:
@@ -3931,7 +3920,7 @@ class ScanImageControlWidget(QWidget):
                     schema_name=schema_name,
                     exp_id=exp_id,
                     seq_num=seq_num,
-                    wait_for_start=False,
+                    wait_for_start=True,
                 )
             finally:
                 runtime.waveform_monitor_stop = None
@@ -4115,43 +4104,6 @@ class ScanImageControlWidget(QWidget):
             }
             self._send_json_reply(request_path_name, reply_address, payload)
 
-    def _wait_for_first_trigger_advance(
-        self,
-        path_name: str,
-        baseline_position: int | None,
-        baseline_completed_sequences: int | None,
-        timeout_s: float = 20.0,
-    ) -> tuple[int | None, int | None]:
-        deadline = time.monotonic() + timeout_s
-        last_active = False
-        last_position: int | None = None
-        last_completed: int | None = None
-        last_sequence: list[int] = []
-        while time.monotonic() < deadline:
-            active, current_position, sequence, completed_sequences, _ = self._query_photostim_sequence_state(path_name)
-            last_active = active
-            last_position = current_position
-            last_completed = completed_sequences
-            last_sequence = sequence
-            if baseline_completed_sequences is not None and completed_sequences is not None:
-                if completed_sequences > baseline_completed_sequences:
-                    self.signals.log_message.emit(
-                        f"[{path_name}] First trigger advance detected: "
-                        f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
-                    )
-                    return current_position, completed_sequences
-            if baseline_position is not None and current_position is not None and current_position != baseline_position:
-                self.signals.log_message.emit(
-                    f"[{path_name}] First trigger advance detected: "
-                    f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
-                )
-                return current_position, completed_sequences
-            time.sleep(0.02)
-        raise RuntimeError(
-            "First trigger did not advance photostim sequence before ready. "
-            + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
-        )
-
     def _wait_for_expected_photostim_completion(
         self,
         path_name: str,
@@ -4280,42 +4232,22 @@ class ScanImageControlWidget(QWidget):
 
         software_mode = self._current_trigger_mode() != "hardware"
         if software_mode:
-            self.signals.log_message.emit(
-                f"[{path_name}] First-trigger baseline: "
-                + self._format_photostim_state(baseline_active, baseline_position, baseline_completed, stimulus_group_nums)
-            )
-            if len(trigger_times_s) > 1:
-                remaining_trigger_times_s = [max(0.0, t) for t in trigger_times_s[1:]]
-                prep_state.waveform_expected_done_time_s = remaining_trigger_times_s[-1]
-                self._prepare_trial_waveform(path_name, remaining_trigger_times_s, external_start=False)
-            else:
-                remaining_trigger_times_s = []
-            self._fire_software_trigger(path_name)
-            try:
-                self._mark_online_analysis_trial_start()
-            except Exception as exc:
-                self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
-            ready_position, ready_completed = self._wait_for_first_trigger_advance(
+            prep_state.ready_sequence_position = baseline_position
+            prep_state.ready_completed_sequences = baseline_completed
+            prep_state.remaining_expected_triggers = len(trigger_times_s)
+            prep_state.waveform_expected_done_time_s = trigger_times_s[-1] if trigger_times_s else 0.0
+            self._prepare_trial_waveform(path_name, trigger_times_s, external_start=False)
+            self._start_waveform_software_playback(
                 path_name,
-                baseline_position,
-                baseline_completed,
-                timeout_s=max(5.0, 4.0 * self._runtimes[path_name].path_config.sequence_block_duration_s),
+                sequence_name,
+                request_path_name=request_path_name,
+                reply_address=reply_address,
+                schema_name=schema_name,
+                exp_id=exp_id,
+                seq_num=seq_num,
             )
-            prep_state.ready_sequence_position = ready_position
-            prep_state.ready_completed_sequences = ready_completed
-            prep_state.remaining_expected_triggers = max(0, len(trigger_times_s) - 1)
-            if remaining_trigger_times_s:
-                self._start_waveform_software_playback(
-                    path_name,
-                    sequence_name,
-                    request_path_name=request_path_name,
-                    reply_address=reply_address,
-                    schema_name=schema_name,
-                    exp_id=exp_id,
-                    seq_num=seq_num,
-                )
             self.signals.log_message.emit(
-                f"[{path_name}] first trigger software-fired before ready"
+                f"[{path_name}] sequence started from software trigger train"
             )
         else:
             prep_state.ready_sequence_position = baseline_position
