@@ -1109,6 +1109,7 @@ def build_prepare_trial_waveform_command(
         matlab_string(path_config.trial_waveform_start_trigger_port.split("/")[-1]) if external_start else "''"
     )
     callback_body = (
+        "if ~exist('optoPhotostimTrialDoTaskStarted','var') || ~optoPhotostimTrialDoTaskStarted, "
         "optoPhotostimTrialDoTaskStartedWallTime = posixtime(datetime('now','TimeZone','UTC')); "
         "hSI_cb = hSI; "
         "irm_cb = hSI_cb.hIntegrationRoiManager; "
@@ -1128,7 +1129,8 @@ def build_prepare_trial_waveform_command(
         "else, timeVals_cb(ii_cb) = timeHist_cb(cursorIdx_cb, min(ii_cb, size(timeHist_cb, 2))); end; "
         "end; "
         "optoPhotostimTrialIntegrationSnapshot = struct('roi_names', {roiNames_cb}, 'cursors', double(cursor_cb(:).'), 'frame_numbers', double(frameVals_cb(:).'), 'timestamps', double(timeVals_cb(:).')); "
-        "optoPhotostimTrialDoTaskStarted = true;"
+        "optoPhotostimTrialDoTaskStarted = true; "
+        "end;"
     )
     return "\n".join(
         [
