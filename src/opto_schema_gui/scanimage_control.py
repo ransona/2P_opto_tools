@@ -203,6 +203,7 @@ class OnlineAnalysisSample:
     frame_number: int
     value: float
     host_monotonic: float
+    host_wall_time: float
 
 
 @dataclass
@@ -211,6 +212,10 @@ class OnlineAnalysisTrial:
     ordinal: int
     start_timestamp: float | None = None
     trigger_host_monotonic: float | None = None
+    trigger_host_wall_time: float | None = None
+    trigger_timestamp_by_roi: dict[str, float] = field(default_factory=dict)
+    trigger_frame_by_roi: dict[str, int] = field(default_factory=dict)
+    trigger_cursor_by_roi: dict[str, int] = field(default_factory=dict)
     samples_by_roi: dict[str, list[OnlineAnalysisSample]] = field(default_factory=dict)
 
 
@@ -1297,6 +1302,7 @@ class ScanImageControlWidget(QWidget):
         if runtime is None or runtime.session is None:
             return
         poll_received_monotonic = time.monotonic()
+        poll_received_wall_time = time.time()
         with self._online_analysis.lock:
             last_cursors = list(self._online_analysis.last_cursors)
         with runtime.lock:
@@ -1382,6 +1388,7 @@ class ScanImageControlWidget(QWidget):
                         frame_number=frame_number,
                         value=value,
                         host_monotonic=poll_received_monotonic,
+                        host_wall_time=poll_received_wall_time,
                     )
                     state.last_frame_by_roi[roi_name] = frame_number
                     recent = state.recent_samples_by_roi.setdefault(roi_name, deque())
@@ -1460,18 +1467,38 @@ class ScanImageControlWidget(QWidget):
             bucket.append(sample)
 
     def _estimate_trial_start_timestamp_locked(self, trial: OnlineAnalysisTrial) -> float | None:
-        if trial.trigger_host_monotonic is None:
+        if trial.trigger_timestamp_by_roi:
+            first_post_trigger: float | None = None
+            for roi_name, trigger_timestamp in trial.trigger_timestamp_by_roi.items():
+                samples = self._online_analysis.recent_samples_by_roi.get(roi_name, deque())
+                trigger_frame = trial.trigger_frame_by_roi.get(roi_name)
+                for sample in samples:
+                    if sample.timestamp <= trigger_timestamp:
+                        continue
+                    if trigger_frame is not None and sample.frame_number <= trigger_frame:
+                        continue
+                    if first_post_trigger is None or sample.timestamp < first_post_trigger:
+                        first_post_trigger = sample.timestamp
+                    break
+            if first_post_trigger is not None:
+                return first_post_trigger
+        if trial.trigger_host_monotonic is None and trial.trigger_host_wall_time is None:
             return None
         latest_sample: OnlineAnalysisSample | None = None
         for samples in self._online_analysis.recent_samples_by_roi.values():
             if not samples:
                 continue
             candidate = samples[-1]
-            if latest_sample is None or candidate.host_monotonic > latest_sample.host_monotonic:
+            if latest_sample is None or candidate.host_wall_time > latest_sample.host_wall_time:
                 latest_sample = candidate
         if latest_sample is None:
             return None
-        host_delta = trial.trigger_host_monotonic - latest_sample.host_monotonic
+        if trial.trigger_host_wall_time is not None:
+            host_delta = trial.trigger_host_wall_time - latest_sample.host_wall_time
+        elif trial.trigger_host_monotonic is not None:
+            host_delta = trial.trigger_host_monotonic - latest_sample.host_monotonic
+        else:
+            return None
         return latest_sample.timestamp + host_delta
 
     def _finalize_active_trial_locked(self) -> None:
@@ -1509,7 +1536,11 @@ class ScanImageControlWidget(QWidget):
         )
         state.clear_runtime_buffers()
 
-    def _mark_online_analysis_trial_start(self) -> None:
+    def _mark_online_analysis_trial_start(
+        self,
+        trigger_host_wall_time: float | None = None,
+        trigger_snapshot: dict[str, object] | None = None,
+    ) -> None:
         if not self.online_analysis_enabled():
             return
         tracking_runtime_name = self._online_analysis_tracking_runtime_name()
@@ -1531,10 +1562,56 @@ class ScanImageControlWidget(QWidget):
                 self._finalize_active_trial_locked()
             ordinal = len(state.completed_trials_by_condition.get(condition_index, [])) + 1
             trigger_host_monotonic = time.monotonic()
+            if trigger_host_wall_time is None:
+                trigger_host_wall_time = time.time()
+            trigger_timestamp_by_roi: dict[str, float] = {}
+            trigger_frame_by_roi: dict[str, int] = {}
+            trigger_cursor_by_roi: dict[str, int] = {}
+            if isinstance(trigger_snapshot, dict):
+                roi_names_raw = trigger_snapshot.get("roi_names", [])
+                timestamps_raw = trigger_snapshot.get("timestamps", [])
+                frame_numbers_raw = trigger_snapshot.get("frame_numbers", [])
+                cursors_raw = trigger_snapshot.get("cursors", [])
+                if isinstance(roi_names_raw, list):
+                    roi_names = [str(name) for name in roi_names_raw]
+                else:
+                    roi_names = []
+                if not isinstance(timestamps_raw, list):
+                    timestamps_raw = []
+                if not isinstance(frame_numbers_raw, list):
+                    frame_numbers_raw = []
+                if not isinstance(cursors_raw, list):
+                    cursors_raw = [cursors_raw] if cursors_raw not in (None, "") else []
+                for idx, roi_name in enumerate(roi_names):
+                    if idx < len(timestamps_raw):
+                        try:
+                            timestamp = float(timestamps_raw[idx])
+                        except (TypeError, ValueError):
+                            timestamp = 0.0
+                        if timestamp > 0:
+                            trigger_timestamp_by_roi[roi_name] = timestamp
+                    if idx < len(frame_numbers_raw):
+                        try:
+                            frame_number = int(float(frame_numbers_raw[idx]))
+                        except (TypeError, ValueError):
+                            frame_number = 0
+                        if frame_number > 0:
+                            trigger_frame_by_roi[roi_name] = frame_number
+                    if idx < len(cursors_raw):
+                        try:
+                            cursor = int(float(cursors_raw[idx]))
+                        except (TypeError, ValueError):
+                            cursor = 0
+                        if cursor > 0:
+                            trigger_cursor_by_roi[roi_name] = cursor
             state.active_trial = OnlineAnalysisTrial(
                 condition_index=condition_index,
                 ordinal=ordinal,
                 trigger_host_monotonic=trigger_host_monotonic,
+                trigger_host_wall_time=trigger_host_wall_time,
+                trigger_timestamp_by_roi=trigger_timestamp_by_roi,
+                trigger_frame_by_roi=trigger_frame_by_roi,
+                trigger_cursor_by_roi=trigger_cursor_by_roi,
             )
             estimated_start_timestamp = self._estimate_trial_start_timestamp_locked(state.active_trial)
             if estimated_start_timestamp is not None:
@@ -3795,7 +3872,9 @@ class ScanImageControlWidget(QWidget):
         runtime.waveform_monitor_stop = None
         runtime.waveform_monitor_thread = None
 
-    def _query_trial_waveform_status(self, path_name: str) -> tuple[bool, bool, bool]:
+    def _query_trial_waveform_status(
+        self, path_name: str
+    ) -> tuple[bool, bool, bool, float | None, dict[str, object] | None]:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
@@ -3806,6 +3885,8 @@ class ScanImageControlWidget(QWidget):
         active = False
         done = True
         started = False
+        started_wall_time: float | None = None
+        integration_snapshot: dict[str, object] | None = None
         marker = None
         for raw_line in lines:
             line = raw_line.strip()
@@ -3815,6 +3896,8 @@ class ScanImageControlWidget(QWidget):
                 "TRIAL_WAVEFORM_TASK_ACTIVE",
                 "TRIAL_WAVEFORM_TASK_DONE",
                 "TRIAL_WAVEFORM_TASK_STARTED",
+                "TRIAL_WAVEFORM_TASK_STARTED_WALL_TIME",
+                "TRIAL_WAVEFORM_INTEGRATION_SNAPSHOT_JSON",
                 "TRIAL_WAVEFORM_STATUS_READY",
             }:
                 marker = line
@@ -3834,7 +3917,21 @@ class ScanImageControlWidget(QWidget):
                     started = bool(int(float(line)))
                 except ValueError:
                     started = False
-        return active, done, started
+            elif marker == "TRIAL_WAVEFORM_TASK_STARTED_WALL_TIME":
+                try:
+                    candidate = float(line)
+                except ValueError:
+                    candidate = float("nan")
+                if candidate > 0:
+                    started_wall_time = candidate
+            elif marker == "TRIAL_WAVEFORM_INTEGRATION_SNAPSHOT_JSON":
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict):
+                    integration_snapshot = payload
+        return active, done, started, started_wall_time, integration_snapshot
 
     def _query_raw_vdaq_do_test_status(self, path_name: str) -> tuple[bool, bool]:
         runtime = self._ensure_session(path_name)
@@ -4071,9 +4168,15 @@ class ScanImageControlWidget(QWidget):
         if wait_for_start:
             start_deadline = time.monotonic() + 30.0
             while not stop_event.is_set() and time.monotonic() < start_deadline:
-                active, done, started = self._query_trial_waveform_status(path_name)
+                active, done, started, started_wall_time, integration_snapshot = self._query_trial_waveform_status(
+                    path_name
+                )
                 if started:
-                    mark_trial_start_once()
+                    if started_wall_time is None and integration_snapshot is None:
+                        mark_trial_start_once()
+                    else:
+                        self._mark_online_analysis_trial_start(started_wall_time, integration_snapshot)
+                    trial_start_marked = True
                     break
                 time.sleep(0.02)
 

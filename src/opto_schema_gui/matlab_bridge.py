@@ -1108,6 +1108,28 @@ def build_prepare_trial_waveform_command(
     start_trigger_expr = (
         matlab_string(path_config.trial_waveform_start_trigger_port.split("/")[-1]) if external_start else "''"
     )
+    callback_body = (
+        "optoPhotostimTrialDoTaskStartedWallTime = posixtime(datetime('now','TimeZone','UTC')); "
+        "hSI_cb = hSI; "
+        "irm_cb = hSI_cb.hIntegrationRoiManager; "
+        "roiNames_cb = cellfun(@char, {irm_cb.intParams.intRois.name}, 'UniformOutput', false); "
+        "cursor_cb = double(irm_cb.integrationValueCursor); "
+        "if isempty(cursor_cb), cursor_cb = zeros(1, numel(roiNames_cb)); end; "
+        "if isscalar(cursor_cb) && numel(roiNames_cb) > 1, cursor_cb = repmat(cursor_cb, 1, numel(roiNames_cb)); end; "
+        "frameHist_cb = double(irm_cb.integrationFrameNumberHistory); "
+        "timeHist_cb = double(irm_cb.integrationTimestampHistory); "
+        "frameVals_cb = zeros(1, numel(roiNames_cb)); "
+        "timeVals_cb = zeros(1, numel(roiNames_cb)); "
+        "for ii_cb = 1:numel(roiNames_cb), "
+        "cursorIdx_cb = min(max(1, round(cursor_cb(min(ii_cb, numel(cursor_cb))))), max(1, size(frameHist_cb, 1))); "
+        "if isvector(frameHist_cb), frameVals_cb(ii_cb) = frameHist_cb(cursorIdx_cb); "
+        "else, frameVals_cb(ii_cb) = frameHist_cb(cursorIdx_cb, min(ii_cb, size(frameHist_cb, 2))); end; "
+        "if isvector(timeHist_cb), timeVals_cb(ii_cb) = timeHist_cb(cursorIdx_cb); "
+        "else, timeVals_cb(ii_cb) = timeHist_cb(cursorIdx_cb, min(ii_cb, size(timeHist_cb, 2))); end; "
+        "end; "
+        "optoPhotostimTrialIntegrationSnapshot = struct('roi_names', {roiNames_cb}, 'cursors', double(cursor_cb(:).'), 'frame_numbers', double(frameVals_cb(:).'), 'timestamps', double(timeVals_cb(:).')); "
+        "optoPhotostimTrialDoTaskStarted = true;"
+    )
     return "\n".join(
         [
             build_global_preamble(path_config),
@@ -1122,6 +1144,8 @@ def build_prepare_trial_waveform_command(
             + "', pulse_width_s=' num2str(trialPulseWidthSec, '%.4f') "
             + "', total_duration_s=' num2str(trialTotalDurationSec, '%.4f')]);",
             "assignin('base', 'optoPhotostimTrialDoTaskStarted', false);",
+            "assignin('base', 'optoPhotostimTrialDoTaskStartedWallTime', 0);",
+            "assignin('base', 'optoPhotostimTrialIntegrationSnapshot', struct('roi_names', {{}}, 'cursors', [], 'frame_numbers', [], 'timestamps', []));",
             "do_task = opto.scanimage.testVdaqDoTriggeredByDi("
             + f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
             + f"'startTrigger', {start_trigger_expr}, "
@@ -1134,7 +1158,7 @@ def build_prepare_trial_waveform_command(
             + "'autoStart', false);",
             "do_task.sampleCallbackAutoRead = false;",
             "do_task.sampleCallbackN = 1;",
-            "do_task.sampleCallback = @(varargin) assignin('base', 'optoPhotostimTrialDoTaskStarted', true);",
+            f"do_task.sampleCallback = @(varargin) evalin('base', {matlab_string(callback_body)});",
             "disp('TRIAL_WAVEFORM_READY');",
         ]
     )
@@ -1180,6 +1204,10 @@ def build_trial_waveform_status_command(path_config: PathConfig) -> str:
             "if most.idioms.isValidObj(do_task); disp(double(~do_task.active)); else; disp(1); end",
             "disp('TRIAL_WAVEFORM_TASK_STARTED');",
             "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStarted'',''var'')'); disp(double(evalin('base', 'optoPhotostimTrialDoTaskStarted'))); else; disp(0); end",
+            "disp('TRIAL_WAVEFORM_TASK_STARTED_WALL_TIME');",
+            "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStartedWallTime'',''var'')'); disp(double(evalin('base', 'optoPhotostimTrialDoTaskStartedWallTime'))); else; disp(0); end",
+            "disp('TRIAL_WAVEFORM_INTEGRATION_SNAPSHOT_JSON');",
+            "if evalin('base', 'exist(''optoPhotostimTrialIntegrationSnapshot'',''var'')'); disp(jsonencode(evalin('base', 'optoPhotostimTrialIntegrationSnapshot'))); else; disp('{}'); end",
             "disp('TRIAL_WAVEFORM_STATUS_READY');",
         ]
     )
@@ -1198,6 +1226,8 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
             "    evalin('base', 'clear optoPhotostimTrialDoTask');",
             "end",
             "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStarted'',''var'')'); evalin('base', 'clear optoPhotostimTrialDoTaskStarted'); end",
+            "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStartedWallTime'',''var'')'); evalin('base', 'clear optoPhotostimTrialDoTaskStartedWallTime'); end",
+            "if evalin('base', 'exist(''optoPhotostimTrialIntegrationSnapshot'',''var'')'); evalin('base', 'clear optoPhotostimTrialIntegrationSnapshot'); end",
             "disp('TRIAL_WAVEFORM_STOPPED');",
         ]
     )
