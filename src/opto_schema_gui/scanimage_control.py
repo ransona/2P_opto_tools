@@ -4069,10 +4069,19 @@ class ScanImageControlWidget(QWidget):
             except Exception as exc:
                 self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
 
+        if wait_for_start:
+            start_deadline = time.monotonic() + 30.0
+            while not stop_event.is_set() and time.monotonic() < start_deadline:
+                active, done = self._query_trial_waveform_status(path_name)
+                if active:
+                    mark_trial_start_once()
+                    break
+                time.sleep(0.02)
+
         mismatch_message = self._finalize_pending_photostim_check(
             path_name,
             "Waveform trigger count check",
-            on_start=mark_trial_start_once if wait_for_start else None,
+            on_start=None,
         )
         if wait_for_start and not trial_start_marked:
             self.signals.log_message.emit(
