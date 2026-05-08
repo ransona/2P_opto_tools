@@ -1461,6 +1461,13 @@ class ScanImageControlWidget(QWidget):
                 continue
             if sample.timestamp > end_timestamp:
                 continue
+            trigger_frame = trial.trigger_frame_by_roi.get(roi_name)
+            if (
+                sample.timestamp > trial.start_timestamp
+                and trigger_frame is not None
+                and sample.frame_number <= trigger_frame
+            ):
+                continue
             bucket = trial.samples_by_roi.setdefault(roi_name, [])
             if bucket and bucket[-1].frame_number == sample.frame_number:
                 continue
@@ -1468,20 +1475,7 @@ class ScanImageControlWidget(QWidget):
 
     def _estimate_trial_start_timestamp_locked(self, trial: OnlineAnalysisTrial) -> float | None:
         if trial.trigger_timestamp_by_roi:
-            first_post_trigger: float | None = None
-            for roi_name, trigger_timestamp in trial.trigger_timestamp_by_roi.items():
-                samples = self._online_analysis.recent_samples_by_roi.get(roi_name, deque())
-                trigger_frame = trial.trigger_frame_by_roi.get(roi_name)
-                for sample in samples:
-                    if sample.timestamp <= trigger_timestamp:
-                        continue
-                    if trigger_frame is not None and sample.frame_number <= trigger_frame:
-                        continue
-                    if first_post_trigger is None or sample.timestamp < first_post_trigger:
-                        first_post_trigger = sample.timestamp
-                    break
-            if first_post_trigger is not None:
-                return first_post_trigger
+            return min(trial.trigger_timestamp_by_roi.values())
         if trial.trigger_host_monotonic is None and trial.trigger_host_wall_time is None:
             return None
         latest_sample: OnlineAnalysisSample | None = None
@@ -1613,9 +1607,13 @@ class ScanImageControlWidget(QWidget):
                 trigger_frame_by_roi=trigger_frame_by_roi,
                 trigger_cursor_by_roi=trigger_cursor_by_roi,
             )
-            estimated_start_timestamp = self._estimate_trial_start_timestamp_locked(state.active_trial)
-            if estimated_start_timestamp is not None:
-                state.active_trial.start_timestamp = estimated_start_timestamp
+            if trigger_timestamp_by_roi:
+                state.active_trial.start_timestamp = min(trigger_timestamp_by_roi.values())
+            else:
+                estimated_start_timestamp = self._estimate_trial_start_timestamp_locked(state.active_trial)
+                if estimated_start_timestamp is not None:
+                    state.active_trial.start_timestamp = estimated_start_timestamp
+            if state.active_trial.start_timestamp is not None:
                 self._seed_active_trial_from_recent_locked(state.active_trial)
 
     def _online_analysis_condition_label(self, index: int, condition_payload: dict[str, object]) -> str:
