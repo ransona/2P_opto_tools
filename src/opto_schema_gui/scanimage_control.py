@@ -4059,11 +4059,6 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         trial_start_marked = not wait_for_start
 
-        finish_wait_s = max(2.0, float(prep_state.waveform_expected_done_time_s or 0.0) + 2.0)
-        finish_deadline = time.monotonic() + finish_wait_s
-        while not stop_event.is_set() and time.monotonic() < finish_deadline:
-            time.sleep(0.05)
-
         def mark_trial_start_once() -> None:
             nonlocal trial_start_marked
             if trial_start_marked:
