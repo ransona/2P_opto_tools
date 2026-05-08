@@ -3592,7 +3592,6 @@ class ScanImageControlWidget(QWidget):
             stimulus_pattern_numbers.append(representative_pattern_num)
 
         planned_group_nums.append(2)
-        planned_group_nums.append(2)
         trigger_times_s = [block_duration_s * idx for idx in range(len(planned_group_nums))]
         return sequence_name, planned_group_nums, trigger_times_s, stimulus_pattern_numbers
 

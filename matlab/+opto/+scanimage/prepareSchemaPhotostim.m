@@ -122,7 +122,7 @@ for trialIdx = 1:numel(trialSequenceIndices)
     if isempty(trialGroupIndices)
         error('No prepared group mapping exists for trial sequence index %d.', seqIdx - 1);
     end
-    hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2, 2]; %#ok<AGROW>
+    hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
 end
 hPs.numSequences = 1;
 if isprop(hPs, 'autoTriggerPeriod')
