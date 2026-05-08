@@ -115,7 +115,7 @@ importedPatternNames = usedPatternNames;
 patternNumbers = usedPatternNumbers;
 
 hPs.stimulusMode = 'sequence';
-hPs.sequenceSelectedStimuli = 2;
+hPs.sequenceSelectedStimuli = [];
 for trialIdx = 1:numel(trialSequenceIndices)
     seqIdx = trialSequenceIndices(trialIdx);
     trialGroupIndices = sequenceGroupIndicesBySeq{seqIdx};

@@ -4116,7 +4116,7 @@ class ScanImageControlWidget(QWidget):
             }
             self._send_json_reply(request_path_name, reply_address, payload)
 
-    def _wait_for_leading_park_advance(
+    def _wait_for_first_trigger_advance(
         self,
         path_name: str,
         baseline_position: int | None,
@@ -4137,19 +4137,19 @@ class ScanImageControlWidget(QWidget):
             if baseline_completed_sequences is not None and completed_sequences is not None:
                 if completed_sequences > baseline_completed_sequences:
                     self.signals.log_message.emit(
-                        f"[{path_name}] Leading park advance detected: "
+                        f"[{path_name}] First trigger advance detected: "
                         f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
                     )
                     return current_position, completed_sequences
             if baseline_position is not None and current_position is not None and current_position != baseline_position:
                 self.signals.log_message.emit(
-                    f"[{path_name}] Leading park advance detected: "
+                    f"[{path_name}] First trigger advance detected: "
                     f"{self._format_photostim_state(active, current_position, completed_sequences, sequence)}"
                 )
                 return current_position, completed_sequences
             time.sleep(0.02)
         raise RuntimeError(
-            "Leading park did not advance photostim sequence before ready. "
+            "First trigger did not advance photostim sequence before ready. "
             + self._format_photostim_state(last_active, last_position, last_completed, last_sequence)
         )
 
@@ -4282,7 +4282,7 @@ class ScanImageControlWidget(QWidget):
         software_mode = self._current_trigger_mode() != "hardware"
         if software_mode:
             self.signals.log_message.emit(
-                f"[{path_name}] Leading park baseline: "
+                f"[{path_name}] First-trigger baseline: "
                 + self._format_photostim_state(baseline_active, baseline_position, baseline_completed, stimulus_group_nums)
             )
             if len(trigger_times_s) > 1:
@@ -4296,7 +4296,7 @@ class ScanImageControlWidget(QWidget):
                 self._mark_online_analysis_trial_start()
             except Exception as exc:
                 self.signals.log_message.emit(f"[online analysis] trial-start hook warning: {exc}")
-            ready_position, ready_completed = self._wait_for_leading_park_advance(
+            ready_position, ready_completed = self._wait_for_first_trigger_advance(
                 path_name,
                 baseline_position,
                 baseline_completed,
@@ -4316,7 +4316,7 @@ class ScanImageControlWidget(QWidget):
                     seq_num=seq_num,
                 )
             self.signals.log_message.emit(
-                f"[{path_name}] leading park software-triggered before ready"
+                f"[{path_name}] first trigger software-fired before ready"
             )
         else:
             prep_state.ready_sequence_position = baseline_position
