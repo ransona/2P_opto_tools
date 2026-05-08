@@ -2242,6 +2242,7 @@ class ScanImageControlWidget(QWidget):
             },
             "photostim_path": self.machine_config.photostim_path if self.machine_config is not None else "",
             "paths": path_states,
+            "online_analysis": self.get_online_analysis_snapshot(),
             "pending_prompt": self.pending_remote_prompt(),
         }
 
