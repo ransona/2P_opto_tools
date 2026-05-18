@@ -2064,6 +2064,7 @@ class PatternEditor(QWidget):
         on_commit=None,
         resolve_sequence_overlaps=None,
         on_live_commit=None,
+        on_send_to_scanimage=None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -2073,6 +2074,7 @@ class PatternEditor(QWidget):
         self.on_commit = on_commit
         self.resolve_sequence_overlaps = resolve_sequence_overlaps
         self.on_live_commit = on_live_commit
+        self.on_send_to_scanimage = on_send_to_scanimage
         self.current_name = ""
         self._loading = False
         self._build_ui()
@@ -2154,12 +2156,14 @@ class PatternEditor(QWidget):
             self.add_from_fov_btn.setToolTip("Processed FOV import is available on Ubuntu only.")
         self.remove_row_btn = QPushButton("Remove Cell")
         self.copy_btn = QPushButton("Copy Pattern")
+        self.send_to_scanimage_btn = QPushButton("Send Pattern to ScanImage")
         button_row.addWidget(self.add_row_btn)
         button_row.addWidget(self.add_imaging_pixel_btn)
         button_row.addWidget(self.add_cells_by_id_btn)
         button_row.addWidget(self.add_from_fov_btn)
         button_row.addWidget(self.remove_row_btn)
         button_row.addWidget(self.copy_btn)
+        button_row.addWidget(self.send_to_scanimage_btn)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
@@ -2169,6 +2173,7 @@ class PatternEditor(QWidget):
         self.add_from_fov_btn.clicked.connect(self.add_cells_from_fov)
         self.remove_row_btn.clicked.connect(self.remove_selected_cell_rows)
         self.copy_btn.clicked.connect(self.copy_current_pattern)
+        self.send_to_scanimage_btn.clicked.connect(self.send_current_pattern_to_scanimage)
         self.clear_btn.clicked.connect(self.clear_form)
         self.name_edit.textChanged.connect(self._on_form_changed)
         self.duration_spin.valueChanged.connect(self._on_form_changed)
@@ -2441,6 +2446,20 @@ class PatternEditor(QWidget):
         self.project.patterns[copied.name] = copied
         if self.on_commit is not None:
             self.on_commit()
+
+    def send_current_pattern_to_scanimage(self) -> None:
+        if not self.commit_current_pattern(silent=False):
+            return
+        if self.on_commit is not None:
+            self.on_commit()
+        if self.on_send_to_scanimage is None:
+            QMessageBox.information(self, "Unavailable", "ScanImage control is not available in this context.")
+            return
+        pattern = self.project.patterns.get(self.current_name)
+        if pattern is None:
+            QMessageBox.warning(self, "Send failed", "No current pattern is available to send.")
+            return
+        self.on_send_to_scanimage(pattern)
 
     def gather_pattern(self) -> Pattern:
         cells: list[CellSpec] = []
@@ -2966,6 +2985,7 @@ class MainWindow(QMainWindow):
             self.refresh_lists,
             self._resolve_sequence_overlaps_after_pattern_edit,
             self._refresh_lists_live,
+            self._send_pattern_to_scanimage,
         )
         self.sequence_editor = SequenceEditor(
             self.project,
@@ -2997,6 +3017,9 @@ class MainWindow(QMainWindow):
         self._set_origin_user_id_options(self.project.origin_user_id, use_linux_default=True)
         self.refresh_lists()
         self._start_gui_control_listener()
+
+    def _send_pattern_to_scanimage(self, pattern: Pattern) -> None:
+        self.scanimage_control.send_pattern_to_scanimage(pattern)
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("File")
