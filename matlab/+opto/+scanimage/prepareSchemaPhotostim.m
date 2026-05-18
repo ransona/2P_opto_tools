@@ -17,6 +17,7 @@ arguments
     opts.StartPhotostim (1,1) logical = true
     opts.PrefixBlankToSequence (1,1) logical = false
     opts.EmbedBlankAndParkInStimGroup (1,1) logical = false
+    opts.NumSequences (1,1) double = 1
 end
 
 if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
@@ -135,7 +136,7 @@ if opts.ConfigureSequence
             hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
         end
     end
-    hPs.numSequences = 1;
+    hPs.numSequences = opts.NumSequences;
     if isprop(hPs, 'autoTriggerPeriod')
         hPs.autoTriggerPeriod = 0;
     end

@@ -798,9 +798,11 @@ def build_prepare_schema_photostim_command(
     block_duration: float | None = None,
     prefix_blank_to_sequence: bool = False,
     embed_blank_and_park_in_stim_group: bool = False,
+    num_sequences: float = 1.0,
 ) -> str:
     trial_seq_nums_expr = "[]" if not trial_seq_nums else "[" + " ".join(str(int(v)) for v in trial_seq_nums) + "]"
     resolved_block_duration = path_config.sequence_block_duration_s if block_duration is None else float(block_duration)
+    resolved_num_sequences = "Inf" if math.isinf(float(num_sequences)) else f"{float(num_sequences):.12g}"
     lines = [
         build_global_preamble(path_config),
         f"[importedPatternNames, importedPatternNumbers] = opto.scanimage.prepareSchemaPhotostim({path_config.hsi_variable}, {schema_var_name}, ...",
@@ -815,6 +817,7 @@ def build_prepare_schema_photostim_command(
         f"    StartPhotostim={'true' if start_photostim else 'false'}, ...",
         f"    PrefixBlankToSequence={'true' if prefix_blank_to_sequence else 'false'}, ...",
         f"    EmbedBlankAndParkInStimGroup={'true' if embed_blank_and_park_in_stim_group else 'false'}, ...",
+        f"    NumSequences={resolved_num_sequences}, ...",
         "    MinCenterDistanceUm=15, ...",
         "    Revolutions=5);",
         "disp('Prepared schema photostim patterns used by sequence groups:');",
@@ -2070,3 +2073,4 @@ def _extract_matlab_string_assignment(command: str, variable_name: str) -> str |
     if end < 0:
         return None
     return command[idx + len(marker) : end]
+import math
