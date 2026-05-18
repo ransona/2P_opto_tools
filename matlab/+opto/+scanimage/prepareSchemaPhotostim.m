@@ -13,6 +13,8 @@ arguments
     opts.TriggerTerm string = ""
     opts.MinCenterDistanceUm (1,1) double = 15
     opts.Revolutions (1,1) double = 5
+    opts.ConfigureSequence (1,1) logical = true
+    opts.StartPhotostim (1,1) logical = true
 end
 
 if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
@@ -114,40 +116,46 @@ end
 importedPatternNames = usedPatternNames;
 patternNumbers = usedPatternNumbers;
 
-hPs.stimulusMode = 'sequence';
-hPs.sequenceSelectedStimuli = [];
-for trialIdx = 1:numel(trialSequenceIndices)
-    seqIdx = trialSequenceIndices(trialIdx);
-    trialGroupIndices = sequenceGroupIndicesBySeq{seqIdx};
-    if isempty(trialGroupIndices)
-        error('No prepared group mapping exists for trial sequence index %d.', seqIdx - 1);
+if opts.ConfigureSequence
+    hPs.stimulusMode = 'sequence';
+    hPs.sequenceSelectedStimuli = [];
+    for trialIdx = 1:numel(trialSequenceIndices)
+        seqIdx = trialSequenceIndices(trialIdx);
+        trialGroupIndices = sequenceGroupIndicesBySeq{seqIdx};
+        if isempty(trialGroupIndices)
+            error('No prepared group mapping exists for trial sequence index %d.', seqIdx - 1);
+        end
+        hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
     end
-    hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
-end
-hPs.numSequences = 1;
-if isprop(hPs, 'autoTriggerPeriod')
-    hPs.autoTriggerPeriod = 0;
-end
-if isprop(hPs, 'stimImmediately')
-    hPs.stimImmediately = false;
-end
-if isprop(hPs, 'monitoring')
-    hPs.monitoring = true;
-end
-if isprop(hPs, 'logging')
-    hPs.logging = true;
-end
-if strlength(opts.TriggerTerm) > 0
-    hPs.stimTriggerTerm = normalizePhotostimTriggerTerm(char(opts.TriggerTerm));
-end
+    hPs.numSequences = 1;
+    if isprop(hPs, 'autoTriggerPeriod')
+        hPs.autoTriggerPeriod = 0;
+    end
+    if isprop(hPs, 'stimImmediately')
+        hPs.stimImmediately = false;
+    end
+    if isprop(hPs, 'monitoring')
+        hPs.monitoring = true;
+    end
+    if isprop(hPs, 'logging')
+        hPs.logging = true;
+    end
+    if strlength(opts.TriggerTerm) > 0
+        hPs.stimTriggerTerm = normalizePhotostimTriggerTerm(char(opts.TriggerTerm));
+    end
 
-disp('Starting photostim mask generation');
-disp('Initial photostim prep sequence:');
-disp(hPs.sequenceSelectedStimuli);
-disp('Prepared photostim trial count:');
-disp(numel(trialSequenceIndices));
-hPs.start();
-disp('Photostim mask generation ready');
+    disp('Initial photostim prep sequence:');
+    disp(hPs.sequenceSelectedStimuli);
+    disp('Prepared photostim trial count:');
+    disp(numel(trialSequenceIndices));
+    if opts.StartPhotostim
+        disp('Starting photostim mask generation');
+        hPs.start();
+        disp('Photostim mask generation ready');
+    end
+else
+    disp('Prepared photostim groups without configuring a playback sequence.');
+end
 end
 
 

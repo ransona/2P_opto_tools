@@ -789,6 +789,9 @@ def build_prepare_schema_photostim_command(
     seq_num: int,
     trial_seq_nums: list[int],
     schema_var_name: str = "schemaData",
+    *,
+    configure_sequence: bool = True,
+    start_photostim: bool = True,
 ) -> str:
     trial_seq_nums_expr = "[]" if not trial_seq_nums else "[" + " ".join(str(int(v)) for v in trial_seq_nums) + "]"
     lines = [
@@ -801,6 +804,8 @@ def build_prepare_schema_photostim_command(
         "    ParkDuration=0.001, ...",
         f"    BlockDuration={path_config.sequence_block_duration_s}, ...",
         f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
+        f"    ConfigureSequence={'true' if configure_sequence else 'false'}, ...",
+        f"    StartPhotostim={'true' if start_photostim else 'false'}, ...",
         "    MinCenterDistanceUm=15, ...",
         "    Revolutions=5);",
         "disp('Prepared schema photostim patterns used by sequence groups:');",

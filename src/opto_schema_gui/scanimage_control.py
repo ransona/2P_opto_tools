@@ -2935,6 +2935,8 @@ class ScanImageControlWidget(QWidget):
                     runtime.path_config,
                     0,
                     [0],
+                    configure_sequence=False,
+                    start_photostim=False,
                 ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
@@ -2946,6 +2948,9 @@ class ScanImageControlWidget(QWidget):
             runtime.prepared_photostim.prepared_seq_nums = [0]
             runtime.prepared_photostim.prepared_sequence_names = ["S1"]
             runtime.prepared_photostim.imported_pattern_names = [pattern_name]
+            self.signals.log_message.emit(
+                f"[{path_name}] prepared single pattern '{pattern_name}' in ScanImage without starting photostim"
+            )
 
     def _import_pattern_subset(
         self,
