@@ -491,6 +491,7 @@ class DiagnosticsWidget(QWidget):
         self._current_summary: dict[str, object] | None = None
         self._current_root_dir: Path | None = None
         self._worker_thread: threading.Thread | None = None
+        self._cancel_event = threading.Event()
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -509,8 +510,10 @@ class DiagnosticsWidget(QWidget):
 
         button_row = QHBoxLayout()
         self.acquire_button = QPushButton("Acquire SLM volume")
+        self.abort_button = QPushButton("Abort")
         self.open_existing_button = QPushButton("Open Existing Result")
         button_row.addWidget(self.acquire_button)
+        button_row.addWidget(self.abort_button)
         button_row.addWidget(self.open_existing_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
@@ -556,10 +559,12 @@ class DiagnosticsWidget(QWidget):
         layout.addWidget(viz_box)
 
         self.acquire_button.clicked.connect(self._show_acquisition_dialog)
+        self.abort_button.clicked.connect(self._request_abort)
         self.open_existing_button.clicked.connect(self._open_existing_result)
         self.plot_3d_button.clicked.connect(self._show_3d_plot)
         self.plot_cross_section_button.clicked.connect(self._show_cross_section_plot)
         self.slice_axis_combo.currentTextChanged.connect(self._refresh_cross_section_controls)
+        self.abort_button.setEnabled(False)
         self._set_visualization_enabled(False)
 
     def _append_status(self, message: str) -> None:
@@ -568,6 +573,7 @@ class DiagnosticsWidget(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self.acquire_button.setEnabled(not running)
+        self.abort_button.setEnabled(running)
         self.open_existing_button.setEnabled(not running)
 
     def _show_acquisition_dialog(self) -> None:
@@ -604,6 +610,7 @@ class DiagnosticsWidget(QWidget):
         }
         _safe_json_dump(root_dir / SUMMARY_FILENAME, summary)
         self._current_root_dir = root_dir
+        self._cancel_event.clear()
         self._set_running(True)
         self.progress_bar.setRange(0, len(summary["volumes"]))
         self.progress_bar.setValue(0)
@@ -611,6 +618,9 @@ class DiagnosticsWidget(QWidget):
 
         def progress_callback(done: int, total: int, message: str) -> None:
             self._signals.progress.emit(done, total, message)
+
+        def cancel_check() -> bool:
+            return self._cancel_event.is_set()
 
         def worker() -> None:
             try:
@@ -629,7 +639,10 @@ class DiagnosticsWidget(QWidget):
                     power_values=params.power_values or [0.0, 0.0, 1.0],
                     volumes=summary["volumes"],
                     progress_callback=progress_callback,
+                    cancel_check=cancel_check,
                 )
+                if cancel_check():
+                    raise RuntimeError("SLM PSF diagnostic aborted.")
                 processed_summary = analyze_slm_psf_root(root_dir)
                 self._signals.finished.emit(True, processed_summary)
             except Exception as exc:
@@ -646,12 +659,21 @@ class DiagnosticsWidget(QWidget):
     def _handle_finished(self, ok: bool, payload: object) -> None:
         self._set_running(False)
         if not ok:
+            if str(payload) == "SLM PSF diagnostic aborted.":
+                self._append_status("SLM PSF acquisition aborted.")
+                return
             self._append_status(f"SLM PSF run failed: {payload}")
             QMessageBox.critical(self, "SLM PSF Run Failed", str(payload))
             return
         assert isinstance(payload, dict)
         self._append_status("SLM PSF acquisition and processing completed.")
         self._set_summary(payload)
+
+    def _request_abort(self) -> None:
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            return
+        self._cancel_event.set()
+        self._append_status("Aborting SLM PSF acquisition...")
 
     def _open_existing_result(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select processed SLM PSF folder", "")

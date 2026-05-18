@@ -55,6 +55,7 @@ from .matlab_bridge import (
     autodetect_machine_name,
     build_abort_photostim_command,
     build_begin_slm_psf_diagnostic_command,
+    build_check_slm_psf_volume_status_command,
     build_experiment_context,
     build_global_preamble,
     build_import_command,
@@ -842,6 +843,7 @@ class ScanImageControlWidget(QWidget):
         power_values: list[float],
         volumes: list[dict[str, object]],
         progress_callback: Callable[[int, int, str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         if path_name not in self._runtimes:
             raise ValueError(f"Unknown path '{path_name}'")
@@ -867,6 +869,8 @@ class ScanImageControlWidget(QWidget):
         total = len(volumes)
         try:
             for index, volume in enumerate(volumes, start=1):
+                if cancel_check is not None and cancel_check():
+                    raise RuntimeError("SLM PSF diagnostic aborted.")
                 x_um = float(volume["x_um"])
                 y_um = float(volume["y_um"])
                 z_um = float(volume["z_um"])
@@ -892,8 +896,24 @@ class ScanImageControlWidget(QWidget):
                         power_values=[float(value) for value in power_values],
                     ),
                     prepend_preamble=False,
-                    timeout_s=7200.0,
+                    timeout_s=300.0,
                 )
+                acquisition_deadline = time.monotonic() + 7200.0
+                while True:
+                    if cancel_check is not None and cancel_check():
+                        raise RuntimeError("SLM PSF diagnostic aborted.")
+                    active_lines = self.eval_matlab_command(
+                        path_name,
+                        build_check_slm_psf_volume_status_command(runtime.path_config),
+                        prepend_preamble=False,
+                        timeout_s=30.0,
+                    )
+                    acq_active = bool(self._extract_marker_int(active_lines, "SLM_PSF_STATUS_ACTIVE"))
+                    if not acq_active:
+                        break
+                    if time.monotonic() >= acquisition_deadline:
+                        raise RuntimeError("Timed out waiting for SLM PSF stack acquisition to finish.")
+                    time.sleep(0.1)
                 if progress_callback is not None:
                     progress_callback(index, total, f"Completed volume {index}/{total}")
         finally:

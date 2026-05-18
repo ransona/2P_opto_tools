@@ -1022,15 +1022,30 @@ def build_run_slm_psf_volume_command(
         "hPs.start();",
         "pause(0.1);",
         "hSI.startGrab();",
-        "t0 = tic();",
-        "while hSI.active && toc(t0) < 7200",
-        "    pause(0.05);",
-        "    drawnow;",
-        "end",
-        "assert(~hSI.active, 'Timed out waiting for SLM PSF stack acquisition to finish.');",
-        "if hPs.active; hPs.abort(); end",
-        "disp('SLM_PSF_VOLUME_DONE');",
+        "disp('SLM_PSF_VOLUME_STARTED');",
         f"disp([{float(x_um)!r} {float(y_um)!r} {float(z_um)!r}]);",
+    ]
+    return "\n".join(lines)
+
+
+def build_check_slm_psf_volume_status_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    lines = [
+        build_global_preamble(path_config),
+        f"hSI = {hsi};",
+        "hPs = hSI.hPhotostim;",
+        "acqActive = false;",
+        "psActive = false;",
+        "try; acqActive = logical(hSI.active); catch; end",
+        "try; psActive = logical(hPs.active); catch; end",
+        "if ~acqActive && psActive",
+        "    try; hPs.abort(); pause(0.05); catch; end",
+        "    try; psActive = logical(hPs.active); catch; psActive = false; end",
+        "end",
+        "disp('SLM_PSF_STATUS_ACTIVE');",
+        "disp(double(acqActive));",
+        "disp('SLM_PSF_STATUS_PHOTOSTIM_ACTIVE');",
+        "disp(double(psActive));",
     ]
     return "\n".join(lines)
 
