@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -661,6 +662,7 @@ class DiagnosticsWidget(QWidget):
         if not ok:
             if str(payload) == "SLM PSF diagnostic aborted.":
                 self._append_status("SLM PSF acquisition aborted.")
+                self._prompt_delete_aborted_data()
                 return
             self._append_status(f"SLM PSF run failed: {payload}")
             QMessageBox.critical(self, "SLM PSF Run Failed", str(payload))
@@ -674,6 +676,30 @@ class DiagnosticsWidget(QWidget):
             return
         self._cancel_event.set()
         self._append_status("Aborting SLM PSF acquisition...")
+
+    def _prompt_delete_aborted_data(self) -> None:
+        root_dir = self._current_root_dir
+        if root_dir is None or not root_dir.exists():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete Aborted Data?",
+            f"Delete the partially acquired SLM PSF data in:\n{root_dir}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.rmtree(root_dir)
+            self._append_status(f"Deleted aborted SLM PSF data at {root_dir}")
+            if self._current_root_dir == root_dir:
+                self._current_root_dir = None
+                self._current_summary = None
+                self.summary_label.setText("No processed SLM PSF dataset loaded.")
+                self._set_visualization_enabled(False)
+        except Exception as exc:
+            QMessageBox.critical(self, "Delete Aborted Data Failed", str(exc))
 
     def _open_existing_result(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select processed SLM PSF folder", "")
