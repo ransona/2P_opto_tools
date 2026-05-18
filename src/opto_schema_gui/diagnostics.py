@@ -358,9 +358,9 @@ class SlmPsfConfigDialog(QDialog):
         output_root_widget = QWidget()
         output_root_widget.setLayout(output_row)
 
-        self.x_edit = QLineEdit("[-200:50:200]")
-        self.y_edit = QLineEdit("[-200:50:200]")
-        self.z_edit = QLineEdit("[-200:50:200]")
+        self.x_edit = QLineEdit("[-200:200:200]")
+        self.y_edit = QLineEdit("[-200:200:200]")
+        self.z_edit = QLineEdit("[-200:200:200]")
         self.spiral_width_spin = QDoubleSpinBox()
         self.spiral_width_spin.setRange(0.1, 1000.0)
         self.spiral_width_spin.setDecimals(3)
