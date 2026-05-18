@@ -265,7 +265,7 @@ class SlmPsfAcquisitionParams:
     frames_per_slice: int = 50
     log_average_factor: int = 50
     display_average_factor: int = 50
-    z_step_um: float = 1.0
+    z_step_um: float = 5.0
     sequence_duration_s: float = 0.007
     power_values: list[float] | None = None
     revolutions: float = 5.0
@@ -390,7 +390,7 @@ class SlmPsfConfigDialog(QDialog):
         self.z_step_spin = QDoubleSpinBox()
         self.z_step_spin.setRange(0.001, 1000.0)
         self.z_step_spin.setDecimals(4)
-        self.z_step_spin.setValue(1.0)
+        self.z_step_spin.setValue(5.0)
         self.sequence_duration_ms_spin = QDoubleSpinBox()
         self.sequence_duration_ms_spin.setRange(0.001, 10000.0)
         self.sequence_duration_ms_spin.setDecimals(4)
