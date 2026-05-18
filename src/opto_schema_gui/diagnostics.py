@@ -262,10 +262,10 @@ class SlmPsfAcquisitionParams:
     spiral_height_um: float = 30.0
     pixels_per_line: int = 128
     lines_per_frame: int = 128
-    num_slices: int = 201
-    frames_per_slice: int = 50
+    num_slices: int = 5
+    frames_per_slice: int = 10
     log_average_factor: int = 50
-    display_average_factor: int = 50
+    display_average_factor: int = 5
     z_step_um: float = 5.0
     sequence_duration_s: float = 0.007
     power_values: list[float] | None = None
@@ -378,16 +378,16 @@ class SlmPsfConfigDialog(QDialog):
         self.lines_per_frame_spin.setValue(128)
         self.num_slices_spin = QSpinBox()
         self.num_slices_spin.setRange(1, 5000)
-        self.num_slices_spin.setValue(201)
+        self.num_slices_spin.setValue(5)
         self.frames_per_slice_spin = QSpinBox()
         self.frames_per_slice_spin.setRange(1, 10000)
-        self.frames_per_slice_spin.setValue(50)
+        self.frames_per_slice_spin.setValue(10)
         self.log_average_spin = QSpinBox()
         self.log_average_spin.setRange(1, 10000)
         self.log_average_spin.setValue(50)
         self.display_average_spin = QSpinBox()
         self.display_average_spin.setRange(1, 10000)
-        self.display_average_spin.setValue(50)
+        self.display_average_spin.setValue(5)
         self.z_step_spin = QDoubleSpinBox()
         self.z_step_spin.setRange(0.001, 1000.0)
         self.z_step_spin.setDecimals(4)
