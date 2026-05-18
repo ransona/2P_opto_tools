@@ -54,6 +54,7 @@ from .matlab_bridge import (
     PathConfig,
     autodetect_machine_name,
     build_abort_photostim_command,
+    build_begin_slm_psf_diagnostic_command,
     build_experiment_context,
     build_global_preamble,
     build_import_command,
@@ -64,7 +65,9 @@ from .matlab_bridge import (
     build_photostim_sequence_status_command,
     build_raw_vdaq_do_test_status_command,
     build_restore_online_analysis_command,
+    build_restore_slm_psf_diagnostic_command,
     build_run_script_command,
+    build_run_slm_psf_volume_command,
     build_schema_payload_load_command,
     build_configure_online_analysis_command,
     build_start_trial_waveform_command,
@@ -812,6 +815,97 @@ class ScanImageControlWidget(QWidget):
     def online_analysis_enabled(self) -> bool:
         with self._online_analysis.lock:
             return self._online_analysis.enabled
+
+    def available_path_names(self) -> list[str]:
+        return list(self._runtimes.keys())
+
+    def preferred_photostim_path_name(self) -> str:
+        if self.machine_config is not None and self.machine_config.photostim_path:
+            return self.machine_config.photostim_path
+        names = self.available_path_names()
+        return names[0] if names else ""
+
+    def run_slm_psf_diagnostic(
+        self,
+        path_name: str,
+        *,
+        pixels_per_line: int,
+        lines_per_frame: int,
+        num_slices: int,
+        frames_per_slice: int,
+        z_step_um: float,
+        log_average_factor: int,
+        display_average_factor: int,
+        sequence_duration_s: float,
+        spiral_width_um: float,
+        spiral_height_um: float,
+        power_values: list[float],
+        volumes: list[dict[str, object]],
+        progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> None:
+        if path_name not in self._runtimes:
+            raise ValueError(f"Unknown path '{path_name}'")
+        if not volumes:
+            raise ValueError("No SLM PSF diagnostic volumes were requested.")
+
+        runtime = self._runtimes[path_name]
+        self.eval_matlab_command(
+            path_name,
+            build_begin_slm_psf_diagnostic_command(
+                runtime.path_config,
+                pixels_per_line=int(pixels_per_line),
+                lines_per_frame=int(lines_per_frame),
+                num_slices=int(num_slices),
+                frames_per_slice=int(frames_per_slice),
+                z_step_um=float(z_step_um),
+                log_average_factor=int(log_average_factor),
+                display_average_factor=int(display_average_factor),
+            ),
+            prepend_preamble=False,
+            timeout_s=300.0,
+        )
+        total = len(volumes)
+        try:
+            for index, volume in enumerate(volumes, start=1):
+                x_um = float(volume["x_um"])
+                y_um = float(volume["y_um"])
+                z_um = float(volume["z_um"])
+                volume_dir = str(volume["volume_dir"])
+                if progress_callback is not None:
+                    progress_callback(index - 1, total, f"Volume {index}/{total}: x={x_um:g}, y={y_um:g}, z={z_um:g}")
+                self.eval_matlab_command(
+                    path_name,
+                    build_run_slm_psf_volume_command(
+                        runtime.path_config,
+                        x_um=x_um,
+                        y_um=y_um,
+                        z_um=z_um,
+                        volume_dir=volume_dir,
+                        pixels_per_line=int(pixels_per_line),
+                        lines_per_frame=int(lines_per_frame),
+                        num_slices=int(num_slices),
+                        frames_per_slice=int(frames_per_slice),
+                        z_step_um=float(z_step_um),
+                        sequence_duration_s=float(sequence_duration_s),
+                        spiral_width_um=float(spiral_width_um),
+                        spiral_height_um=float(spiral_height_um),
+                        power_values=[float(value) for value in power_values],
+                    ),
+                    prepend_preamble=False,
+                    timeout_s=7200.0,
+                )
+                if progress_callback is not None:
+                    progress_callback(index, total, f"Completed volume {index}/{total}")
+        finally:
+            try:
+                self.eval_matlab_command(
+                    path_name,
+                    build_restore_slm_psf_diagnostic_command(runtime.path_config),
+                    prepend_preamble=False,
+                    timeout_s=300.0,
+                )
+            except Exception as exc:
+                self.signals.log_message.emit(f"[{path_name}] SLM PSF restore warning: {exc}")
 
     def set_online_analysis_enabled(self, enabled: bool) -> None:
         with self._online_analysis.lock:

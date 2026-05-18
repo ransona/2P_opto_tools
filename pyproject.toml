@@ -9,8 +9,11 @@ description = "GUI for authoring optogenetic stimulation pattern and sequence YA
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "matplotlib>=3.8",
     "PyQt6>=6.5",
     "PyYAML>=6.0",
+    "scipy>=1.11",
+    "tifffile>=2024.0",
 ]
 
 [project.scripts]
