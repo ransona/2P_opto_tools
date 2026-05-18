@@ -797,6 +797,7 @@ def build_prepare_schema_photostim_command(
     park_duration: float = 0.001,
     block_duration: float | None = None,
     prefix_blank_to_sequence: bool = False,
+    embed_blank_and_park_in_stim_group: bool = False,
 ) -> str:
     trial_seq_nums_expr = "[]" if not trial_seq_nums else "[" + " ".join(str(int(v)) for v in trial_seq_nums) + "]"
     resolved_block_duration = path_config.sequence_block_duration_s if block_duration is None else float(block_duration)
@@ -813,6 +814,7 @@ def build_prepare_schema_photostim_command(
         f"    ConfigureSequence={'true' if configure_sequence else 'false'}, ...",
         f"    StartPhotostim={'true' if start_photostim else 'false'}, ...",
         f"    PrefixBlankToSequence={'true' if prefix_blank_to_sequence else 'false'}, ...",
+        f"    EmbedBlankAndParkInStimGroup={'true' if embed_blank_and_park_in_stim_group else 'false'}, ...",
         "    MinCenterDistanceUm=15, ...",
         "    Revolutions=5);",
         "disp('Prepared schema photostim patterns used by sequence groups:');",

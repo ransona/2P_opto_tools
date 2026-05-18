@@ -16,6 +16,7 @@ arguments
     opts.ConfigureSequence (1,1) logical = true
     opts.StartPhotostim (1,1) logical = true
     opts.PrefixBlankToSequence (1,1) logical = false
+    opts.EmbedBlankAndParkInStimGroup (1,1) logical = false
 end
 
 if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
@@ -126,7 +127,9 @@ if opts.ConfigureSequence
         if isempty(trialGroupIndices)
             error('No prepared group mapping exists for trial sequence index %d.', seqIdx - 1);
         end
-        if opts.PrefixBlankToSequence
+        if opts.EmbedBlankAndParkInStimGroup
+            hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices]; %#ok<AGROW>
+        elseif opts.PrefixBlankToSequence
             hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, 1, trialGroupIndices, 2]; %#ok<AGROW>
         else
             hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
@@ -167,7 +170,20 @@ end
 function hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts)
 nBeams = getPhotostimBeamCount(hSI);
 hGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__block_%03d', sequenceName, blockIdx)));
-appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams);
+if opts.EmbedBlankAndParkInStimGroup
+    if blockIdx ~= 1
+        error('EmbedBlankAndParkInStimGroup requires a single prepared block.');
+    end
+    if opts.BlankDuration > 0
+        hGroup.add(makePauseRoi([0 0], [0 0], opts.BlankDuration, nBeams));
+    end
+    appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams);
+    if opts.ParkDuration > 0
+        hGroup.add(makeZeroPowerPointRoi(opts.ParkDuration, nBeams));
+    end
+else
+    appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams);
+end
 end
 
 
@@ -209,6 +225,42 @@ for stepIdx = 1:numel(sequenceSteps)
         nBeams ...
     );
     cursor_s = overlapEnd_s;
+end
+
+
+function appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams)
+cursor_s = 0.0;
+
+for stepIdx = 1:numel(sequenceSteps)
+    step = sequenceSteps(stepIdx);
+    patternName = string(step.pattern);
+    pattern = getStructByOriginalName(patterns, patternName, "Pattern");
+    patternNumber = find(schemaPatternNames == patternName, 1, 'first');
+    if isempty(patternNumber)
+        error('Could not resolve schema pattern number for pattern "%s".', patternName);
+    end
+
+    stepStart_s = double(step.start_s);
+    stepDuration_s = double(pattern.duration_s);
+    stepEnd_s = stepStart_s + stepDuration_s;
+
+    if stepStart_s > cursor_s
+        hGroup.add(makePauseRoi([0 0], [0 0], stepStart_s - cursor_s, nBeams));
+    end
+
+    appendPatternSliceToGroup( ...
+        hGroup, ...
+        pattern, ...
+        patternNumber, ...
+        0, ...
+        stepDuration_s, ...
+        stepIdx == 1 && stepStart_s <= 1e-9, ...
+        hSI, ...
+        opts, ...
+        nBeams ...
+    );
+    cursor_s = stepEnd_s;
+end
 end
 
 if cursor_s < blockEnd_s

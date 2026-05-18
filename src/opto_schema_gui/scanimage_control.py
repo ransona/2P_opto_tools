@@ -2941,7 +2941,8 @@ class ScanImageControlWidget(QWidget):
                     pre_stim_pause_duration=0.0,
                     blank_duration=0.1,
                     block_duration=pattern_duration_s,
-                    prefix_blank_to_sequence=True,
+                    prefix_blank_to_sequence=False,
+                    embed_blank_and_park_in_stim_group=True,
                 ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
@@ -2954,7 +2955,7 @@ class ScanImageControlWidget(QWidget):
             runtime.prepared_photostim.prepared_sequence_names = ["S1"]
             runtime.prepared_photostim.imported_pattern_names = [pattern_name]
             self.signals.log_message.emit(
-                f"[{path_name}] prepared single test pattern '{pattern_name}' in ScanImage with blank-then-pattern-then-park sequence"
+                f"[{path_name}] prepared single test pattern '{pattern_name}' as one stim group with embedded blank-then-pattern-then-park timing"
             )
 
     def _import_pattern_subset(
