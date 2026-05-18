@@ -227,6 +227,11 @@ for stepIdx = 1:numel(sequenceSteps)
     cursor_s = overlapEnd_s;
 end
 
+if cursor_s < blockEnd_s
+    hGroup.add(makePauseRoi([0 0], [0 0], blockEnd_s - cursor_s, nBeams));
+end
+end
+
 
 function appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams)
 cursor_s = 0.0;
@@ -260,11 +265,6 @@ for stepIdx = 1:numel(sequenceSteps)
         nBeams ...
     );
     cursor_s = stepEnd_s;
-end
-end
-
-if cursor_s < blockEnd_s
-    hGroup.add(makePauseRoi([0 0], [0 0], blockEnd_s - cursor_s, nBeams));
 end
 end
 
