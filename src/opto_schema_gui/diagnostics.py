@@ -264,7 +264,7 @@ class SlmPsfAcquisitionParams:
     lines_per_frame: int = 128
     num_slices: int = 5
     frames_per_slice: int = 10
-    log_average_factor: int = 50
+    log_average_factor: int = 10
     display_average_factor: int = 5
     z_step_um: float = 5.0
     sequence_duration_s: float = 0.007
@@ -384,7 +384,8 @@ class SlmPsfConfigDialog(QDialog):
         self.frames_per_slice_spin.setValue(10)
         self.log_average_spin = QSpinBox()
         self.log_average_spin.setRange(1, 10000)
-        self.log_average_spin.setValue(50)
+        self.log_average_spin.setValue(self.frames_per_slice_spin.value())
+        self.log_average_spin.setEnabled(False)
         self.display_average_spin = QSpinBox()
         self.display_average_spin.setRange(1, 10000)
         self.display_average_spin.setValue(5)
@@ -423,7 +424,11 @@ class SlmPsfConfigDialog(QDialog):
         self.acquire_button.clicked.connect(self._accept_if_valid)
         self.visualize_button.clicked.connect(self._choose_existing_folder)
         self.cancel_button.clicked.connect(self.reject)
+        self.frames_per_slice_spin.valueChanged.connect(self._sync_log_average_to_frames_per_slice)
         layout.addWidget(buttons)
+
+    def _sync_log_average_to_frames_per_slice(self) -> None:
+        self.log_average_spin.setValue(self.frames_per_slice_spin.value())
 
     def _browse_output_root(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Select output root", self.output_root_edit.text().strip() or "")
@@ -458,9 +463,7 @@ class SlmPsfConfigDialog(QDialog):
         y_values = _parse_axis_values(self.y_edit.text())
         z_values = _parse_axis_values(self.z_edit.text())
         frames_per_slice = self.frames_per_slice_spin.value()
-        log_average_factor = self.log_average_spin.value()
-        if frames_per_slice % log_average_factor != 0:
-            raise ValueError("Saved-frame average must divide frames per slice exactly.")
+        log_average_factor = frames_per_slice
         return SlmPsfAcquisitionParams(
             path_name=path_name,
             output_root=output_root,
