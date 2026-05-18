@@ -2283,21 +2283,11 @@ class PatternEditor(QWidget):
         origin_item = self.cells_table.item(row, 5)
         metadata = origin_item.data(Qt.ItemDataRole.UserRole) if origin_item is not None else None
         if not isinstance(metadata, dict):
-            QMessageBox.information(
-                self,
-                "ROI overlay unavailable",
-                "This cell does not have structured processed-origin metadata. Re-import the cell from processed data to view its ROI overlay.",
-            )
             return
         origin_exp_id = str(metadata.get("origin_exp_id") or "")
         origin_user_id = str(metadata.get("origin_user_id") or "")
         processed_cell_id = metadata.get("origin_processed_cell_id")
         if not origin_exp_id or processed_cell_id is None:
-            QMessageBox.information(
-                self,
-                "ROI overlay unavailable",
-                "This cell does not have structured processed-origin metadata. Re-import the cell from processed data to view its ROI overlay.",
-            )
             return
         try:
             overlay = load_processed_cell_overlay(
