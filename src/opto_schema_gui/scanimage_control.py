@@ -2923,6 +2923,7 @@ class ScanImageControlWidget(QWidget):
         }
         schema_json_path = runtime.path_config.directory / "_opto_single_pattern_payload.json"
         schema_json_path.write_text(json.dumps(schema_payload, separators=(",", ":")))
+        pattern_duration_s = max(float(pattern_payload.get("duration_s", 0.0) or 0.0), 0.001)
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
@@ -2935,8 +2936,12 @@ class ScanImageControlWidget(QWidget):
                     runtime.path_config,
                     0,
                     [0],
-                    configure_sequence=False,
+                    configure_sequence=True,
                     start_photostim=False,
+                    pre_stim_pause_duration=0.0,
+                    blank_duration=0.1,
+                    block_duration=pattern_duration_s,
+                    prefix_blank_to_sequence=True,
                 ),
                 timeout_s=runtime.path_config.command_timeout_s,
             )
@@ -2949,7 +2954,7 @@ class ScanImageControlWidget(QWidget):
             runtime.prepared_photostim.prepared_sequence_names = ["S1"]
             runtime.prepared_photostim.imported_pattern_names = [pattern_name]
             self.signals.log_message.emit(
-                f"[{path_name}] prepared single pattern '{pattern_name}' in ScanImage without starting photostim"
+                f"[{path_name}] prepared single test pattern '{pattern_name}' in ScanImage with blank-then-pattern-then-park sequence"
             )
 
     def _import_pattern_subset(

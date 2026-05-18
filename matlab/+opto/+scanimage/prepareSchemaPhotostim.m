@@ -15,6 +15,7 @@ arguments
     opts.Revolutions (1,1) double = 5
     opts.ConfigureSequence (1,1) logical = true
     opts.StartPhotostim (1,1) logical = true
+    opts.PrefixBlankToSequence (1,1) logical = false
 end
 
 if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
@@ -125,7 +126,11 @@ if opts.ConfigureSequence
         if isempty(trialGroupIndices)
             error('No prepared group mapping exists for trial sequence index %d.', seqIdx - 1);
         end
-        hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
+        if opts.PrefixBlankToSequence
+            hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, 1, trialGroupIndices, 2]; %#ok<AGROW>
+        else
+            hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
+        end
     end
     hPs.numSequences = 1;
     if isprop(hPs, 'autoTriggerPeriod')
