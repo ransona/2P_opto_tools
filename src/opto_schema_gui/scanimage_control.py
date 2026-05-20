@@ -58,6 +58,7 @@ from .matlab_bridge import (
     build_check_slm_psf_volume_status_command,
     build_experiment_context,
     build_global_preamble,
+    build_generate_photostim_grid_command,
     build_import_command,
     build_inspect_photostim_command,
     build_online_analysis_delta_command,
@@ -2623,6 +2624,35 @@ class ScanImageControlWidget(QWidget):
             lambda name, payload=pattern_payload: self._send_single_pattern_to_scanimage(name, payload),
         )
 
+    def generate_diagnostic_photostim_grid(
+        self,
+        path_name: str,
+        *,
+        point_rows_um: list[list[float]],
+        spiral_width_um: float,
+        spiral_height_um: float,
+        pause_duration_s: float,
+        stim_duration_s: float,
+        power_percent: float,
+    ) -> None:
+        if not path_name:
+            self.signals.log_message.emit("Generate photostim grid skipped: no path selected")
+            return
+        payload_rows = [[float(row[0]), float(row[1]), float(row[2]), float(row[3])] for row in point_rows_um]
+        self._spawn_action(
+            path_name,
+            "generate photostim grid",
+            lambda name, rows=payload_rows: self._generate_diagnostic_photostim_grid(
+                name,
+                rows,
+                float(spiral_width_um),
+                float(spiral_height_um),
+                float(pause_duration_s),
+                float(stim_duration_s),
+                float(power_percent),
+            ),
+        )
+
     def _ensure_session(self, path_name: str) -> PathRuntime:
         runtime = self._runtimes[path_name]
         with runtime.lock:
@@ -2957,6 +2987,41 @@ class ScanImageControlWidget(QWidget):
             runtime.prepared_photostim.imported_pattern_names = [pattern_name]
             self.signals.log_message.emit(
                 f"[{path_name}] started single test pattern '{pattern_name}' as one stim group with embedded blank-then-pattern-then-park timing"
+            )
+
+    def _generate_diagnostic_photostim_grid(
+        self,
+        path_name: str,
+        point_rows_um: list[list[float]],
+        spiral_width_um: float,
+        spiral_height_um: float,
+        pause_duration_s: float,
+        stim_duration_s: float,
+        power_percent: float,
+    ) -> None:
+        runtime = self._ensure_session(path_name)
+        self._cancel_software_trigger(path_name)
+        self._cancel_waveform_monitor(path_name)
+        with runtime.lock:
+            assert runtime.session is not None
+            lines = runtime.session.eval(
+                build_generate_photostim_grid_command(
+                    runtime.path_config,
+                    point_rows_um=point_rows_um,
+                    spiral_width_um=spiral_width_um,
+                    spiral_height_um=spiral_height_um,
+                    pause_duration_s=pause_duration_s,
+                    stim_duration_s=stim_duration_s,
+                    power_percent=power_percent,
+                ),
+                timeout_s=runtime.path_config.command_timeout_s,
+            )
+            runtime.status = "photostim grid"
+            runtime.prepared_photostim.reset()
+            self.signals.path_status.emit(path_name, runtime.status)
+            self._emit_lines(path_name, lines)
+            self.signals.log_message.emit(
+                f"[{path_name}] generated diagnostic photostim grid with {len(point_rows_um)} point(s)"
             )
 
     def _import_pattern_subset(

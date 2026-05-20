@@ -298,6 +298,27 @@ class SlmPsfAcquisitionParams:
         return specs
 
 
+@dataclass
+class PhotostimGridParams:
+    path_name: str
+    x_values_um: list[float]
+    y_values_um: list[float]
+    z_values_um: list[float]
+    spiral_width_um: float = 15.0
+    spiral_height_um: float = 15.0
+    power_percent: float = 30.0
+    pause_duration_s: float = 0.010
+    stim_duration_s: float = 0.010
+
+    def point_rows_um(self) -> list[list[float]]:
+        rows: list[list[float]] = []
+        for z_um in self.z_values_um:
+            for y_um in self.y_values_um:
+                for x_um in self.x_values_um:
+                    rows.append([float(x_um), float(y_um), float(z_um), 1.0])
+        return rows
+
+
 class _DiagnosticsSignals(QObject):
     progress = pyqtSignal(int, int, str)
     status = pyqtSignal(str)
@@ -484,6 +505,100 @@ class SlmPsfConfigDialog(QDialog):
         )
 
 
+class PhotostimGridConfigDialog(QDialog):
+    def __init__(self, path_names: list[str], default_path_name: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Generate Photostim Grid")
+        self.resize(520, 420)
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "Generate a live photostim grid directly in ScanImage. "
+            "This clears existing photostim groups, creates one sequence group containing a pause, the grid stimulation, and a park, then starts the sequence."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        form_box = QGroupBox("Grid Parameters")
+        form = QFormLayout(form_box)
+        self.path_combo = QComboBox()
+        self.path_combo.addItems(path_names)
+        if default_path_name:
+            index = self.path_combo.findText(default_path_name)
+            if index >= 0:
+                self.path_combo.setCurrentIndex(index)
+        self.x_edit = QLineEdit("[-150:100:150]")
+        self.y_edit = QLineEdit("[-150:100:150]")
+        self.z_edit = QLineEdit("[0]")
+        self.power_spin = QDoubleSpinBox()
+        self.power_spin.setRange(0.0, 100.0)
+        self.power_spin.setDecimals(3)
+        self.power_spin.setValue(30.0)
+        self.spiral_width_spin = QDoubleSpinBox()
+        self.spiral_width_spin.setRange(0.001, 1000.0)
+        self.spiral_width_spin.setDecimals(3)
+        self.spiral_width_spin.setValue(15.0)
+        self.spiral_height_spin = QDoubleSpinBox()
+        self.spiral_height_spin.setRange(0.001, 1000.0)
+        self.spiral_height_spin.setDecimals(3)
+        self.spiral_height_spin.setValue(15.0)
+        self.pause_ms_spin = QDoubleSpinBox()
+        self.pause_ms_spin.setRange(0.0, 10000.0)
+        self.pause_ms_spin.setDecimals(3)
+        self.pause_ms_spin.setValue(10.0)
+        self.stim_ms_spin = QDoubleSpinBox()
+        self.stim_ms_spin.setRange(0.001, 10000.0)
+        self.stim_ms_spin.setDecimals(3)
+        self.stim_ms_spin.setValue(10.0)
+
+        form.addRow("Path", self.path_combo)
+        form.addRow("X grid (um)", self.x_edit)
+        form.addRow("Y grid (um)", self.y_edit)
+        form.addRow("Z grid (um)", self.z_edit)
+        form.addRow("Laser 3 power (%)", self.power_spin)
+        form.addRow("Spiral width (um)", self.spiral_width_spin)
+        form.addRow("Spiral height (um)", self.spiral_height_spin)
+        form.addRow("Pause (ms)", self.pause_ms_spin)
+        form.addRow("Stim duration (ms)", self.stim_ms_spin)
+        layout.addWidget(form_box)
+
+        buttons = QDialogButtonBox()
+        self.generate_button = buttons.addButton("Generate", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.cancel_button = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+        self.generate_button.clicked.connect(self._accept_if_valid)
+        self.cancel_button.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_if_valid(self) -> None:
+        try:
+            self.gather_params()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Photostim Grid Settings", str(exc))
+            return
+        self.accept()
+
+    def gather_params(self) -> PhotostimGridParams:
+        path_name = self.path_combo.currentText().strip()
+        if not path_name:
+            raise ValueError("A ScanImage path must be selected.")
+        x_values = _parse_axis_values(self.x_edit.text())
+        y_values = _parse_axis_values(self.y_edit.text())
+        z_values = _parse_axis_values(self.z_edit.text())
+        if not x_values or not y_values or not z_values:
+            raise ValueError("Grid axes must each contain at least one value.")
+        return PhotostimGridParams(
+            path_name=path_name,
+            x_values_um=x_values,
+            y_values_um=y_values,
+            z_values_um=z_values,
+            spiral_width_um=self.spiral_width_spin.value(),
+            spiral_height_um=self.spiral_height_spin.value(),
+            power_percent=self.power_spin.value(),
+            pause_duration_s=self.pause_ms_spin.value() / 1000.0,
+            stim_duration_s=self.stim_ms_spin.value() / 1000.0,
+        )
+
+
 class DiagnosticsWidget(QWidget):
     def __init__(self, scanimage_control: ScanImageControlWidget, parent: QWidget | None = None):
         super().__init__(parent)
@@ -514,9 +629,11 @@ class DiagnosticsWidget(QWidget):
 
         button_row = QHBoxLayout()
         self.acquire_button = QPushButton("Acquire SLM volume")
+        self.generate_grid_button = QPushButton("Generate Photostim Grid")
         self.abort_button = QPushButton("Abort")
         self.open_existing_button = QPushButton("Open Existing Result")
         button_row.addWidget(self.acquire_button)
+        button_row.addWidget(self.generate_grid_button)
         button_row.addWidget(self.abort_button)
         button_row.addWidget(self.open_existing_button)
         button_row.addStretch(1)
@@ -563,6 +680,7 @@ class DiagnosticsWidget(QWidget):
         layout.addWidget(viz_box)
 
         self.acquire_button.clicked.connect(self._show_acquisition_dialog)
+        self.generate_grid_button.clicked.connect(self._show_photostim_grid_dialog)
         self.abort_button.clicked.connect(self._request_abort)
         self.open_existing_button.clicked.connect(self._open_existing_result)
         self.plot_3d_button.clicked.connect(self._show_3d_plot)
@@ -577,6 +695,7 @@ class DiagnosticsWidget(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self.acquire_button.setEnabled(not running)
+        self.generate_grid_button.setEnabled(not running)
         self.abort_button.setEnabled(running)
         self.open_existing_button.setEnabled(not running)
 
@@ -596,6 +715,28 @@ class DiagnosticsWidget(QWidget):
             return
         params = dialog.gather_params()
         self._start_acquisition(params)
+
+    def _show_photostim_grid_dialog(self) -> None:
+        dialog = PhotostimGridConfigDialog(
+            self.scanimage_control.available_path_names(),
+            self.scanimage_control.preferred_photostim_path_name(),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        params = dialog.gather_params()
+        self.scanimage_control.generate_diagnostic_photostim_grid(
+            params.path_name,
+            point_rows_um=params.point_rows_um(),
+            spiral_width_um=params.spiral_width_um,
+            spiral_height_um=params.spiral_height_um,
+            pause_duration_s=params.pause_duration_s,
+            stim_duration_s=params.stim_duration_s,
+            power_percent=params.power_percent,
+        )
+        self._append_status(
+            f"Requested photostim grid generation on {params.path_name} with {len(params.point_rows_um())} point(s)."
+        )
 
     def _start_acquisition(self, params: SlmPsfAcquisitionParams) -> None:
         if self._worker_thread is not None and self._worker_thread.is_alive():
