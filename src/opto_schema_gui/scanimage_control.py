@@ -2042,14 +2042,17 @@ class ScanImageControlWidget(QWidget):
             "Choose how to handle tracked config changes before updating:\n\n"
             f"{preview}"
         )
-        sync_button = box.addButton("Sync Configs", QMessageBox.ButtonRole.AcceptRole)
+        sync_local_button = box.addButton("Sync Locally", QMessageBox.ButtonRole.AcceptRole)
+        sync_push_button = box.addButton("Sync And Push", QMessageBox.ButtonRole.AcceptRole)
         discard_button = box.addButton("Discard Configs", QMessageBox.ButtonRole.DestructiveRole)
         cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(sync_button)
+        box.setDefaultButton(sync_local_button)
         box.exec()
         clicked = box.clickedButton()
-        if clicked == sync_button:
-            return "sync"
+        if clicked == sync_local_button:
+            return "sync_local"
+        if clicked == sync_push_button:
+            return "sync_push"
         if clicked == discard_button:
             return "discard"
         return "cancel"
@@ -2066,6 +2069,24 @@ class ScanImageControlWidget(QWidget):
         commit_result = self._run_git_command(["commit", "-m", message])
         self._log_process_output("[update]", commit_result)
         return commit_result.returncode == 0
+
+    def _current_git_branch(self) -> str | None:
+        branch_result = self._run_git_command(["branch", "--show-current"])
+        self._log_process_output("[update]", branch_result)
+        if branch_result.returncode != 0:
+            return None
+        branch = (branch_result.stdout or "").strip()
+        return branch or None
+
+    def _push_current_branch(self) -> bool:
+        branch = self._current_git_branch()
+        if not branch:
+            self.signals.log_message.emit("[update] Could not determine current git branch for push")
+            return False
+        self.signals.log_message.emit(f"[update] Pushing local config commit to origin/{branch}")
+        push_result = self._run_git_command(["push", "origin", branch])
+        self._log_process_output("[update]", push_result)
+        return push_result.returncode == 0
 
     def _discard_tracked_git_changes(self, entries: list[str]) -> bool:
         tracked_paths = [self._git_status_entry_path(entry) for entry in entries if self._git_status_entry_path(entry)]
@@ -2101,7 +2122,7 @@ class ScanImageControlWidget(QWidget):
             if policy == "cancel":
                 self.signals.log_message.emit("[update] Update cancelled by user")
                 return
-            if policy == "sync":
+            if policy in {"sync_local", "sync_push"}:
                 commit_message = (
                     f"Sync local configs before update "
                     f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -2111,6 +2132,13 @@ class ScanImageControlWidget(QWidget):
                         self,
                         "Update failed",
                         "Could not commit tracked config changes before pulling. See debug log for details.",
+                    )
+                    return
+                if policy == "sync_push" and not self._push_current_branch():
+                    QMessageBox.critical(
+                        self,
+                        "Update failed",
+                        "Could not push tracked config changes before pulling. See debug log for details.",
                     )
                     return
                 should_use_rebase_pull = True
