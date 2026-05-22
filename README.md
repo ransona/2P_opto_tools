@@ -172,9 +172,9 @@ The `ScanImage Control` tab also includes a `Force Simulated Mode` toggle. When 
 
 The main GUI also includes a `Diagnostics` tab for direct live-system test procedures.
 
-### Acquire SLM volume
+### Acquire SLM volume for PSF
 
-`Acquire SLM volume` is intended for measuring the axial point-spread function of SLM stimulation using a thin fluorescent sample.
+`Acquire SLM volume for PSF` is intended for measuring the axial point-spread function of SLM stimulation using a thin fluorescent sample.
 
 Current workflow:
 

@@ -352,7 +352,7 @@ class SlmPsfConfigDialog(QDialog):
     ):
         super().__init__(parent)
         self._visualize_existing_folder: str | None = None
-        self.setWindowTitle("Acquire SLM Volume")
+        self.setWindowTitle("Acquire SLM Volume for PSF")
         self.resize(620, 560)
         layout = QVBoxLayout(self)
 
@@ -628,7 +628,7 @@ class DiagnosticsWidget(QWidget):
         layout.addWidget(intro_box)
 
         button_row = QHBoxLayout()
-        self.acquire_button = QPushButton("Acquire SLM volume")
+        self.acquire_button = QPushButton("Acquire SLM volume for PSF")
         self.generate_grid_button = QPushButton("Generate Photostim Grid")
         self.abort_button = QPushButton("Abort")
         self.open_existing_button = QPushButton("Open Existing Result")
