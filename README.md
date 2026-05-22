@@ -168,6 +168,81 @@ When MATLAB is not available, the bridge runs in simulated mode. In that mode th
 
 The `ScanImage Control` tab also includes a `Force Simulated Mode` toggle. When enabled, path launches and photostim prep stay entirely in the simulated backend even if MATLAB is installed. This is useful for testing UDP flow, schema resolution, and prep logic without touching a live ScanImage session.
 
+## Diagnostics tab
+
+The main GUI also includes a `Diagnostics` tab for direct live-system test procedures.
+
+### Acquire SLM volume
+
+`Acquire SLM volume` is intended for measuring the axial point-spread function of SLM stimulation using a thin fluorescent sample.
+
+Current workflow:
+
+1. Select the ScanImage path and acquisition settings in the popup dialog.
+2. The tool creates one output folder per requested SLM `(x,y,z)` coordinate under:
+   - `F:\slm_psf\<timestamp>\volume_x=<x>_y=<y>_z=<z>`
+3. Before the run starts, the tool backs up the current ScanImage state and then configures:
+   - motor-centered uniform z stack
+   - requested frame size
+   - frames per slice
+   - saved-frame averaging
+   - display averaging
+   - logging path and filename
+4. Motion detection is disabled for the diagnostic run by setting:
+   - `hSI.hMotionManager.enable = false`
+5. For each requested SLM coordinate, the tool:
+   - moves the motor Z stage to the requested center Z
+   - configures one SLM spiral stimulus at the requested `(x,y,z)`
+   - starts photostimulation and waits for it to become active
+   - sets the logging directory and filename
+   - starts the z-stack grab
+   - waits for acquisition to finish
+6. After all volumes are complete, the tool restores the prior ScanImage state.
+
+Current default acquisition values:
+
+- `x = [-200:200:200]`
+- `y = [-200:200:200]`
+- `z = [-200:200:200]`
+- spiral size:
+  - `30 x 30 um`
+- frame size:
+  - `128 x 128`
+- slices:
+  - `5`
+- frames per slice:
+  - `10`
+- saved-frame average:
+  - equal to `frames per slice`
+- display average:
+  - `5`
+- z step:
+  - `5 um`
+- stimulation duration:
+  - `7 ms`
+- power vector:
+  - `[0 0 1]`
+
+After acquisition:
+
+- each volume is processed by averaging all pixels in each saved frame group to produce intensity vs z
+- a Gaussian fit is attempted for each volume
+- per-volume results are saved to:
+  - `slm_psf_result.json`
+- the aggregate run summary is saved to:
+  - `slm_psf_summary.json`
+
+Abort behavior:
+
+- pressing `Abort` stops the diagnostic run from the Python GUI
+- after an aborted run, the GUI asks whether the partially acquired data folder should be deleted
+
+Visualisation tools in the `Diagnostics` tab:
+
+- `3D FWHM Plot`
+- `Cross Section`
+- `Open Existing Result`
+
 ### File format
 
 The app writes one YAML file:
