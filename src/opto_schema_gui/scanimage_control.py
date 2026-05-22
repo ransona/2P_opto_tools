@@ -2022,8 +2022,53 @@ class ScanImageControlWidget(QWidget):
         path = entry[3:].strip().strip('"')
         return path.endswith(".pyc") and "__pycache__/" in path
 
+    @staticmethod
+    def _git_status_entry_path(entry: str) -> str:
+        return entry[3:].strip().strip('"') if len(entry) >= 4 else ""
+
+    def _is_repo_config_path(self, path: str) -> bool:
+        normalized = path.replace("\\", "/").lstrip("./")
+        return normalized == "config.ini" or normalized.startswith("configs/")
+
+    def _prompt_config_update_policy(self, config_entries: list[str]) -> str:
+        preview_paths = [self._git_status_entry_path(entry) for entry in config_entries[:8]]
+        preview = "\n".join(preview_paths)
+        if len(config_entries) > len(preview_paths):
+            preview += f"\n... and {len(config_entries) - len(preview_paths)} more"
+        box = QMessageBox(self)
+        box.setWindowTitle("Config Changes Detected")
+        box.setText("Local config changes would be lost by update.")
+        box.setInformativeText(
+            "Choose how to handle tracked config changes before updating:\n\n"
+            f"{preview}"
+        )
+        sync_button = box.addButton("Sync Configs", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton("Discard Configs", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(sync_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == sync_button:
+            return "sync"
+        if clicked == discard_button:
+            return "discard"
+        return "cancel"
+
+    def _commit_tracked_git_changes(self, entries: list[str], message: str) -> bool:
+        tracked_paths = [self._git_status_entry_path(entry) for entry in entries if self._git_status_entry_path(entry)]
+        if not tracked_paths:
+            return True
+        self.signals.log_message.emit("[update] Committing tracked local changes before pull")
+        add_result = self._run_git_command(["add", "--", *tracked_paths])
+        self._log_process_output("[update]", add_result)
+        if add_result.returncode != 0:
+            return False
+        commit_result = self._run_git_command(["commit", "-m", message])
+        self._log_process_output("[update]", commit_result)
+        return commit_result.returncode == 0
+
     def _discard_tracked_git_changes(self, entries: list[str]) -> bool:
-        tracked_paths = [entry[3:].strip().strip('"') for entry in entries if len(entry) >= 4]
+        tracked_paths = [self._git_status_entry_path(entry) for entry in entries if self._git_status_entry_path(entry)]
         if not tracked_paths:
             return True
         self.signals.log_message.emit("[update] Discarding tracked local changes before pull")
@@ -2048,8 +2093,36 @@ class ScanImageControlWidget(QWidget):
             for line in status_result.stdout.splitlines()
             if line.strip() and not self._is_ignorable_git_status_entry(line.rstrip())
         ]
-        if dirty_entries:
-            if not self._discard_tracked_git_changes(dirty_entries):
+        config_entries = [entry for entry in dirty_entries if self._is_repo_config_path(self._git_status_entry_path(entry))]
+        other_entries = [entry for entry in dirty_entries if entry not in config_entries]
+        should_use_rebase_pull = False
+        if config_entries:
+            policy = self._prompt_config_update_policy(config_entries)
+            if policy == "cancel":
+                self.signals.log_message.emit("[update] Update cancelled by user")
+                return
+            if policy == "sync":
+                commit_message = (
+                    f"Sync local configs before update "
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                if not self._commit_tracked_git_changes(config_entries, commit_message):
+                    QMessageBox.critical(
+                        self,
+                        "Update failed",
+                        "Could not commit tracked config changes before pulling. See debug log for details.",
+                    )
+                    return
+                should_use_rebase_pull = True
+            elif not self._discard_tracked_git_changes(config_entries):
+                QMessageBox.critical(
+                    self,
+                    "Update failed",
+                    "Could not discard tracked config changes before pulling. See debug log for details.",
+                )
+                return
+        if other_entries:
+            if not self._discard_tracked_git_changes(other_entries):
                 QMessageBox.critical(
                     self,
                     "Update failed",
@@ -2057,14 +2130,15 @@ class ScanImageControlWidget(QWidget):
                 )
                 return
 
-        self.signals.log_message.emit("[update] Running git pull --ff-only")
-        pull_result = self._run_git_command(["pull", "--ff-only"])
+        pull_cmd = ["pull", "--rebase", "--autostash"] if should_use_rebase_pull else ["pull", "--ff-only"]
+        self.signals.log_message.emit(f"[update] Running git {' '.join(pull_cmd)}")
+        pull_result = self._run_git_command(pull_cmd)
         self._log_process_output("[update]", pull_result)
         if pull_result.returncode != 0:
             QMessageBox.critical(
                 self,
                 "Update failed",
-                "git pull --ff-only failed. See debug log for details.",
+                f"git {' '.join(pull_cmd)} failed. See debug log for details.",
             )
             return
 
