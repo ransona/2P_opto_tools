@@ -113,7 +113,7 @@ def list_imaging_scanfields(
     photostim_path: str = "PS",
     user_id: str | None = None,
 ) -> MetadataBundle:
-    _require_linux_roi_import()
+    _require_processed_import_platform()
     imaging_config, _ = _load_v1_configs(repo_root, imaging_path, photostim_path)
     exp_dir = _resolve_experiment_dir(exp_id, imaging_config, imaging_path, user_id=user_id)
 
@@ -154,7 +154,7 @@ def convert_imaging_pixel_to_pattern_coords(
     photostim_path: str = "PS",
     user_id: str | None = None,
 ) -> ConvertedPatternCoordinate:
-    _require_linux_roi_import()
+    _require_processed_import_platform()
     bundle = list_imaging_scanfields(
         repo_root,
         exp_id,
@@ -207,11 +207,12 @@ def resolve_processed_cell_to_imaging_pixel(
     default_imaging_path: str = "P1",
     photostim_path: str = "PS",
 ) -> ResolvedProcessedCell:
-    _require_linux_roi_import()
+    _require_processed_import_platform()
     if processed_cell_id < 0:
         raise ValueError("Processed cell ID must be >= 0.")
 
-    processed_data, processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=user_id)
+    resolved_user_id = (user_id or "").strip() or getpass.getuser()
+    processed_data, processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=resolved_user_id)
     neuron_count = _processed_neuron_count(processed_data)
     if processed_cell_id >= neuron_count:
         raise IndexError(
@@ -256,7 +257,7 @@ def resolve_processed_cell_to_imaging_pixel(
             exp_id,
             imaging_path=imaging_path,
             photostim_path=photostim_path,
-            user_id=user_id,
+            user_id=resolved_user_id,
         )
     except Exception as exc:
         raise type(exc)(f"{exc}\n" + "\n".join(processed_debug_lines)) from exc
@@ -362,9 +363,7 @@ def load_processed_cell_overlay(
 def list_processed_channels(exp_id: str, user_id: str | None = None) -> tuple[int, ...]:
     animal_id = _animal_id_from_exp_id(exp_id)
     resolved_user_id = (user_id or "").strip() or getpass.getuser()
-    roots = [
-        Path("/home") / resolved_user_id / "data" / "Repository" / animal_id / exp_id / "recordings",
-    ]
+    roots = _processed_recording_roots(animal_id, exp_id, resolved_user_id)
     channels: set[int] = set()
     for root in roots:
         if not root.is_dir():
@@ -384,8 +383,9 @@ def list_processed_fov_groups(
     default_imaging_path: str = "P1",
     photostim_path: str = "PS",
 ) -> tuple[ProcessedFovGroup, ...]:
-    _require_linux_roi_import()
-    processed_data, _processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=user_id)
+    _require_processed_import_platform()
+    resolved_user_id = (user_id or "").strip() or getpass.getuser()
+    processed_data, _processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=resolved_user_id)
     neuron_count = _processed_neuron_count(processed_data)
     has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
     has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
@@ -403,7 +403,6 @@ def list_processed_fov_groups(
         )
         groups.setdefault(key, []).append(processed_cell_id)
 
-    resolved_user_id = (user_id or "").strip() or getpass.getuser()
     result: list[ProcessedFovGroup] = []
     for (scanpath_number, siroi_number, depth_value), processed_cell_ids in sorted(groups.items()):
         first_id = processed_cell_ids[0]
@@ -417,7 +416,7 @@ def list_processed_fov_groups(
                 exp_id,
                 imaging_path=imaging_path,
                 photostim_path=photostim_path,
-                user_id=user_id,
+                user_id=resolved_user_id,
             )
         bundle = scanfield_bundles[imaging_path]
         scanfield_index = _match_processed_cell_to_scanfield_index(
@@ -468,9 +467,7 @@ def _load_v1_configs(repo_root: Path, imaging_path: str, photostim_path: str):
 def _load_processed_s2p_pickle(exp_id: str, channel: int, user_id: str | None = None) -> tuple[dict, Path]:
     animal_id = _animal_id_from_exp_id(exp_id)
     resolved_user_id = (user_id or "").strip() or getpass.getuser()
-    candidates = [
-        Path("/home") / resolved_user_id / "data" / "Repository" / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
-    ]
+    candidates = [root / f"s2p_ch{channel}.pickle" for root in _processed_recording_roots(animal_id, exp_id, resolved_user_id)]
     for candidate in candidates:
         if not candidate.is_file():
             continue
@@ -703,9 +700,34 @@ def _require_linux_roi_import() -> None:
         raise NotImplementedError("Imaging pixel ROI import is available on Ubuntu only.")
 
 
+def _require_processed_import_platform() -> None:
+    if not (sys.platform.startswith("linux") or sys.platform.startswith("win")):
+        raise NotImplementedError("Processed cell ROI import is available on Ubuntu and Windows only.")
+
+
+def _windows_processed_experiment_root(animal_id: str, exp_id: str) -> Path:
+    return Path("F:/Local_Repository_Processed") / animal_id / exp_id
+
+
+def _processed_recording_roots(animal_id: str, exp_id: str, user_id: str) -> list[Path]:
+    if sys.platform.startswith("win"):
+        exp_root = _windows_processed_experiment_root(animal_id, exp_id)
+        return [exp_root / "recordings", exp_root]
+    return [Path("/home") / user_id / "data" / "Repository" / animal_id / exp_id / "recordings"]
+
+
 def _resolve_experiment_dir(exp_id: str, imaging_config, imaging_path: str, user_id: str | None = None) -> Path:
     animal_id = _animal_id_from_exp_id(exp_id)
     checked: list[Path] = []
+
+    if sys.platform.startswith("win"):
+        exp_root = _windows_processed_experiment_root(animal_id, exp_id)
+        checked.append(exp_root)
+        if exp_root.is_dir():
+            return exp_root
+        raise FileNotFoundError(
+            f"Could not resolve experiment directory for '{exp_id}' on Windows. Checked: {exp_root}"
+        )
 
     resolved_user_id = (user_id or "").strip()
     if resolved_user_id:

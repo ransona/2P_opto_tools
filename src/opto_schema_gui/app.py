@@ -1389,6 +1389,10 @@ def _roi_coordinate_import_enabled() -> bool:
     return sys.platform.startswith("linux")
 
 
+def _processed_cell_import_enabled() -> bool:
+    return sys.platform.startswith("linux") or sys.platform.startswith("win")
+
+
 def _normalize_unc_path(raw_path: str) -> str:
     return raw_path.replace("/", "\\").rstrip("\\").lower()
 
@@ -2344,12 +2348,13 @@ class PatternEditor(QWidget):
         self.add_cells_by_id_btn = QPushButton("Add Cells by ID")
         self.add_from_fov_btn = QPushButton("Add from FOV")
         self.add_imaging_pixel_btn.setEnabled(_roi_coordinate_import_enabled())
-        self.add_cells_by_id_btn.setEnabled(_roi_coordinate_import_enabled())
-        self.add_from_fov_btn.setEnabled(_roi_coordinate_import_enabled())
+        self.add_cells_by_id_btn.setEnabled(_processed_cell_import_enabled())
+        self.add_from_fov_btn.setEnabled(_processed_cell_import_enabled())
         if not _roi_coordinate_import_enabled():
             self.add_imaging_pixel_btn.setToolTip("Imaging pixel ROI import is available on Ubuntu only.")
-            self.add_cells_by_id_btn.setToolTip("Processed cell ROI import is available on Ubuntu only.")
-            self.add_from_fov_btn.setToolTip("Processed FOV import is available on Ubuntu only.")
+        if not _processed_cell_import_enabled():
+            self.add_cells_by_id_btn.setToolTip("Processed cell ROI import is available on Ubuntu and Windows only.")
+            self.add_from_fov_btn.setToolTip("Processed FOV import is available on Ubuntu and Windows only.")
         self.remove_row_btn = QPushButton("Remove Cell")
         self.copy_btn = QPushButton("Copy Pattern")
         self.send_to_scanimage_btn = QPushButton("Send Pattern to ScanImage")
@@ -2420,8 +2425,8 @@ class PatternEditor(QWidget):
         QMessageBox.information(self, "Imaging pixel imported", "\n".join(details))
 
     def add_cells_by_id(self) -> None:
-        if not _roi_coordinate_import_enabled():
-            QMessageBox.information(self, "Unavailable on this platform", "Processed cell ROI import is available on Ubuntu only.")
+        if not _processed_cell_import_enabled():
+            QMessageBox.information(self, "Unavailable on this platform", "Processed cell ROI import is available on Ubuntu and Windows only.")
             return
         dialog = ProcessedCellGroupImportDialog(
             self.repo_root,
@@ -2440,8 +2445,8 @@ class PatternEditor(QWidget):
             self.add_cell_row(cell)
 
     def add_cells_from_fov(self) -> None:
-        if not _roi_coordinate_import_enabled():
-            QMessageBox.information(self, "Unavailable on this platform", "Processed FOV import is available on Ubuntu only.")
+        if not _processed_cell_import_enabled():
+            QMessageBox.information(self, "Unavailable on this platform", "Processed FOV import is available on Ubuntu and Windows only.")
             return
         dialog = AddCellsFromFovDialog(
             self.repo_root,
@@ -3937,11 +3942,11 @@ class MainWindow(QMainWindow):
         self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
 
     def import_items_dialog(self) -> None:
-        if not _roi_coordinate_import_enabled():
+        if not _processed_cell_import_enabled():
             QMessageBox.information(
                 self,
                 "Unavailable on this platform",
-                "Processed cell ROI import is available on Ubuntu only.",
+                "Processed cell ROI import is available on Ubuntu and Windows only.",
             )
             return
         if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
