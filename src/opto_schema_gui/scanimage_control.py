@@ -1795,18 +1795,18 @@ class ScanImageControlWidget(QWidget):
         self.trigger_mode_combo.addItem("Software trigger (debug)", "software")
         self.trigger_mode_combo.addItem("Hardware external trigger", "hardware")
         self.trigger_mode_combo.setCurrentIndex(1)
-        self.phase_mask_batch_size_spin = QSpinBox()
-        self.phase_mask_batch_size_spin.setRange(1, 100000)
-        self.phase_mask_batch_size_spin.setValue(100)
-        self.phase_mask_batch_size_spin.setToolTip(
+        self.phase_mask_batch_size_edit = QLineEdit("100")
+        self.phase_mask_batch_size_edit.setMaximumWidth(80)
+        self.phase_mask_batch_size_edit.setToolTip(
             "Maximum number of trials to prepare phase masks for in one batch."
         )
+        self.phase_mask_batch_size_edit.editingFinished.connect(self._normalize_phase_mask_batch_size_text)
         controls_row.addWidget(self.force_simulated_checkbox)
         controls_row.addWidget(self.ignore_incomplete_trigger_checkbox)
         controls_row.addWidget(QLabel("Trigger mode"))
         controls_row.addWidget(self.trigger_mode_combo)
         controls_row.addWidget(QLabel("Phase mask batch size"))
-        controls_row.addWidget(self.phase_mask_batch_size_spin)
+        controls_row.addWidget(self.phase_mask_batch_size_edit)
         controls_row.addStretch(1)
         config_layout.addLayout(controls_row)
 
@@ -1966,6 +1966,18 @@ class ScanImageControlWidget(QWidget):
     def _current_trigger_mode(self) -> str:
         data = self.trigger_mode_combo.currentData()
         return str(data) if data is not None else "software"
+
+    def _phase_mask_batch_size(self) -> int:
+        try:
+            value = round(float(self.phase_mask_batch_size_edit.text().strip()))
+        except ValueError:
+            value = 1
+        value = max(1, int(value))
+        self.phase_mask_batch_size_edit.setText(str(value))
+        return value
+
+    def _normalize_phase_mask_batch_size_text(self) -> None:
+        self._phase_mask_batch_size()
 
     def _open_photostim_test_dialog(self) -> None:
         dialog = PhotostimTestDialog(self)
@@ -2488,7 +2500,7 @@ class ScanImageControlWidget(QWidget):
                 "label": self.trigger_mode_combo.currentText(),
                 "value": self._current_trigger_mode(),
             },
-            "phase_mask_batch_size": self.phase_mask_batch_size_spin.value(),
+            "phase_mask_batch_size": self._phase_mask_batch_size(),
             "photostim_path": self.machine_config.photostim_path if self.machine_config is not None else "",
             "paths": path_states,
             "online_analysis": self.get_online_analysis_snapshot(),
@@ -2537,14 +2549,13 @@ class ScanImageControlWidget(QWidget):
             self.trigger_mode_combo.setCurrentIndex(index)
             applied["trigger_mode"] = self._current_trigger_mode()
         if "phase_mask_batch_size" in values:
-            batch_size = int(values["phase_mask_batch_size"])
-            if batch_size < self.phase_mask_batch_size_spin.minimum() or batch_size > self.phase_mask_batch_size_spin.maximum():
-                raise ValueError(
-                    "phase_mask_batch_size must be between "
-                    f"{self.phase_mask_batch_size_spin.minimum()} and {self.phase_mask_batch_size_spin.maximum()}"
-                )
-            self.phase_mask_batch_size_spin.setValue(batch_size)
-            applied["phase_mask_batch_size"] = self.phase_mask_batch_size_spin.value()
+            try:
+                batch_size = round(float(str(values["phase_mask_batch_size"]).strip()))
+            except ValueError:
+                batch_size = 1
+            batch_size = max(1, int(batch_size))
+            self.phase_mask_batch_size_edit.setText(str(batch_size))
+            applied["phase_mask_batch_size"] = self._phase_mask_batch_size()
         return applied
 
     def invoke_remote_action(
