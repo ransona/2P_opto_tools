@@ -109,6 +109,15 @@ class PreparedPhotostimState:
     pattern_to_schema_index: dict[str, int] = field(default_factory=dict)
     sequence_to_stimulus_group: dict[str, int] = field(default_factory=dict)
     sequence_to_stimulus_groups: dict[str, list[int]] = field(default_factory=dict)
+    planned_trial_seq_nums: list[int | None] = field(default_factory=list)
+    phase_mask_batch_size: int = 100
+    phase_mask_batch_status: str = "idle"
+    phase_mask_batch_error: str = ""
+    phase_mask_batch_index: int = 0
+    prepared_trial_start_index: int | None = None
+    prepared_trial_stop_index: int | None = None
+    prepared_opto_trial_indices: list[int] = field(default_factory=list)
+    phase_mask_batch_pattern_names: list[str] = field(default_factory=list)
     triggered_seq_num: int | None = None
     triggered_sequence_name: str = ""
     triggered_stimulus_groups: list[int] = field(default_factory=list)
@@ -129,6 +138,15 @@ class PreparedPhotostimState:
         self.pattern_to_schema_index = {}
         self.sequence_to_stimulus_group = {}
         self.sequence_to_stimulus_groups = {}
+        self.planned_trial_seq_nums = []
+        self.phase_mask_batch_size = 100
+        self.phase_mask_batch_status = "idle"
+        self.phase_mask_batch_error = ""
+        self.phase_mask_batch_index = 0
+        self.prepared_trial_start_index = None
+        self.prepared_trial_stop_index = None
+        self.prepared_opto_trial_indices = []
+        self.phase_mask_batch_pattern_names = []
         self.triggered_seq_num = None
         self.triggered_sequence_name = ""
         self.triggered_stimulus_groups = []
@@ -138,6 +156,19 @@ class PreparedPhotostimState:
         self.ready_sequence_position = None
         self.ready_completed_sequences = None
         self.waveform_expected_done_time_s = None
+
+
+@dataclass
+class PhaseMaskBatchPlan:
+    batch_index: int
+    start_index: int
+    stop_index: int
+    opto_trial_indices: list[int]
+    trial_seq_nums: list[int]
+    seq_nums: list[int]
+    sequence_names: list[str]
+    pattern_names: list[str]
+    pattern_to_schema_index: dict[str, int]
 
 
 @dataclass
@@ -783,6 +814,7 @@ class ScanImageControlWidget(QWidget):
             "software_trigger_times": True,
             "software_trigger_count": True,
             "stimuli": True,
+            "phase_mask_batch": True,
         }
         self._online_analysis = OnlineAnalysisState()
         self._gui_state_path = self.repo_root / ".gui_state.ini"
@@ -1853,6 +1885,7 @@ class ScanImageControlWidget(QWidget):
         self.show_trigger_times_debug_checkbox = QCheckBox("Software trigger times")
         self.show_trigger_count_debug_checkbox = QCheckBox("Trigger count check")
         self.show_stimuli_debug_checkbox = QCheckBox("Stimuli")
+        self.show_phase_mask_batch_debug_checkbox = QCheckBox("Phase mask batches")
         self.clear_log_btn = QPushButton("Clear Debug Output")
         for checkbox in (
             self.show_general_debug_checkbox,
@@ -1861,6 +1894,7 @@ class ScanImageControlWidget(QWidget):
             self.show_trigger_times_debug_checkbox,
             self.show_trigger_count_debug_checkbox,
             self.show_stimuli_debug_checkbox,
+            self.show_phase_mask_batch_debug_checkbox,
         ):
             checkbox.setChecked(True)
             checkbox.toggled.connect(self._refresh_debug_log)
@@ -1941,6 +1975,7 @@ class ScanImageControlWidget(QWidget):
             ("software_trigger_times", self.show_trigger_times_debug_checkbox),
             ("software_trigger_count", self.show_trigger_count_debug_checkbox),
             ("stimuli", self.show_stimuli_debug_checkbox),
+            ("phase_mask_batch", self.show_phase_mask_batch_debug_checkbox),
         )
         for key, checkbox in mapping:
             if key in section:
@@ -1955,6 +1990,7 @@ class ScanImageControlWidget(QWidget):
             "software_trigger_times": str(self.show_trigger_times_debug_checkbox.isChecked()).lower(),
             "software_trigger_count": str(self.show_trigger_count_debug_checkbox.isChecked()).lower(),
             "stimuli": str(self.show_stimuli_debug_checkbox.isChecked()).lower(),
+            "phase_mask_batch": str(self.show_phase_mask_batch_debug_checkbox.isChecked()).lower(),
         }
         with self._gui_state_path.open("w", encoding="utf-8") as handle:
             parser.write(handle)
@@ -3234,6 +3270,251 @@ class ScanImageControlWidget(QWidget):
             except Exception:
                 pass
 
+    def _sequence_pattern_name_sets(self, project) -> dict[int, set[str]]:
+        sequence_patterns: dict[int, set[str]] = {}
+        for seq_num, sequence_name in enumerate(project.sequences.keys()):
+            sequence = project.sequences[sequence_name]
+            pattern_names: set[str] = set()
+            for step in sequence.steps:
+                if step.pattern not in project.patterns:
+                    raise ValueError(f"Sequence '{sequence_name}' references unknown pattern '{step.pattern}'")
+                pattern_names.add(step.pattern)
+            sequence_patterns[seq_num] = pattern_names
+        return sequence_patterns
+
+    def _build_phase_mask_batch_plan(
+        self,
+        project,
+        planned_trial_seq_nums: list[int | None],
+        start_index: int,
+        batch_size: int,
+        batch_index: int,
+    ) -> PhaseMaskBatchPlan | None:
+        if batch_size < 1:
+            batch_size = 1
+        sequence_names = list(project.sequences.keys())
+        schema_pattern_names = list(project.patterns.keys())
+        sequence_patterns = self._sequence_pattern_name_sets(project)
+        used_pattern_names: set[str] = set()
+        opto_trial_indices: list[int] = []
+        trial_seq_nums: list[int] = []
+        stop_index: int | None = None
+
+        for trial_index in range(max(0, start_index), len(planned_trial_seq_nums)):
+            seq_num = planned_trial_seq_nums[trial_index]
+            if seq_num is None:
+                continue
+            if seq_num < 0 or seq_num >= len(sequence_names):
+                raise IndexError(f"seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)")
+            next_pattern_names = used_pattern_names | sequence_patterns[seq_num]
+            if len(next_pattern_names) > batch_size:
+                if not opto_trial_indices:
+                    raise ValueError(
+                        f"Trial {trial_index} sequence '{sequence_names[seq_num]}' requires "
+                        f"{len(sequence_patterns[seq_num])} unique pattern(s), exceeding phase mask batch size {batch_size}."
+                    )
+                break
+            used_pattern_names = next_pattern_names
+            opto_trial_indices.append(trial_index)
+            trial_seq_nums.append(seq_num)
+            stop_index = trial_index
+
+        if not opto_trial_indices or stop_index is None:
+            return None
+
+        seq_nums = list(dict.fromkeys(trial_seq_nums))
+        prepared_sequence_names = [sequence_names[seq_num] for seq_num in seq_nums]
+        pattern_names = [name for name in schema_pattern_names if name in used_pattern_names]
+        pattern_to_schema_index = {
+            name: index + 1 for index, name in enumerate(schema_pattern_names) if name in used_pattern_names
+        }
+        return PhaseMaskBatchPlan(
+            batch_index=batch_index,
+            start_index=max(0, start_index),
+            stop_index=stop_index,
+            opto_trial_indices=opto_trial_indices,
+            trial_seq_nums=trial_seq_nums,
+            seq_nums=seq_nums,
+            sequence_names=prepared_sequence_names,
+            pattern_names=pattern_names,
+            pattern_to_schema_index=pattern_to_schema_index,
+        )
+
+    def _log_phase_mask_batch_plan(self, path_name: str, plan: PhaseMaskBatchPlan, batch_size: int) -> None:
+        trial_count = plan.stop_index - plan.start_index + 1
+        self.signals.log_message.emit(
+            f"[{path_name}] phase-mask batch {plan.batch_index}: trials {plan.start_index}-{plan.stop_index} "
+            f"({trial_count} trial(s), {len(plan.opto_trial_indices)} opto trial(s)) uses "
+            f"{len(plan.pattern_names)}/{batch_size} unique pattern mask(s)"
+        )
+        self.signals.log_message.emit(
+            f"[{path_name}] phase-mask batch {plan.batch_index}: seq_nums={plan.seq_nums} "
+            f"patterns={plan.pattern_names}"
+        )
+
+    def _sequence_group_mappings(
+        self,
+        runtime: PathRuntime,
+        project,
+        sequence_names: list[str],
+    ) -> tuple[dict[str, int], dict[str, list[int]]]:
+        sequence_to_stimulus_group: dict[str, int] = {}
+        sequence_to_stimulus_groups: dict[str, list[int]] = {}
+        next_group_num = 3
+        photostim_block_duration_s = runtime.path_config.sequence_block_duration_s
+        for sequence_name in sequence_names:
+            sequence = project.sequences[sequence_name]
+            sequence_end_s = 0.0
+            for step in sequence.steps:
+                pattern = project.patterns[step.pattern]
+                sequence_end_s = max(sequence_end_s, float(step.start_s) + float(pattern.duration_s))
+            block_group_count = max(1, int(math.ceil(sequence_end_s / photostim_block_duration_s)))
+            step_groups = list(range(next_group_num, next_group_num + block_group_count))
+            sequence_to_stimulus_groups[sequence_name] = step_groups
+            sequence_to_stimulus_group[sequence_name] = step_groups[0]
+            next_group_num += block_group_count
+        return sequence_to_stimulus_group, sequence_to_stimulus_groups
+
+    def _clear_pending_photostim_trial_state(self, prep_state: PreparedPhotostimState) -> None:
+        prep_state.triggered_seq_num = None
+        prep_state.triggered_sequence_name = ""
+        prep_state.triggered_stimulus_groups = []
+        prep_state.triggered_insert_position = None
+        prep_state.triggered_idle_position = None
+        prep_state.remaining_expected_triggers = None
+        prep_state.ready_sequence_position = None
+        prep_state.ready_completed_sequences = None
+        prep_state.waveform_expected_done_time_s = None
+
+    def _apply_phase_mask_batch_success(
+        self,
+        path_name: str,
+        project,
+        plan: PhaseMaskBatchPlan,
+    ) -> None:
+        runtime = self._runtimes[path_name]
+        prep_state = runtime.prepared_photostim
+        prep_state.prepared_seq_nums = list(plan.seq_nums)
+        prep_state.prepared_sequence_names = list(plan.sequence_names)
+        prep_state.imported_pattern_names = list(plan.pattern_names)
+        prep_state.pattern_to_schema_index = dict(plan.pattern_to_schema_index)
+        prep_state.sequence_to_stimulus_group, prep_state.sequence_to_stimulus_groups = self._sequence_group_mappings(
+            runtime,
+            project,
+            plan.sequence_names,
+        )
+        prep_state.phase_mask_batch_status = "ready"
+        prep_state.phase_mask_batch_error = ""
+        prep_state.phase_mask_batch_index = plan.batch_index
+        prep_state.prepared_trial_start_index = plan.start_index
+        prep_state.prepared_trial_stop_index = plan.stop_index
+        prep_state.prepared_opto_trial_indices = list(plan.opto_trial_indices)
+        prep_state.phase_mask_batch_pattern_names = list(plan.pattern_names)
+        self._clear_pending_photostim_trial_state(prep_state)
+        self.signals.log_message.emit(
+            f"[{path_name}] phase-mask batch {plan.batch_index} ready: "
+            f"prepared {len(plan.pattern_names)} unique pattern mask(s) for "
+            f"{len(plan.opto_trial_indices)} opto trial(s)"
+        )
+
+    def _prepare_phase_mask_batch(
+        self,
+        path_name: str,
+        schema_path: Path,
+        project,
+        plan: PhaseMaskBatchPlan,
+    ) -> None:
+        self._import_pattern_subset(
+            path_name,
+            schema_path,
+            plan.pattern_names,
+            prepare_sequence=True,
+            start_photostim=True,
+            prepared_seq_num=plan.seq_nums[0],
+            prepared_trial_seq_nums=plan.trial_seq_nums,
+        )
+        self._apply_phase_mask_batch_success(path_name, project, plan)
+        self.signals.log_message.emit(
+            f"[{path_name}] prepared sequence block stimulus groups for {len(plan.sequence_names)} sequence(s)"
+        )
+        if self.online_analysis_enabled():
+            try:
+                self._configure_online_analysis_if_possible()
+            except Exception as exc:
+                self.signals.log_message.emit(f"[online analysis] prep hook warning: {exc}")
+
+    def _find_next_opto_trial_index(
+        self,
+        planned_trial_seq_nums: list[int | None],
+        start_index: int,
+    ) -> int | None:
+        for trial_index in range(max(0, start_index), len(planned_trial_seq_nums)):
+            if planned_trial_seq_nums[trial_index] is not None:
+                return trial_index
+        return None
+
+    def _start_next_phase_mask_batch_if_needed(self, path_name: str, current_trial_index: int | None) -> bool:
+        runtime = self._runtimes[path_name]
+        prep_state = runtime.prepared_photostim
+        if prep_state.phase_mask_batch_status == "preparing":
+            return True
+        if prep_state.phase_mask_batch_status == "error":
+            return False
+        if current_trial_index is None or not prep_state.prepared_opto_trial_indices:
+            return False
+        if current_trial_index != max(prep_state.prepared_opto_trial_indices):
+            return False
+        if prep_state.prepared_trial_stop_index is None:
+            return False
+
+        next_start_index = prep_state.prepared_trial_stop_index + 1
+        next_opto_index = self._find_next_opto_trial_index(prep_state.planned_trial_seq_nums, next_start_index)
+        if next_opto_index is None:
+            self.signals.log_message.emit(
+                f"[{path_name}] phase-mask batch {prep_state.phase_mask_batch_index}: no later opto trials require masks"
+            )
+            return False
+
+        schema_path = prep_state.schema_path
+        if schema_path is None:
+            prep_state.phase_mask_batch_status = "error"
+            prep_state.phase_mask_batch_error = "No prepared schema path is available for next phase-mask batch."
+            return False
+        project = load_schema(schema_path)
+        next_plan = self._build_phase_mask_batch_plan(
+            project,
+            prep_state.planned_trial_seq_nums,
+            start_index=next_start_index,
+            batch_size=prep_state.phase_mask_batch_size,
+            batch_index=prep_state.phase_mask_batch_index + 1,
+        )
+        if next_plan is None:
+            self.signals.log_message.emit(
+                f"[{path_name}] phase-mask batch {prep_state.phase_mask_batch_index}: no next batch is needed"
+            )
+            return False
+
+        prep_state.phase_mask_batch_status = "preparing"
+        prep_state.phase_mask_batch_error = ""
+        self._log_phase_mask_batch_plan(path_name, next_plan, prep_state.phase_mask_batch_size)
+        self.signals.log_message.emit(
+            f"[{path_name}] phase-mask batch boundary reached after trial {current_trial_index}; "
+            f"preparing batch {next_plan.batch_index}"
+        )
+
+        def worker() -> None:
+            try:
+                self._prepare_phase_mask_batch(path_name, schema_path, project, next_plan)
+            except Exception as exc:
+                prep_state.phase_mask_batch_status = "error"
+                prep_state.phase_mask_batch_error = str(exc)
+                self.signals.log_message.emit(
+                    f"[{path_name}] ERROR: phase-mask batch {next_plan.batch_index} preparation failed: {exc}"
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
     def _emit_lines(self, path_name: str, lines: list[str]) -> None:
         if not lines:
             self.signals.log_message.emit(f"[{path_name}] command completed")
@@ -3264,6 +3545,8 @@ class ScanImageControlWidget(QWidget):
         lower = message.lower()
         if lower.startswith("[") and "stimuli:" in lower:
             return "stimuli"
+        if "phase-mask batch" in lower or "phase mask batch" in lower or "phase_mask_batch" in lower:
+            return "phase_mask_batch"
         if "updated experiment parameters" in lower or "current trial set to index" in lower:
             return "experiment"
         if "software trigger count check" in lower:
@@ -3282,6 +3565,7 @@ class ScanImageControlWidget(QWidget):
             "software_trigger_times": self.show_trigger_times_debug_checkbox.isChecked(),
             "software_trigger_count": self.show_trigger_count_debug_checkbox.isChecked(),
             "stimuli": self.show_stimuli_debug_checkbox.isChecked(),
+            "phase_mask_batch": self.show_phase_mask_batch_debug_checkbox.isChecked(),
         }
         if category == "udp":
             return self.show_udp_debug_checkbox.isChecked()
@@ -3293,6 +3577,8 @@ class ScanImageControlWidget(QWidget):
             return self.show_trigger_count_debug_checkbox.isChecked()
         if category == "stimuli":
             return self.show_stimuli_debug_checkbox.isChecked()
+        if category == "phase_mask_batch":
+            return self.show_phase_mask_batch_debug_checkbox.isChecked()
         return self.show_general_debug_checkbox.isChecked()
 
     def _refresh_debug_log(self) -> None:
@@ -3791,7 +4077,7 @@ class ScanImageControlWidget(QWidget):
             prep_state.exp_id = exp_id
 
         sequence_names = list(project.sequences.keys())
-        planned_trial_seq_nums: list[int] = []
+        planned_trial_seq_nums: list[int | None] = []
         skipped_non_opto_trials: list[dict[str, int]] = []
         for trial_order_idx, condition_index in enumerate(tracking.trial_condition_indices):
             condition_payload = tracking.stimulus_conditions[condition_index]
@@ -3807,29 +4093,41 @@ class ScanImageControlWidget(QWidget):
                         "condition_index": int(condition_index),
                     }
                 )
+                planned_trial_seq_nums.append(None)
                 continue
             planned_trial_seq_nums.append(int(resolved_seq_num))
-        if not planned_trial_seq_nums:
+        if not any(seq_num is not None for seq_num in planned_trial_seq_nums):
             raise ValueError("prep_patterns did not find any planned trials with an enabled opto_2p feature.")
-        prep_state.prepared_seq_nums = list(dict.fromkeys(planned_trial_seq_nums))
-        prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
+        batch_size = self._phase_mask_batch_size()
+        initial_plan = self._build_phase_mask_batch_plan(
             project,
-            prep_state.prepared_seq_nums,
+            planned_trial_seq_nums,
+            start_index=0,
+            batch_size=batch_size,
+            batch_index=1,
         )
+        if initial_plan is None:
+            raise ValueError("No opto trials were found in the planned trial sequence.")
+        prep_state.planned_trial_seq_nums = list(planned_trial_seq_nums)
+        prep_state.phase_mask_batch_size = batch_size
+        prep_state.phase_mask_batch_status = "preparing"
+        prep_state.phase_mask_batch_error = ""
+        prep_state.phase_mask_batch_index = initial_plan.batch_index
+        self._log_phase_mask_batch_plan(photostim_path, initial_plan, batch_size)
 
         def worker() -> None:
+            def run_initial_batch(name: str) -> None:
+                try:
+                    self._prepare_phase_mask_batch(name, schema_path, project, initial_plan)
+                except Exception as exc:
+                    prep_state.phase_mask_batch_status = "error"
+                    prep_state.phase_mask_batch_error = str(exc)
+                    raise
+
             ok = self._run_action(
                 photostim_path,
-                "Pre-building all stimulus groups for experiment",
-                lambda name: self._import_pattern_subset(
-                    name,
-                    schema_path,
-                    pattern_names,
-                    prepare_sequence=True,
-                    start_photostim=True,
-                    prepared_seq_num=seq_num,
-                    prepared_trial_seq_nums=planned_trial_seq_nums,
-                ),
+                "Pre-building phase-mask batch 1 for experiment",
+                run_initial_batch,
             )
             prep_state_local = self._runtimes[photostim_path].prepared_photostim
             status = "ready" if ok else "error"
@@ -3840,47 +4138,32 @@ class ScanImageControlWidget(QWidget):
                 "expID": exp_id,
                 "seq_num": seq_num,
                 "prepared_seq_nums": list(prep_state_local.prepared_seq_nums),
-                "prepared_sequence_names": list(prepared_sequence_names),
+                "prepared_sequence_names": list(prep_state_local.prepared_sequence_names),
                 "planned_trial_seq_nums": list(planned_trial_seq_nums),
                 "skipped_non_opto_trials": list(skipped_non_opto_trials),
-                "pattern_names": pattern_names,
+                "pattern_names": list(prep_state_local.imported_pattern_names),
+                "phase_mask_batch_size": prep_state_local.phase_mask_batch_size,
+                "phase_mask_batch_index": prep_state_local.phase_mask_batch_index,
+                "prepared_trial_start_index": prep_state_local.prepared_trial_start_index,
+                "prepared_trial_stop_index": prep_state_local.prepared_trial_stop_index,
+                "prepared_opto_trial_indices": list(prep_state_local.prepared_opto_trial_indices),
                 "stimulus_groups": [],
             }
             if ok:
-                prep_state_local.prepared_sequence_names = list(prepared_sequence_names)
-                prep_state_local.imported_pattern_names = list(pattern_names)
-                prep_state_local.pattern_to_schema_index = dict(pattern_to_schema_index)
-                prep_state_local.sequence_to_stimulus_group = {}
-                prep_state_local.sequence_to_stimulus_groups = {}
-                next_group_num = 3
-                photostim_block_duration_s = self._runtimes[photostim_path].path_config.sequence_block_duration_s
-                for sequence_name in prepared_sequence_names:
-                    sequence = project.sequences[sequence_name]
-                    sequence_end_s = 0.0
-                    for step in sequence.steps:
-                        pattern = project.patterns[step.pattern]
-                        sequence_end_s = max(sequence_end_s, float(step.start_s) + float(pattern.duration_s))
-                    block_group_count = max(1, int(math.ceil(sequence_end_s / photostim_block_duration_s)))
-                    step_groups = list(range(next_group_num, next_group_num + block_group_count))
-                    prep_state_local.sequence_to_stimulus_groups[sequence_name] = step_groups
-                    prep_state_local.sequence_to_stimulus_group[sequence_name] = step_groups[0]
-                    next_group_num += block_group_count
                 payload["stimulus_groups"] = [
                     {
                         "stimulus_group_nums": prep_state_local.sequence_to_stimulus_groups[sequence_name],
                         "sequence_name": sequence_name,
-                        "seq_num": index,
+                        "seq_num": seq_num_value,
                     }
-                    for index, sequence_name in enumerate(prepared_sequence_names)
+                    for seq_num_value, sequence_name in zip(
+                        prep_state_local.prepared_seq_nums,
+                        prep_state_local.prepared_sequence_names,
+                    )
                 ]
-                self.signals.log_message.emit(f"[{photostim_path}] prepared sequence block stimulus groups for {len(prepared_sequence_names)} sequence(s)")
-                if self.online_analysis_enabled():
-                    try:
-                        self._configure_online_analysis_if_possible()
-                    except Exception as exc:
-                        self.signals.log_message.emit(f"[online analysis] prep hook warning: {exc}")
-            if not ok:
-                payload["error"] = "prep_patterns failed"
+            else:
+                prep_state_local.phase_mask_batch_status = "error"
+                payload["error"] = prep_state_local.phase_mask_batch_error or "prep_patterns failed"
 
             if reply_address is not None:
                 self._send_json_reply(request_path_name, reply_address, payload)
@@ -3917,8 +4200,30 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         if prep_state.schema_path != schema_path or prep_state.schema_name != schema_name or prep_state.exp_id != exp_id:
             raise ValueError("trigger_photo_stim requires matching prepared photostim state. Run prep_patterns first.")
+        if prep_state.phase_mask_batch_status == "preparing":
+            raise ValueError("Phase-mask batch preparation is still in progress.")
+        if prep_state.phase_mask_batch_status == "error":
+            raise ValueError(f"Phase-mask batch preparation failed: {prep_state.phase_mask_batch_error or 'unknown error'}")
         if not prep_state.sequence_to_stimulus_group:
             raise ValueError("No prepared stimulus group mapping is available. Run prep_patterns first.")
+        current_trial_index = runtime.experiment_tracking.current_trial_order_index
+        if prep_state.planned_trial_seq_nums and current_trial_index is not None:
+            if current_trial_index < 0 or current_trial_index >= len(prep_state.planned_trial_seq_nums):
+                raise ValueError(f"Current trial index {current_trial_index} is outside the planned trial list.")
+            planned_seq_num = prep_state.planned_trial_seq_nums[current_trial_index]
+            if planned_seq_num is None:
+                raise ValueError(f"Current trial index {current_trial_index} is not an opto trial.")
+            if planned_seq_num != seq_num:
+                raise ValueError(
+                    f"trigger_photo_stim seq_num={seq_num} does not match planned seq_num={planned_seq_num} "
+                    f"for trial {current_trial_index}."
+                )
+            if current_trial_index not in prep_state.prepared_opto_trial_indices:
+                raise ValueError(
+                    f"Trial {current_trial_index} is outside prepared phase-mask batch "
+                    f"{prep_state.phase_mask_batch_index} "
+                    f"(prepared opto trials={prep_state.prepared_opto_trial_indices})."
+                )
 
         sequence_name, stimulus_group_nums, trigger_times_s, stimulus_pattern_numbers = self._resolve_trigger_groups(
             project,
@@ -4219,6 +4524,43 @@ class ScanImageControlWidget(QWidget):
     ) -> None:
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
+        if prep_state.phase_mask_batch_status == "preparing":
+            payload: dict[str, object] = {
+                "action": "check_idle",
+                "status": "ready",
+                "idle": False,
+                "running": True,
+                "reason": "preparing_phase_mask_batch",
+                "expected_idle_after_s": 1.0,
+                "phase_mask_batch_status": prep_state.phase_mask_batch_status,
+                "phase_mask_batch_index": prep_state.phase_mask_batch_index,
+                "phase_mask_batch_size": prep_state.phase_mask_batch_size,
+            }
+            self.signals.log_message.emit(
+                f"[{path_name}] check_idle -> idle=0 running=1 reason=preparing_phase_mask_batch "
+                f"batch={prep_state.phase_mask_batch_index}"
+            )
+            if reply_address is not None and request_path_name is not None:
+                self._send_json_reply(request_path_name, reply_address, payload)
+            return
+        if prep_state.phase_mask_batch_status == "error":
+            payload = {
+                "action": "check_idle",
+                "status": "error",
+                "idle": False,
+                "running": False,
+                "reason": "phase_mask_batch_error",
+                "error": prep_state.phase_mask_batch_error or "Phase-mask batch preparation failed.",
+                "phase_mask_batch_status": prep_state.phase_mask_batch_status,
+                "phase_mask_batch_index": prep_state.phase_mask_batch_index,
+                "phase_mask_batch_size": prep_state.phase_mask_batch_size,
+            }
+            self.signals.log_message.emit(
+                f"[{path_name}] ERROR: check_idle phase-mask batch error: {payload['error']}"
+            )
+            if reply_address is not None and request_path_name is not None:
+                self._send_json_reply(request_path_name, reply_address, payload)
+            return
         active, position, sequence, completed_sequences, status_text = self._query_photostim_sequence_state(path_name)
         idle_position = prep_state.triggered_idle_position
         insert_position = prep_state.triggered_insert_position
@@ -4254,6 +4596,15 @@ class ScanImageControlWidget(QWidget):
             reason = "trial_running_or_armed"
             expected_idle_after_s = max(0, idle_position - position) * block_duration_s
 
+        current_trial_index = runtime.experiment_tracking.current_trial_order_index
+        if idle and reason == "terminal_idle_park_reached":
+            next_batch_started = self._start_next_phase_mask_batch_if_needed(path_name, current_trial_index)
+            if next_batch_started:
+                idle = False
+                running = True
+                reason = "preparing_phase_mask_batch"
+                expected_idle_after_s = 1.0
+
         payload: dict[str, object] = {
             "action": "check_idle",
             "status": "ready",
@@ -4270,13 +4621,21 @@ class ScanImageControlWidget(QWidget):
             "triggered_insert_position": insert_position,
             "triggered_idle_position": idle_position,
             "triggered_stimulus_group_count": len(prep_state.triggered_stimulus_groups),
+            "phase_mask_batch_status": prep_state.phase_mask_batch_status,
+            "phase_mask_batch_index": prep_state.phase_mask_batch_index,
+            "phase_mask_batch_size": prep_state.phase_mask_batch_size,
+            "prepared_trial_start_index": prep_state.prepared_trial_start_index,
+            "prepared_trial_stop_index": prep_state.prepared_trial_stop_index,
+            "prepared_opto_trial_indices": list(prep_state.prepared_opto_trial_indices),
+            "phase_mask_pattern_count": len(prep_state.phase_mask_batch_pattern_names),
         }
         self.signals.log_message.emit(
             f"[{path_name}] check_idle -> idle={int(idle)} running={int(running)} "
             f"position={'NaN' if position is None else position} "
             f"idle_position={'NaN' if idle_position is None else idle_position} "
             f"reason={reason} "
-            f"expected_idle_after_s={'NaN' if expected_idle_after_s is None else f'{expected_idle_after_s:.3f}'}"
+            f"expected_idle_after_s={'NaN' if expected_idle_after_s is None else f'{expected_idle_after_s:.3f}'} "
+            f"phase_mask_batch={prep_state.phase_mask_batch_index}:{prep_state.phase_mask_batch_status}"
         )
         if reply_address is not None and request_path_name is not None:
             self._send_json_reply(request_path_name, reply_address, payload)
