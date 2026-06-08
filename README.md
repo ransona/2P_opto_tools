@@ -253,11 +253,28 @@ It contains both `patterns` and `sequences`.
 
 Each sequence step stores the pattern name, `start_s`, and computed `end_s` so downstream code can recover transition times without recomputing them.
 
-### Pattern/sequence import files
+### Importable stimulation configuration files
 
-Use `Import Items` in the GUI toolbar to import a human-readable YAML file containing one or more batches of patterns and sequences. Each batch names the processed source experiment and user, then lists the patterns and sequences to add.
+Use `Import configuration` in the `Project` area of the `Stimulation Schema` tab to import a human-readable YAML file containing one or more batches of patterns and sequences. Each batch names the processed source experiment and user, then lists the patterns and sequences to add.
 
 The import is all-or-nothing. If any source cell ID cannot be resolved, any required parameter is missing, any imported name already exists, or the resulting schema is invalid, the GUI shows a warning and cancels the whole import.
+
+Imported cells are specified as processed cell IDs from the source experiment, not as SLM coordinates. The importer resolves each processed cell ID to an imaging pixel and then converts that pixel to photostimulation coordinates using ScanImage selected-scanfield metadata. The source experiment must therefore have a `*_selectedScanfield.roi` metadata file available in the resolved experiment folder. TIFF header metadata is not used as a fallback.
+
+On Ubuntu, processed cell imports look under `/home/<user_id>/data/Repository/<animalID>/<expID>/recordings`. On Windows, processed cell imports look under `F:\Local_Repository_Processed\<animalID>\<expID>\recordings` and `F:\Local_Repository_Processed\<animalID>\<expID>`.
+
+The import YAML should contain:
+
+- `source`: default source experiment for all import blocks, or a per-block `source`.
+- `source.user_id` / `source.userID`: source user ID.
+- `source.exp_id` / `source.expID`: source experiment ID.
+- `source.channel`: optional processed channel, default `0`.
+- `patterns`: list of patterns to create.
+- `patterns[].cells`: list of processed cell IDs and per-cell power scaling factors.
+- `sequences`: list of sequences to create.
+- `sequences[].steps`: ordered list of pattern names and sequence-relative start times.
+
+Pattern and sequence names must be unique across the current schema and the whole import file. Sequence step start times must use the same 50 ms time grid as the editor.
 
 Example:
 
@@ -302,9 +319,27 @@ imports:
             start_s: 1.0
 ```
 
-For multiple source experiments, add more entries under `imports:`. Pattern names and sequence names must be unique across the current schema and the whole import file. Sequence step start times must use the same 50 ms time grid as the editor.
+For multiple source experiments, add more entries under `imports:`.
 
 The importer also accepts `userID`, `expID`, and `cellID` aliases for `user_id`, `exp_id`, and `cell_id`.
+
+### Creating a bvGUI config from a schema
+
+After saving an opto schema, use the MATLAB helper in the bvGUI repo to create a bvGUI stimulation config where every schema sequence runs once:
+
+```matlab
+schemaPath = '\\ar-lab-nas1\DataServer\opto_schemas\TEST\DEFAULT\schema.yaml';
+outputPath = 'C:\Code\repos\bvGUI\configs\ar-lab-tl2\stimsets\photo_stim_default.mat';
+build_bvgui_config_from_opto_schema(schemaPath, outputPath);
+```
+
+The helper infers `schema_name` from the parent folder of `schema.yaml` unless a third argument is provided:
+
+```matlab
+build_bvgui_config_from_opto_schema(schemaPath, outputPath, 'DEFAULT');
+```
+
+The generated `.mat` contains one `opto_2p` stimulus per schema sequence. The `seq_num` values are zero-based, matching the opto_2p UDP protocol used by bvGUI and 2P_OPTO_TOOLS.
 
 ### Save location
 
