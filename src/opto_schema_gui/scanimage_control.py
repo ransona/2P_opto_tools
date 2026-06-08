@@ -147,6 +147,7 @@ class ExperimentTrackingState:
     params: dict[str, object] = field(default_factory=dict)
     stimulus_conditions: list[dict[str, object]] = field(default_factory=list)
     trial_condition_indices: list[int] = field(default_factory=list)
+    current_trial_order_index: int | None = None
     current_trial_index: int | None = None
     current_stimulus_condition: dict[str, object] | None = None
 
@@ -156,6 +157,7 @@ class ExperimentTrackingState:
         self.params = {}
         self.stimulus_conditions = []
         self.trial_condition_indices = []
+        self.current_trial_order_index = None
         self.current_trial_index = None
         self.current_stimulus_condition = None
 
@@ -1153,8 +1155,10 @@ class ScanImageControlWidget(QWidget):
                 and int(feature["params"].get("enable", 1)) == 0
             )
         ]
-        if len(opto_features) != 1:
-            return None, "Condition must contain exactly one enabled opto_2p feature."
+        if not opto_features:
+            return None, "Condition does not contain an enabled opto_2p feature."
+        if len(opto_features) > 1:
+            return None, "Condition must contain no more than one enabled opto_2p feature."
         params = opto_features[0].get("params")
         if not isinstance(params, dict) or "seq_num" not in params:
             return None, "opto_2p feature is missing seq_num."
@@ -1162,6 +1166,25 @@ class ScanImageControlWidget(QWidget):
         if seq_num < 0 or seq_num >= sequence_count:
             return None, f"seq_num {seq_num} is out of range for the current schema."
         return seq_num, ""
+
+    def _condition_is_non_opto(self, reason: str) -> bool:
+        return reason in {
+            "Condition does not contain a valid feature list.",
+            "Condition does not contain an enabled opto_2p feature.",
+        }
+
+    def _condition_index_for_trial_index(self, tracking: ExperimentTrackingState, trial_index: int) -> int:
+        if tracking.trial_condition_indices:
+            if trial_index < 0 or trial_index >= len(tracking.trial_condition_indices):
+                raise IndexError(
+                    f"trial_index {trial_index} is out of range for {len(tracking.trial_condition_indices)} planned trial(s)"
+                )
+            return int(tracking.trial_condition_indices[trial_index])
+        if trial_index < 0 or trial_index >= len(tracking.stimulus_conditions):
+            raise IndexError(
+                f"trial_index {trial_index} is out of range for {len(tracking.stimulus_conditions)} stimulus condition(s)"
+            )
+        return trial_index
 
     def _configure_online_analysis_for_tracking(self, tracking: ExperimentTrackingState) -> None:
         project = self._online_analysis_project(tracking)
@@ -2440,8 +2463,10 @@ class ScanImageControlWidget(QWidget):
                 "experiment_tracking": {
                     "exp_id": runtime.experiment_tracking.exp_id,
                     "schema_name": runtime.experiment_tracking.schema_name,
-                    "current_trial_index": runtime.experiment_tracking.current_trial_index,
+                    "current_trial_index": runtime.experiment_tracking.current_trial_order_index,
+                    "current_condition_index": runtime.experiment_tracking.current_trial_index,
                     "stimulus_condition_count": len(runtime.experiment_tracking.stimulus_conditions),
+                    "planned_trial_count": len(runtime.experiment_tracking.trial_condition_indices),
                     "current_stimulus_condition": runtime.experiment_tracking.current_stimulus_condition,
                     "params": runtime.experiment_tracking.params,
                 },
@@ -3642,19 +3667,21 @@ class ScanImageControlWidget(QWidget):
         if trial_index_raw is None:
             raise ValueError("start_trial requires trial_index")
         trial_index = int(trial_index_raw)
-        if trial_index < 0 or trial_index >= len(tracking.stimulus_conditions):
+        condition_index = self._condition_index_for_trial_index(tracking, trial_index)
+        if condition_index < 0 or condition_index >= len(tracking.stimulus_conditions):
             raise IndexError(
-                f"trial_index {trial_index} is out of range for {len(tracking.stimulus_conditions)} stimulus condition(s)"
+                f"Resolved condition index {condition_index} is out of range for {len(tracking.stimulus_conditions)} stimulus condition(s)"
             )
-        tracking.current_trial_index = trial_index
-        tracking.current_stimulus_condition = dict(tracking.stimulus_conditions[trial_index])
+        tracking.current_trial_order_index = trial_index
+        tracking.current_trial_index = condition_index
+        tracking.current_stimulus_condition = dict(tracking.stimulus_conditions[condition_index])
         selected_stimulus_id = tracking.current_stimulus_condition.get("stimulus_id")
         self.signals.log_message.emit(
-            f"[{request_path_name}] current trial set to index={trial_index}"
+            f"[{request_path_name}] current trial set to trial_index={trial_index} condition_index={condition_index}"
             + (f" stimulus_id={selected_stimulus_id}" if selected_stimulus_id is not None else "")
         )
         with self._online_analysis.lock:
-            self._online_analysis.current_condition_index = trial_index
+            self._online_analysis.current_condition_index = condition_index
 
         self._send_json_reply(
             request_path_name,
@@ -3665,6 +3692,7 @@ class ScanImageControlWidget(QWidget):
                 "expID": tracking.exp_id,
                 "schema_name": tracking.schema_name,
                 "trial_index": trial_index,
+                "condition_index": condition_index,
                 "stimulus_condition": tracking.current_stimulus_condition,
             },
         )
@@ -3735,14 +3763,25 @@ class ScanImageControlWidget(QWidget):
 
         sequence_names = list(project.sequences.keys())
         planned_trial_seq_nums: list[int] = []
+        skipped_non_opto_trials: list[dict[str, int]] = []
         for trial_order_idx, condition_index in enumerate(tracking.trial_condition_indices):
             condition_payload = tracking.stimulus_conditions[condition_index]
             resolved_seq_num, reason = self._condition_opto_seq_num(condition_payload, len(sequence_names))
             if resolved_seq_num is None:
-                raise ValueError(
-                    f"trial_condition_indices[{trial_order_idx}] -> condition {condition_index} is invalid for photostim prep: {reason}"
+                if not self._condition_is_non_opto(reason):
+                    raise ValueError(
+                        f"trial_condition_indices[{trial_order_idx}] -> condition {condition_index} is invalid for photostim prep: {reason}"
+                    )
+                skipped_non_opto_trials.append(
+                    {
+                        "trial_index": int(trial_order_idx),
+                        "condition_index": int(condition_index),
+                    }
                 )
+                continue
             planned_trial_seq_nums.append(int(resolved_seq_num))
+        if not planned_trial_seq_nums:
+            raise ValueError("prep_patterns did not find any planned trials with an enabled opto_2p feature.")
         prep_state.prepared_seq_nums = list(dict.fromkeys(planned_trial_seq_nums))
         prepared_sequence_names, pattern_names, pattern_to_schema_index = self._patterns_for_sequences(
             project,
@@ -3774,6 +3813,7 @@ class ScanImageControlWidget(QWidget):
                 "prepared_seq_nums": list(prep_state_local.prepared_seq_nums),
                 "prepared_sequence_names": list(prepared_sequence_names),
                 "planned_trial_seq_nums": list(planned_trial_seq_nums),
+                "skipped_non_opto_trials": list(skipped_non_opto_trials),
                 "pattern_names": pattern_names,
                 "stimulus_groups": [],
             }
