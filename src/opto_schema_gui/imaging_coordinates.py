@@ -111,10 +111,11 @@ def list_imaging_scanfields(
     exp_id: str,
     imaging_path: str = "P1",
     photostim_path: str = "PS",
+    user_id: str | None = None,
 ) -> MetadataBundle:
     _require_linux_roi_import()
     imaging_config, _ = _load_v1_configs(repo_root, imaging_path, photostim_path)
-    exp_dir = _resolve_experiment_dir(exp_id, imaging_config, imaging_path)
+    exp_dir = _resolve_experiment_dir(exp_id, imaging_config, imaging_path, user_id=user_id)
 
     roi_files = _find_selected_scanfield_roi_files(exp_dir)
     for roi_file in roi_files:
@@ -151,9 +152,16 @@ def convert_imaging_pixel_to_pattern_coords(
     y_px: float,
     imaging_path: str = "P1",
     photostim_path: str = "PS",
+    user_id: str | None = None,
 ) -> ConvertedPatternCoordinate:
     _require_linux_roi_import()
-    bundle = list_imaging_scanfields(repo_root, exp_id, imaging_path=imaging_path, photostim_path=photostim_path)
+    bundle = list_imaging_scanfields(
+        repo_root,
+        exp_id,
+        imaging_path=imaging_path,
+        photostim_path=photostim_path,
+        user_id=user_id,
+    )
     _, photostim_config = _load_v1_configs(repo_root, imaging_path, photostim_path)
 
     if scanfield_index < 1 or scanfield_index > len(bundle.scanfields):
@@ -248,6 +256,7 @@ def resolve_processed_cell_to_imaging_pixel(
             exp_id,
             imaging_path=imaging_path,
             photostim_path=photostim_path,
+            user_id=user_id,
         )
     except Exception as exc:
         raise type(exc)(f"{exc}\n" + "\n".join(processed_debug_lines)) from exc
@@ -355,8 +364,6 @@ def list_processed_channels(exp_id: str, user_id: str | None = None) -> tuple[in
     resolved_user_id = (user_id or "").strip() or getpass.getuser()
     roots = [
         Path("/home") / resolved_user_id / "data" / "Repository" / animal_id / exp_id / "recordings",
-        Path("/home") / resolved_user_id / "data" / "Local_Repository" / animal_id / exp_id / "recordings",
-        Path("/home") / resolved_user_id / "data" / "tif_meso" / "processed_repository" / animal_id / exp_id / "recordings",
     ]
     channels: set[int] = set()
     for root in roots:
@@ -410,6 +417,7 @@ def list_processed_fov_groups(
                 exp_id,
                 imaging_path=imaging_path,
                 photostim_path=photostim_path,
+                user_id=user_id,
             )
         bundle = scanfield_bundles[imaging_path]
         scanfield_index = _match_processed_cell_to_scanfield_index(
@@ -462,8 +470,6 @@ def _load_processed_s2p_pickle(exp_id: str, channel: int, user_id: str | None = 
     resolved_user_id = (user_id or "").strip() or getpass.getuser()
     candidates = [
         Path("/home") / resolved_user_id / "data" / "Repository" / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
-        Path("/home") / resolved_user_id / "data" / "Local_Repository" / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
-        Path("/home") / resolved_user_id / "data" / "tif_meso" / "processed_repository" / animal_id / exp_id / "recordings" / f"s2p_ch{channel}.pickle",
     ]
     for candidate in candidates:
         if not candidate.is_file():
@@ -697,9 +703,19 @@ def _require_linux_roi_import() -> None:
         raise NotImplementedError("Imaging pixel ROI import is available on Ubuntu only.")
 
 
-def _resolve_experiment_dir(exp_id: str, imaging_config, imaging_path: str) -> Path:
+def _resolve_experiment_dir(exp_id: str, imaging_config, imaging_path: str, user_id: str | None = None) -> Path:
     animal_id = _animal_id_from_exp_id(exp_id)
     checked: list[Path] = []
+
+    resolved_user_id = (user_id or "").strip()
+    if resolved_user_id:
+        exp_root = Path("/home") / resolved_user_id / "data" / "Repository" / animal_id / exp_id
+        checked.append(exp_root)
+        if exp_root.is_dir():
+            return exp_root
+        raise FileNotFoundError(
+            f"Could not resolve experiment directory for '{exp_id}' from user '{resolved_user_id}'. Checked: {exp_root}"
+        )
 
     ubuntu_raw_root = Path("/data/Remote_Repository")
     ubuntu_path_root = ubuntu_raw_root / animal_id / exp_id / imaging_path

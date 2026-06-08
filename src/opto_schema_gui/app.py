@@ -1085,11 +1085,7 @@ def _origin_user_options(saved_user_id: str = "") -> list[str]:
             if user_id in options:
                 continue
             try:
-                has_data_root = (
-                    (home_dir / "data" / "Repository").is_dir()
-                    or (home_dir / "data" / "Local_Repository").is_dir()
-                    or (home_dir / "data" / "tif_meso" / "processed_repository").is_dir()
-                )
+                has_data_root = (home_dir / "data" / "Repository").is_dir()
             except PermissionError:
                 continue
             if has_data_root:
@@ -1263,6 +1259,7 @@ def _resolve_import_cell(
         x_px=resolved.x_px,
         y_px=resolved.y_px,
         imaging_path=resolved.imaging_path,
+        user_id=source["user_id"] or None,
     )
     return CellSpec(
         label=str(cell_data.get("label") or f"cell_{processed_cell_id}"),
@@ -1830,6 +1827,7 @@ class ProcessedCellGroupImportDialog(QDialog):
                     x_px=resolved.x_px,
                     y_px=resolved.y_px,
                     imaging_path=resolved.imaging_path,
+                    user_id=self.default_user_id or None,
                 )
                 resolved_cells.append(
                     CellSpec(
@@ -2118,6 +2116,7 @@ class AddCellsFromFovDialog(QDialog):
                 x_px=resolved.x_px,
                 y_px=resolved.y_px,
                 imaging_path=resolved.imaging_path,
+                user_id=group.user_id or None,
             )
             cell = CellSpec(
                 label=f"cell_{processed_cell_id}",
