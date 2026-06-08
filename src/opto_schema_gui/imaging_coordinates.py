@@ -127,20 +127,8 @@ def list_imaging_scanfields(
                 scanfields=bundle,
             )
 
-    tiff_files = _find_tiff_files(exp_dir)
-    for tiff_file in tiff_files:
-        bundle = _load_scanfields_from_tiff_header(tiff_file)
-        if bundle is not None:
-            note = "TIFF fallback metadata used; full scanfield sidecar was not found."
-            return MetadataBundle(
-                source=f"TIFF header ({tiff_file.name})",
-                exp_dir=exp_dir,
-                scanfields=bundle,
-                note=note,
-            )
-
     raise FileNotFoundError(
-        f"Could not find selected scanfield metadata or TIFF files for experiment '{exp_id}' in '{exp_dir}'."
+        f"Could not find selected scanfield metadata (*_selectedScanfield.roi) for experiment '{exp_id}' in '{exp_dir}'."
     )
 
 
