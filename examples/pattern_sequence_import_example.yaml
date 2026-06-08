@@ -1,0 +1,38 @@
+imports:
+  - source:
+      user_id: adamranson
+      exp_id: 2026-04-10_09_TEST
+      channel: 0
+    patterns:
+      - name: P_test_cells_0_1
+        duration_s: 1.0
+        frequency_hz: 10.0
+        duty_cycle: 0.2
+        power_percent: 30.0
+        spiral_width: 15.0
+        spiral_height: 15.0
+        notes: Example pattern using processed cells 0 and 1 from a source experiment.
+        cells:
+          - cell_id: 0
+            power_scale: 1.0
+          - cell_id: 1
+            power_scale: 0.8
+      - name: P_test_cell_1_fast
+        duration_s: 0.5
+        frequency_hz: 20.0
+        duty_cycle: 0.5
+        power_percent: 20.0
+        spiral_width: 10.0
+        spiral_height: 10.0
+        notes: Example single-cell pattern with different made-up stimulation parameters.
+        cells:
+          - cell_id: 1
+            power_scale: 1.0
+    sequences:
+      - name: S_test_example
+        notes: Example sequence for testing imported patterns.
+        steps:
+          - pattern: P_test_cells_0_1
+            start_s: 0.0
+          - pattern: P_test_cell_1_fast
+            start_s: 1.0
