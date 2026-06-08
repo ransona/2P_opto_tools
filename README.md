@@ -253,6 +253,59 @@ It contains both `patterns` and `sequences`.
 
 Each sequence step stores the pattern name, `start_s`, and computed `end_s` so downstream code can recover transition times without recomputing them.
 
+### Pattern/sequence import files
+
+Use `Import Items` in the GUI toolbar to import a human-readable YAML file containing one or more batches of patterns and sequences. Each batch names the processed source experiment and user, then lists the patterns and sequences to add.
+
+The import is all-or-nothing. If any source cell ID cannot be resolved, any required parameter is missing, any imported name already exists, or the resulting schema is invalid, the GUI shows a warning and cancels the whole import.
+
+Example:
+
+```yaml
+imports:
+  - source:
+      user_id: adamranson
+      exp_id: 2025-10-30_10_ESYB025
+      channel: 0
+    patterns:
+      - name: P_cells_001_004
+        duration_s: 1.0
+        frequency_hz: 10.0
+        duty_cycle: 0.2
+        power_percent: 30.0
+        spiral_width: 15.0
+        spiral_height: 15.0
+        notes: optional free text
+        cells:
+          - cell_id: 1
+            power_scale: 1.0
+          - cell_id: 4
+            power_scale: 0.75
+            label: cell_4_low_power
+      - name: P_cell_008
+        duration_s: 0.5
+        frequency_hz: 20.0
+        duty_cycle: 0.5
+        power_percent: 25.0
+        spiral_width: 10.0
+        spiral_height: 10.0
+        cells:
+          - cell_id: 8
+            power_scale: 1.0
+    sequences:
+      - name: S_example
+        notes: optional sequence notes
+        steps:
+          - pattern: P_cells_001_004
+            start_s: 0.0
+          - pattern: P_cell_008
+            start_s: 1.0
+```
+
+For multiple source experiments, add more entries under `imports:`. Pattern names and sequence names must be unique across the current schema and the whole import file. Sequence step start times must use the same 50 ms time grid as the editor.
+
+The importer also accepts `userID`, `expID`, and `cellID` aliases for `user_id`, `exp_id`, and `cell_id`.
+
 ### Save location
 
 The app reads `config.ini` in the repo root and uses `paths.save_root` as the base output directory.

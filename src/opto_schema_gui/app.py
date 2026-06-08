@@ -1168,6 +1168,203 @@ def _shift_steps_to_avoid_overlap(steps: list[SequenceStep], patterns: dict[str,
     return shifted
 
 
+def _require_mapping(value: object, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a mapping/object.")
+    return value
+
+
+def _require_list(value: object, label: str) -> list:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list.")
+    return value
+
+
+def _require_string(data: dict, key: str, label: str) -> str:
+    value = data.get(key)
+    if value is None or not str(value).strip():
+        raise ValueError(f"{label} requires '{key}'.")
+    return str(value).strip()
+
+
+def _require_string_any(data: dict, keys: tuple[str, ...], label: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    joined = "' or '".join(keys)
+    raise ValueError(f"{label} requires '{joined}'.")
+
+
+def _require_float(data: dict, key: str, label: str) -> float:
+    if key not in data:
+        raise ValueError(f"{label} requires '{key}'.")
+    try:
+        return float(data[key])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} '{key}' must be numeric.") from exc
+
+
+def _require_int_any(data: dict, keys: tuple[str, ...], label: str) -> int:
+    for key in keys:
+        if key not in data:
+            continue
+        try:
+            value = int(data[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} '{key}' must be an integer.") from exc
+        if value < 0:
+            raise ValueError(f"{label} '{key}' must be >= 0.")
+        return value
+    joined = "' or '".join(keys)
+    raise ValueError(f"{label} requires '{joined}'.")
+
+
+def _import_blocks_from_payload(payload: dict) -> list[dict]:
+    if "imports" in payload:
+        return [
+            _require_mapping(item, f"imports[{idx}]")
+            for idx, item in enumerate(_require_list(payload["imports"], "imports"))
+        ]
+    return [payload]
+
+
+def _source_from_import_block(block: dict, top_level_source: dict) -> dict:
+    source = block.get("source", top_level_source)
+    source = _require_mapping(source, "source")
+    return {
+        "exp_id": _require_string_any(source, ("exp_id", "expID"), "source"),
+        "user_id": _require_string_any(source, ("user_id", "userID"), "source"),
+        "channel": int(source.get("channel", 0)),
+    }
+
+
+def _resolve_import_cell(
+    repo_root: Path,
+    source: dict,
+    cell_data: dict,
+    pattern_name: str,
+) -> CellSpec:
+    cell_label = f"pattern '{pattern_name}' cell"
+    processed_cell_id = _require_int_any(cell_data, ("cell_id", "cellID"), cell_label)
+    power_scale = _require_float(cell_data, "power_scale", cell_label)
+    resolved = resolve_processed_cell_to_imaging_pixel(
+        repo_root,
+        source["exp_id"],
+        processed_cell_id=processed_cell_id,
+        channel=int(source["channel"]),
+        user_id=source["user_id"] or None,
+        default_imaging_path="P1",
+    )
+    converted = convert_imaging_pixel_to_pattern_coords(
+        repo_root,
+        source["exp_id"],
+        scanfield_index=resolved.scanfield_index,
+        x_px=resolved.x_px,
+        y_px=resolved.y_px,
+        imaging_path=resolved.imaging_path,
+    )
+    return CellSpec(
+        label=str(cell_data.get("label") or f"cell_{processed_cell_id}"),
+        x=converted.x_um,
+        y=converted.y_um,
+        z=converted.z_um,
+        power_scale=power_scale,
+        origin=resolved.origin,
+        origin_exp_id=source["exp_id"],
+        origin_user_id=source["user_id"],
+        origin_processed_cell_id=processed_cell_id,
+        origin_imaging_path=resolved.imaging_path,
+        origin_roi_folder_name=resolved.roi_folder_name,
+        origin_plane_index=resolved.plane_index,
+        origin_z_um=resolved.plane_z_um,
+    )
+
+
+def import_project_items_from_file(repo_root: Path, path: str | Path, existing_project: ExperimentProject) -> ExperimentProject:
+    payload = yaml.safe_load(Path(path).read_text()) or {}
+    payload = _require_mapping(payload, "import file")
+    top_level_source = payload.get("source", {})
+    if top_level_source:
+        top_level_source = _require_mapping(top_level_source, "source")
+
+    imported = ExperimentProject(
+        origin_exp_id=existing_project.origin_exp_id,
+        origin_user_id=existing_project.origin_user_id,
+    )
+    existing_pattern_names = set(existing_project.patterns)
+    existing_sequence_names = set(existing_project.sequences)
+
+    for import_index, block in enumerate(_import_blocks_from_payload(payload), start=1):
+        source = _source_from_import_block(block, top_level_source)
+        patterns = _require_list(block.get("patterns", []), f"imports[{import_index}].patterns")
+        sequences = _require_list(block.get("sequences", []), f"imports[{import_index}].sequences")
+        if not patterns and not sequences:
+            raise ValueError(f"Import block {import_index} contains no patterns or sequences.")
+
+        for pattern_index, pattern_item in enumerate(patterns, start=1):
+            pattern_data = _require_mapping(pattern_item, f"imports[{import_index}].patterns[{pattern_index}]")
+            name = _require_string(pattern_data, "name", f"pattern {pattern_index}")
+            if name in existing_pattern_names or name in imported.patterns:
+                raise ValueError(f"Pattern name '{name}' already exists or is duplicated in the import file.")
+            cell_items = _require_list(pattern_data.get("cells", []), f"pattern '{name}'.cells")
+            cells = [
+                _resolve_import_cell(
+                    repo_root,
+                    source,
+                    _require_mapping(cell_data, f"pattern '{name}'.cells[{cell_index}]"),
+                    name,
+                )
+                for cell_index, cell_data in enumerate(cell_items, start=1)
+            ]
+            imported.patterns[name] = Pattern(
+                name=name,
+                duration_s=_require_float(pattern_data, "duration_s", f"pattern '{name}'"),
+                frequency_hz=_require_float(pattern_data, "frequency_hz", f"pattern '{name}'"),
+                duty_cycle=_require_float(pattern_data, "duty_cycle", f"pattern '{name}'"),
+                power_percent=_require_float(pattern_data, "power_percent", f"pattern '{name}'"),
+                spiral_width=_require_float(pattern_data, "spiral_width", f"pattern '{name}'"),
+                spiral_height=_require_float(pattern_data, "spiral_height", f"pattern '{name}'"),
+                notes=str(pattern_data.get("notes", "") or ""),
+                cells=cells,
+            )
+
+        for sequence_index, sequence_item in enumerate(sequences, start=1):
+            sequence_data = _require_mapping(sequence_item, f"imports[{import_index}].sequences[{sequence_index}]")
+            name = _require_string(sequence_data, "name", f"sequence {sequence_index}")
+            if name in existing_sequence_names or name in imported.sequences:
+                raise ValueError(f"Sequence name '{name}' already exists or is duplicated in the import file.")
+            step_items = _require_list(sequence_data.get("steps", []), f"sequence '{name}'.steps")
+            steps: list[SequenceStep] = []
+            for step_index, step_item in enumerate(step_items, start=1):
+                step_data = _require_mapping(step_item, f"sequence '{name}'.steps[{step_index}]")
+                steps.append(
+                    SequenceStep(
+                        pattern=_require_string(step_data, "pattern", f"sequence '{name}' step {step_index}"),
+                        start_s=_require_float(step_data, "start_s", f"sequence '{name}' step {step_index}"),
+                    )
+                )
+            imported.sequences[name] = Sequence(
+                name=name,
+                steps=steps,
+                notes=str(sequence_data.get("notes", "") or ""),
+            )
+
+    merged = ExperimentProject(
+        patterns={**existing_project.patterns, **imported.patterns},
+        sequences={**existing_project.sequences, **imported.sequences},
+        origin_exp_id=existing_project.origin_exp_id,
+        origin_user_id=existing_project.origin_user_id,
+    )
+    errors = merged.validate()
+    if errors:
+        preview = "\n".join(errors[:12])
+        if len(errors) > 12:
+            preview += f"\n... and {len(errors) - 12} more"
+        raise ValueError(preview)
+    return imported
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -3018,16 +3215,19 @@ class MainWindow(QMainWindow):
         new_btn = QPushButton("New")
         load_schema_btn = QPushButton("Load Schema")
         save_schema_btn = QPushButton("Save Schema")
+        import_items_btn = QPushButton("Import Items")
         self.online_analysis_checkbox = QCheckBox("Online Analysis")
 
         toolbar.addWidget(new_btn)
         toolbar.addWidget(load_schema_btn)
         toolbar.addWidget(save_schema_btn)
+        toolbar.addWidget(import_items_btn)
         toolbar.addWidget(self.online_analysis_checkbox)
 
         new_btn.clicked.connect(self.new_project)
         load_schema_btn.clicked.connect(self.load_schema_dialog)
         save_schema_btn.clicked.connect(self.save_schema_dialog)
+        import_items_btn.clicked.connect(self.import_items_dialog)
         self.online_analysis_checkbox.setChecked(self.scanimage_control.online_analysis_enabled())
         self.online_analysis_checkbox.toggled.connect(self.scanimage_control.set_online_analysis_enabled)
 
@@ -3736,6 +3936,57 @@ class MainWindow(QMainWindow):
         self.clear_dirty()
         self.main_tabs.setCurrentIndex(1)
         self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
+
+    def import_items_dialog(self) -> None:
+        if not _roi_coordinate_import_enabled():
+            QMessageBox.information(
+                self,
+                "Unavailable on this platform",
+                "Processed cell ROI import is available on Ubuntu only.",
+            )
+            return
+        if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
+            return
+        if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
+            return
+        start_dir = self.last_schema_load_dir if self.last_schema_load_dir else self.schema_root
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import pattern/sequence items",
+            str(start_dir),
+            "YAML (*.yaml *.yml)",
+        )
+        if not path:
+            return
+        try:
+            imported = import_project_items_from_file(self.repo_root, path, self.project)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import cancelled", str(exc))
+            return
+        if not imported.patterns and not imported.sequences:
+            QMessageBox.warning(self, "Import cancelled", "The import file did not contain any patterns or sequences.")
+            return
+
+        self.project.patterns.update(imported.patterns)
+        self.project.sequences.update(imported.sequences)
+        self.pattern_dirty = self.pattern_dirty or bool(imported.patterns)
+        self.sequence_dirty = self.sequence_dirty or bool(imported.sequences)
+        self.last_schema_load_dir = Path(path).resolve().parent
+        self.refresh_lists()
+        if imported.patterns:
+            first_pattern = next(iter(imported.patterns))
+            self._select_item_by_name(self.pattern_list, first_pattern)
+            self.schema_editor_tabs.setCurrentWidget(self.pattern_editor)
+        elif imported.sequences:
+            first_sequence = next(iter(imported.sequences))
+            self._select_item_by_name(self.sequence_list, first_sequence)
+            self.schema_editor_tabs.setCurrentWidget(self.sequence_editor)
+        self.main_tabs.setCurrentIndex(1)
+        QMessageBox.information(
+            self,
+            "Import complete",
+            f"Imported {len(imported.patterns)} pattern(s) and {len(imported.sequences)} sequence(s).",
+        )
 
     def save_schema_dialog(self) -> bool:
         default_path = self.schema_save_path()
