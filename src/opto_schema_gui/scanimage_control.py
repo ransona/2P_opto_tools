@@ -1795,10 +1795,18 @@ class ScanImageControlWidget(QWidget):
         self.trigger_mode_combo.addItem("Software trigger (debug)", "software")
         self.trigger_mode_combo.addItem("Hardware external trigger", "hardware")
         self.trigger_mode_combo.setCurrentIndex(1)
+        self.phase_mask_batch_size_spin = QSpinBox()
+        self.phase_mask_batch_size_spin.setRange(1, 100000)
+        self.phase_mask_batch_size_spin.setValue(100)
+        self.phase_mask_batch_size_spin.setToolTip(
+            "Maximum number of trials to prepare phase masks for in one batch."
+        )
         controls_row.addWidget(self.force_simulated_checkbox)
         controls_row.addWidget(self.ignore_incomplete_trigger_checkbox)
         controls_row.addWidget(QLabel("Trigger mode"))
         controls_row.addWidget(self.trigger_mode_combo)
+        controls_row.addWidget(QLabel("Phase mask batch size"))
+        controls_row.addWidget(self.phase_mask_batch_size_spin)
         controls_row.addStretch(1)
         config_layout.addLayout(controls_row)
 
@@ -2480,6 +2488,7 @@ class ScanImageControlWidget(QWidget):
                 "label": self.trigger_mode_combo.currentText(),
                 "value": self._current_trigger_mode(),
             },
+            "phase_mask_batch_size": self.phase_mask_batch_size_spin.value(),
             "photostim_path": self.machine_config.photostim_path if self.machine_config is not None else "",
             "paths": path_states,
             "online_analysis": self.get_online_analysis_snapshot(),
@@ -2527,6 +2536,15 @@ class ScanImageControlWidget(QWidget):
                 raise ValueError(f"Unknown trigger mode '{trigger_mode}'")
             self.trigger_mode_combo.setCurrentIndex(index)
             applied["trigger_mode"] = self._current_trigger_mode()
+        if "phase_mask_batch_size" in values:
+            batch_size = int(values["phase_mask_batch_size"])
+            if batch_size < self.phase_mask_batch_size_spin.minimum() or batch_size > self.phase_mask_batch_size_spin.maximum():
+                raise ValueError(
+                    "phase_mask_batch_size must be between "
+                    f"{self.phase_mask_batch_size_spin.minimum()} and {self.phase_mask_batch_size_spin.maximum()}"
+                )
+            self.phase_mask_batch_size_spin.setValue(batch_size)
+            applied["phase_mask_batch_size"] = self.phase_mask_batch_size_spin.value()
         return applied
 
     def invoke_remote_action(
