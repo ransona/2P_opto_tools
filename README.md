@@ -276,47 +276,53 @@ The import YAML should contain:
 
 Pattern and sequence names must be unique across the current schema and the whole import file. Sequence step start times must use the same 50 ms time grid as the editor.
 
-Example:
+Example with two different stimulation patterns and two sequences:
 
 ```yaml
 imports:
   - source:
       user_id: adamranson
-      exp_id: 2025-10-30_10_ESYB025
+      exp_id: 2026-04-10_09_TEST
       channel: 0
     patterns:
-      - name: P_cells_001_004
+      - name: P_cells_000_001_slow
         duration_s: 1.0
         frequency_hz: 10.0
         duty_cycle: 0.2
         power_percent: 30.0
         spiral_width: 15.0
         spiral_height: 15.0
-        notes: optional free text
+        notes: Slow 10 Hz pattern targeting two processed cells.
         cells:
-          - cell_id: 1
+          - cell_id: 0
             power_scale: 1.0
-          - cell_id: 4
+          - cell_id: 1
             power_scale: 0.75
-            label: cell_4_low_power
-      - name: P_cell_008
+            label: cell_1_low_power
+      - name: P_cell_001_fast
         duration_s: 0.5
         frequency_hz: 20.0
         duty_cycle: 0.5
         power_percent: 25.0
         spiral_width: 10.0
         spiral_height: 10.0
+        notes: Faster 20 Hz pattern targeting one processed cell.
         cells:
-          - cell_id: 8
+          - cell_id: 1
             power_scale: 1.0
     sequences:
-      - name: S_example
-        notes: optional sequence notes
+      - name: S_combined_then_fast
+        notes: Stimulate both cells first, then the fast single-cell pattern.
         steps:
-          - pattern: P_cells_001_004
+          - pattern: P_cells_000_001_slow
             start_s: 0.0
-          - pattern: P_cell_008
+          - pattern: P_cell_001_fast
             start_s: 1.0
+      - name: S_fast_only
+        notes: Run only the fast single-cell pattern.
+        steps:
+          - pattern: P_cell_001_fast
+            start_s: 0.0
 ```
 
 For multiple source experiments, add more entries under `imports:`.
