@@ -176,7 +176,7 @@ if opts.EmbedBlankAndParkInStimGroup
         error('EmbedBlankAndParkInStimGroup requires a single prepared block.');
     end
     if opts.BlankDuration > 0
-        hGroup.add(makePauseRoi([0 0], [0 0], opts.BlankDuration, nBeams));
+        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, 0, opts.BlankDuration, hSI, opts, nBeams);
     end
     appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams);
     if opts.ParkDuration > 0
@@ -211,7 +211,7 @@ for stepIdx = 1:numel(sequenceSteps)
     end
 
     if overlapStart_s > cursor_s
-        hGroup.add(makePauseRoi([0 0], [0 0], overlapStart_s - cursor_s, nBeams));
+        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, overlapStart_s - cursor_s, hSI, opts, nBeams);
     end
 
     appendPatternSliceToGroup( ...
@@ -229,7 +229,7 @@ for stepIdx = 1:numel(sequenceSteps)
 end
 
 if cursor_s < blockEnd_s
-    hGroup.add(makePauseRoi([0 0], [0 0], blockEnd_s - cursor_s, nBeams));
+    appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, blockEnd_s - cursor_s, hSI, opts, nBeams);
 end
 end
 
@@ -251,7 +251,7 @@ for stepIdx = 1:numel(sequenceSteps)
     stepEnd_s = stepStart_s + stepDuration_s;
 
     if stepStart_s > cursor_s
-        hGroup.add(makePauseRoi([0 0], [0 0], stepStart_s - cursor_s, nBeams));
+        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, stepStart_s - cursor_s, hSI, opts, nBeams);
     end
 
     appendPatternSliceToGroup( ...
@@ -270,7 +270,52 @@ end
 end
 
 
-function appendPatternSliceToGroup(hGroup, pattern, patternNumber, patternOffset_s, segmentDuration_s, isFirstBlockOfSequence, hSI, opts, nBeams)
+function appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, gapStart_s, gapDuration_s, hSI, opts, nBeams)
+if gapDuration_s <= 0
+    return;
+end
+[gapPattern, gapPatternNumber] = resolveGapPattern(sequenceSteps, patterns, schemaPatternNames, gapStart_s);
+appendPatternSliceToGroup( ...
+    hGroup, ...
+    gapPattern, ...
+    gapPatternNumber, ...
+    0, ...
+    gapDuration_s, ...
+    false, ...
+    hSI, ...
+    opts, ...
+    nBeams, ...
+    true ...
+);
+end
+
+
+function [pattern, patternNumber] = resolveGapPattern(sequenceSteps, patterns, schemaPatternNames, gapStart_s)
+bestStepIdx = [];
+bestStepStart = inf;
+for stepIdx = 1:numel(sequenceSteps)
+    stepStart_s = double(sequenceSteps(stepIdx).start_s);
+    if stepStart_s >= gapStart_s - 1e-9 && stepStart_s < bestStepStart
+        bestStepStart = stepStart_s;
+        bestStepIdx = stepIdx;
+    end
+end
+if isempty(bestStepIdx)
+    bestStepIdx = numel(sequenceSteps);
+end
+patternName = string(sequenceSteps(bestStepIdx).pattern);
+pattern = getStructByOriginalName(patterns, patternName, "Pattern");
+patternNumber = find(schemaPatternNames == patternName, 1, 'first');
+if isempty(patternNumber)
+    error('Could not resolve schema pattern number for pattern "%s".', patternName);
+end
+end
+
+
+function appendPatternSliceToGroup(hGroup, pattern, patternNumber, patternOffset_s, segmentDuration_s, isFirstBlockOfSequence, hSI, opts, nBeams, forceZeroPower)
+if nargin < 10
+    forceZeroPower = false;
+end
 validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
 validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
 validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
@@ -349,7 +394,9 @@ if ismethod(stimField, 'recenterGalvoOntoSlmPattern')
 end
 
 beamPowersOn = zeros(1, nBeams);
-beamPowersOn(3) = pattern.power_percent;
+if ~forceZeroPower
+    beamPowersOn(3) = pattern.power_percent;
+end
 beamPowersOff = zeros(1, nBeams);
 
 segmentStart_s = double(patternOffset_s);
@@ -416,20 +463,6 @@ end
 function group = makeParkOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
 group.add(makeZeroPowerPointRoi(durationSeconds, nBeams));
-end
-
-
-function roi = makePauseRoi(centerXY, sizeXY, durationSeconds, nBeams)
-sfPause = scanimage.mroi.scanfield.fields.StimulusField();
-sfPause.centerXY = centerXY;
-sfPause.sizeXY = sizeXY;
-sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
-sfPause.stimparams = {'poweredPause', false};
-sfPause.duration = durationSeconds;
-sfPause.repetitions = 1;
-sfPause.powers = zeros(1, nBeams);
-roi = scanimage.mroi.Roi();
-roi.add(0, sfPause);
 end
 
 
