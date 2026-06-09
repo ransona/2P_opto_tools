@@ -2108,6 +2108,10 @@ class ScanImageControlWidget(QWidget):
     def _git_status_entry_path(entry: str) -> str:
         return entry[3:].strip().strip('"') if len(entry) >= 4 else ""
 
+    @staticmethod
+    def _is_untracked_git_status_entry(entry: str) -> bool:
+        return entry.startswith("?? ")
+
     def _is_repo_config_path(self, path: str) -> bool:
         normalized = path.replace("\\", "/").lstrip("./")
         return normalized == "config.ini" or normalized.startswith("configs/")
@@ -2119,31 +2123,25 @@ class ScanImageControlWidget(QWidget):
             preview += f"\n... and {len(config_entries) - len(preview_paths)} more"
         box = QMessageBox(self)
         box.setWindowTitle("Config Changes Detected")
-        box.setText("Local config changes would be lost by update.")
+        box.setText("Local config changes must be synced to remote before update.")
         box.setInformativeText(
-            "Choose how to handle tracked config changes before updating:\n\n"
+            "The update will commit these config changes, pull/rebase latest remote changes, then push:\n\n"
             f"{preview}"
         )
-        sync_local_button = box.addButton("Sync Locally", QMessageBox.ButtonRole.AcceptRole)
         sync_push_button = box.addButton("Sync And Push", QMessageBox.ButtonRole.AcceptRole)
-        discard_button = box.addButton("Discard Configs", QMessageBox.ButtonRole.DestructiveRole)
         cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(sync_local_button)
+        box.setDefaultButton(sync_push_button)
         box.exec()
         clicked = box.clickedButton()
-        if clicked == sync_local_button:
-            return "sync_local"
         if clicked == sync_push_button:
             return "sync_push"
-        if clicked == discard_button:
-            return "discard"
         return "cancel"
 
-    def _commit_tracked_git_changes(self, entries: list[str], message: str) -> bool:
+    def _commit_git_changes(self, entries: list[str], message: str) -> bool:
         tracked_paths = [self._git_status_entry_path(entry) for entry in entries if self._git_status_entry_path(entry)]
         if not tracked_paths:
             return True
-        self.signals.log_message.emit("[update] Committing tracked local changes before pull")
+        self.signals.log_message.emit("[update] Committing local config changes before update")
         add_result = self._run_git_command(["add", "--", *tracked_paths])
         self._log_process_output("[update]", add_result)
         if add_result.returncode != 0:
@@ -2182,7 +2180,7 @@ class ScanImageControlWidget(QWidget):
         return restore_result.returncode == 0
 
     def _update_and_restart(self) -> None:
-        status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=no"])
+        status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=all"])
         if status_result.returncode != 0:
             self._log_process_output("[update]", status_result)
             QMessageBox.critical(
@@ -2197,40 +2195,32 @@ class ScanImageControlWidget(QWidget):
             if line.strip() and not self._is_ignorable_git_status_entry(line.rstrip())
         ]
         config_entries = [entry for entry in dirty_entries if self._is_repo_config_path(self._git_status_entry_path(entry))]
-        other_entries = [entry for entry in dirty_entries if entry not in config_entries]
+        other_entries = [
+            entry
+            for entry in dirty_entries
+            if entry not in config_entries and not self._is_untracked_git_status_entry(entry)
+        ]
         should_use_rebase_pull = False
+        should_push_after_pull = False
         if config_entries:
             policy = self._prompt_config_update_policy(config_entries)
             if policy == "cancel":
                 self.signals.log_message.emit("[update] Update cancelled by user")
                 return
-            if policy in {"sync_local", "sync_push"}:
+            if policy == "sync_push":
                 commit_message = (
                     f"Sync local configs before update "
                     f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                if not self._commit_tracked_git_changes(config_entries, commit_message):
+                if not self._commit_git_changes(config_entries, commit_message):
                     QMessageBox.critical(
                         self,
                         "Update failed",
-                        "Could not commit tracked config changes before pulling. See debug log for details.",
-                    )
-                    return
-                if policy == "sync_push" and not self._push_current_branch():
-                    QMessageBox.critical(
-                        self,
-                        "Update failed",
-                        "Could not push tracked config changes before pulling. See debug log for details.",
+                        "Could not commit local config changes before updating. See debug log for details.",
                     )
                     return
                 should_use_rebase_pull = True
-            elif not self._discard_tracked_git_changes(config_entries):
-                QMessageBox.critical(
-                    self,
-                    "Update failed",
-                    "Could not discard tracked config changes before pulling. See debug log for details.",
-                )
-                return
+                should_push_after_pull = True
         if other_entries:
             if not self._discard_tracked_git_changes(other_entries):
                 QMessageBox.critical(
@@ -2249,6 +2239,14 @@ class ScanImageControlWidget(QWidget):
                 self,
                 "Update failed",
                 f"git {' '.join(pull_cmd)} failed. See debug log for details.",
+            )
+            return
+
+        if should_push_after_pull and not self._push_current_branch():
+            QMessageBox.critical(
+                self,
+                "Update failed",
+                "Could not push local config changes after pulling. See debug log for details.",
             )
             return
 
