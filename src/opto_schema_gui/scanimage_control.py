@@ -1214,7 +1214,6 @@ class ScanImageControlWidget(QWidget):
         }
 
     def _infer_schema_name_from_conditions(self, conditions: list[dict[str, object]]) -> str:
-        schema_names: list[str] = []
         for condition in conditions:
             features = condition.get("features")
             if not isinstance(features, list):
@@ -1228,10 +1227,8 @@ class ScanImageControlWidget(QWidget):
                 if not isinstance(params, dict):
                     continue
                 schema_name = str(params.get("schema_name", "")).strip()
-                if schema_name and schema_name not in schema_names:
-                    schema_names.append(schema_name)
-        if len(schema_names) == 1:
-            return schema_names[0]
+                if schema_name:
+                    return schema_name
         return ""
 
     def _condition_index_for_trial_index(self, tracking: ExperimentTrackingState, trial_index: int) -> int:
