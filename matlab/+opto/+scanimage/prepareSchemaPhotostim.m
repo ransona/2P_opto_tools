@@ -176,7 +176,7 @@ if opts.EmbedBlankAndParkInStimGroup
         error('EmbedBlankAndParkInStimGroup requires a single prepared block.');
     end
     if opts.BlankDuration > 0
-        hGroup.add(makePauseRoi([0 0], [0 0], opts.BlankDuration, nBeams));
+        hGroup.add(makeZeroPowerPointRoi(opts.BlankDuration, nBeams));
     end
     appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams);
     if opts.ParkDuration > 0
@@ -211,7 +211,7 @@ for stepIdx = 1:numel(sequenceSteps)
     end
 
     if overlapStart_s > cursor_s
-        hGroup.add(makePauseRoi([0 0], [0 0], overlapStart_s - cursor_s, nBeams));
+        hGroup.add(makeZeroPowerPointRoi(overlapStart_s - cursor_s, nBeams));
     end
 
     appendPatternSliceToGroup( ...
@@ -229,7 +229,7 @@ for stepIdx = 1:numel(sequenceSteps)
 end
 
 if cursor_s < blockEnd_s
-    hGroup.add(makePauseRoi([0 0], [0 0], blockEnd_s - cursor_s, nBeams));
+    hGroup.add(makeZeroPowerPointRoi(blockEnd_s - cursor_s, nBeams));
 end
 end
 
@@ -251,7 +251,7 @@ for stepIdx = 1:numel(sequenceSteps)
     stepEnd_s = stepStart_s + stepDuration_s;
 
     if stepStart_s > cursor_s
-        hGroup.add(makePauseRoi([0 0], [0 0], stepStart_s - cursor_s, nBeams));
+        hGroup.add(makeZeroPowerPointRoi(stepStart_s - cursor_s, nBeams));
     end
 
     appendPatternSliceToGroup( ...
@@ -409,27 +409,13 @@ end
 
 function group = makeBlankOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
-group.add(makeParkRoi(durationSeconds, nBeams));
+group.add(makeZeroPowerPointRoi(durationSeconds, nBeams));
 end
 
 
 function group = makeParkOnlyGroup(name, durationSeconds, nBeams)
 group = scanimage.mroi.RoiGroup(char(name));
 group.add(makeZeroPowerPointRoi(durationSeconds, nBeams));
-end
-
-
-function roi = makePauseRoi(centerXY, sizeXY, durationSeconds, nBeams)
-sfPause = scanimage.mroi.scanfield.fields.StimulusField();
-sfPause.centerXY = centerXY;
-sfPause.sizeXY = sizeXY;
-sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
-sfPause.stimparams = {'poweredPause', false};
-sfPause.duration = durationSeconds;
-sfPause.repetitions = 1;
-sfPause.powers = zeros(1, nBeams);
-roi = scanimage.mroi.Roi();
-roi.add(0, sfPause);
 end
 
 
@@ -445,20 +431,6 @@ stimField.duration = durationSeconds;
 stimField.repetitions = 1;
 stimField.powers = powers;
 roi = makeStimRoi(stimField);
-end
-
-
-function roi = makeParkRoi(durationSeconds, nBeams)
-sfPause = scanimage.mroi.scanfield.fields.StimulusField();
-sfPause.centerXY = [0 0];
-sfPause.sizeXY = [0 0];
-sfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.park;
-sfPause.stimparams = {};
-sfPause.duration = durationSeconds;
-sfPause.repetitions = 1;
-sfPause.powers = zeros(1, nBeams);
-roi = scanimage.mroi.Roi();
-roi.add(0, sfPause);
 end
 
 
