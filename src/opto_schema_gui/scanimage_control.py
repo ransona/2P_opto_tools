@@ -1134,6 +1134,11 @@ class ScanImageControlWidget(QWidget):
         runtime = self._runtimes.get(tracking_runtime_name)
         if runtime is None or not runtime.experiment_tracking.params:
             return
+        if runtime.prepared_photostim.schema_path is None:
+            self.signals.log_message.emit(
+                "[online analysis] waiting for prep_patterns before configuring ROIs"
+            )
+            return
         try:
             self._configure_online_analysis_for_tracking(runtime.experiment_tracking)
         except Exception as exc:
