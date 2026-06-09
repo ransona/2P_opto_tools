@@ -91,6 +91,9 @@ from .matlab_bridge import (
 from .models import ExperimentProject, Pattern
 
 
+MAX_UDP_DATAGRAM_BYTES = 65535
+
+
 class ScanImageSignals(QObject):
     log_message = pyqtSignal(str)
     path_status = pyqtSignal(str, str)
@@ -337,7 +340,7 @@ class UdpListener(threading.Thread):
             self.signals.log_message.emit(f"[{self.path_name}] UDP listener started on {self.host}:{self.port}")
             while not self._stop_event.is_set():
                 try:
-                    payload, address = sock.recvfrom(8192)
+                    payload, address = sock.recvfrom(MAX_UDP_DATAGRAM_BYTES)
                 except socket.timeout:
                     continue
                 except OSError:
@@ -3702,7 +3705,10 @@ class ScanImageControlWidget(QWidget):
             return None
         try:
             parsed = json.loads(decoded)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            self.signals.log_message.emit(
+                f"[udp] ignored malformed JSON datagram ({len(payload)} byte(s)): {exc}"
+            )
             return None
         if not isinstance(parsed, dict):
             return None
