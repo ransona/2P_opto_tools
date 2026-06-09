@@ -3751,6 +3751,9 @@ class ScanImageControlWidget(QWidget):
         params_path_raw = message.get("params_path")
         if params_path_raw is None:
             return message
+        self.signals.log_message.emit(
+            f"[udp] loading update_experiment_params from params_path={params_path_raw}"
+        )
         params_path = self._resolve_external_json_path(str(params_path_raw))
         payload = json.loads(params_path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -3772,6 +3775,33 @@ class ScanImageControlWidget(QWidget):
             f"[udp] loaded update_experiment_params from {params_path}"
         )
         return loaded
+
+    def _process_update_experiment_params_udp(
+        self,
+        path_name: str,
+        message: dict[str, object],
+        address: tuple[str, int],
+    ) -> None:
+        try:
+            loaded_message = self._load_update_experiment_params_message(message)
+            self._handle_update_experiment_params_request(
+                request_path_name=path_name,
+                message=loaded_message,
+                reply_address=address,
+            )
+        except Exception as exc:
+            self.signals.log_message.emit(
+                f"[{path_name}] update_experiment_params failed: {exc}"
+            )
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "update_experiment_params",
+                    "status": "error",
+                    "error": str(exc),
+                },
+            )
 
     def _extract_json_command(self, payload: bytes) -> dict[str, object] | None:
         try:
@@ -3801,23 +3831,11 @@ class ScanImageControlWidget(QWidget):
             self.signals.log_message.emit(
                 f"[{path_name}] received experiment parameters for expID='{exp_id}'"
             )
-            try:
-                message = self._load_update_experiment_params_message(message)
-                self._handle_update_experiment_params_request(
-                    request_path_name=path_name,
-                    message=message,
-                    reply_address=address,
-                )
-            except Exception as exc:
-                self._send_json_reply(
-                    path_name,
-                    address,
-                    {
-                        "action": "update_experiment_params",
-                        "status": "error",
-                        "error": str(exc),
-                    },
-                )
+            threading.Thread(
+                target=self._process_update_experiment_params_udp,
+                args=(path_name, dict(message), address),
+                daemon=True,
+            ).start()
             return
 
         if action == "start_trial":
