@@ -61,7 +61,7 @@ settleTime = 0.5;     % settle time in seconds to allow the resonant scanner to 
 
 % Calibration Settings
 amplitudeToLinePhaseMap = [1.19 -1.8048e-06;1.316 -1.8816e-06;1.786 -2.112e-06;1.846 -2.15463e-06;1.923 -2.2144e-06;2.349 -2.69962e-06;2.4 -2.28137e-06;2.5 -2.3168e-06;3 -2.38276e-06;3.429 -2.48416e-06;4 -2.53485e-06;4.167 -2.5344e-06;4.8 -2.5344e-06;5 -2.5728e-06;6 -2.5602e-06;8 -2.6109e-06;8.333 -2.6496e-06;12 -2.72497e-06;24 -2.73764e-06;25 -2.8032e-06];     % translates an amplitude (degrees) to a line phase (seconds)
-amplitudeToFrequencyMap = [1.333 7923.69;1.714 7924.26;1.846 7921.01;2 7924.66;2.083 7924.12;2.349 7927.37;2.4 7918.36;2.5 7921.72;3 7922.43;3.25 7923.28;3.429 7920.22;3.523 7927.27;3.789 7923.12;4 7924.47;4.8 7924.46;5.2 7922.66;6 7919.36;6.909 7920.34;6.918 7926.27;8 7921.19;8.968 7926.61;12 7919.21;12.122 7916.85;14.092 7926.01;16 7925.66;16.526 7915.86;18.147 7915.07;19.2 7925.12;19.36 7919.19;20 7915.07;21.202 7917.44;21.774 7918.6;22.035 7911.17;22.715 7920.29;23.473 7916.01;23.572 7918.72;23.638 7919.4;23.679 7915.3;23.956 7911.38;24 7923.01;25 7920.74;25.999 7920.34;26 7919.65;28 7916.27];     % translates an amplitude (degrees) to a resonant frequency (Hz)
+amplitudeToFrequencyMap = [1.333 7923.69;1.714 7924.26;1.846 7921.01;2 7924.66;2.083 7924.12;2.349 7927.37;2.4 7918.36;2.5 7921.72;3 7922.43;3.25 7923.28;3.429 7920.22;3.523 7927.27;3.789 7923.12;4 7924.47;4.8 7924.46;5.2 7922.66;6 7919.36;6.909 7920.34;6.918 7926.27;8 7921.19;8.968 7926.61;10.909 7922.74;12 7919.21;12.122 7916.85;14.092 7926.01;16 7925.66;16.526 7915.86;18.147 7915.07;19.2 7925.12;19.36 7919.19;20 7915.07;21.202 7917.44;21.774 7918.6;22.035 7911.17;22.715 7920.29;23.473 7916.01;23.572 7918.72;23.638 7919.4;23.679 7915.3;23.956 7911.38;24 7923.01;25 7920.74;25.999 7920.34;26 7919.65;28 7916.27];     % translates an amplitude (degrees) to a resonant frequency (Hz)
 amplitudeLUT = zeros(0,2);     % translates a nominal amplitude (degrees) to an output amplitude (degrees)
 
 %% dabs.generic.GalvoPureAnalog (X Galvo P1)
@@ -108,7 +108,7 @@ settleTime = 0.5;     % settle time in seconds to allow the resonant scanner to 
 
 % Calibration Settings
 amplitudeToLinePhaseMap = [1.333 -5.06971e-08;2 -2.40811e-07;2.6 -2.816e-07;2.667 -3.16857e-07;3 -4.352e-07;3.429 -3.584e-07;4 -4.81622e-07;4.798 3.92902e-07;4.8 -2.432e-07;6 -4.608e-07;8 -5.504e-07;8.667 -5.504e-07;11.994 -3.92902e-07;12 -6.21039e-07;14.712 -5.888e-07;24 -6.21039e-07;26 -6.144e-07];     % translates an amplitude (degrees) to a line phase (seconds)
-amplitudeToFrequencyMap = [1.333 7920.57;2 7917.02;2.6 7918.94;2.615 7922.26;2.667 7916.58;3 7919.64;3.429 7919.94;3.433 7921.74;4 7918.97;4.74 7921.03;4.8 7920.48;5.231 7921.15;5.435 7918.99;5.556 7920.79;6 7914.46;6.175 7920.56;6.5 7917.7;7.111 7920.15;8 7921.21;8.667 7917.81;12 7917.86;13.567 7920.53;14.712 7917.96;20.392 7917.64;23.473 7910.28;23.875 7911.57;23.926 7915.06;24 7913.97;26 7914.06];     % translates an amplitude (degrees) to a resonant frequency (Hz)
+amplitudeToFrequencyMap = [1.333 7920.57;2 7917.02;2.6 7918.94;2.615 7922.26;2.667 7916.58;3 7919.64;3.429 7919.94;3.433 7921.74;4 7918.97;4.74 7921.03;4.8 7920.48;5.231 7921.15;5.435 7918.99;5.556 7920.79;6 7914.46;6.175 7920.56;6.5 7917.7;7.111 7920.15;8 7921.21;8.667 7917.81;12 7917.86;13.567 7920.53;14.712 7917.96;20 7916.12;20.392 7917.64;23.473 7910.28;23.875 7911.57;23.926 7915.06;24 7913.97;26 7914.06];     % translates an amplitude (degrees) to a resonant frequency (Hz)
 amplitudeLUT = zeros(0,2);     % translates a nominal amplitude (degrees) to an output amplitude (degrees)
 
 %% dabs.generic.GalvoPureAnalog (X Galvo P2)
@@ -155,6 +155,8 @@ voltsOffset = 6.15;     % volts that sets actuator to zero position
 % Calibration Data
 positionLUT = zeros(0,2);     % Position LUT
 feedbackVoltLUT = zeros(0,2);     % [Nx2] lut translating feedback volts into position volts
+
+minimizeOnStart = true;
 
 %% dabs.generic.DigitalShutter (920nm P1)
 DOControl = '/vDAQ0/D0.2';     % control terminal  e.g. '/vDAQ0/DIO0'
@@ -261,6 +263,8 @@ frameClockIn = '';     % Terminal to which external frame clock is connected. Le
 referenceClockIn = '';     % Terminal to which external reference clock is connected. Leave empty for automatic routing via PXI/RTSI bus
 referenceClockRate = 1e+07;     % if referenceClockIn is used, referenceClockRate defines the rate of the reference clock in Hz. Default: 10e6Hz
 
+minimizeOnStart = true;
+
 %% dabs.generic.DigitalShutter (1050nm P2)
 DOControl = '/vDAQ0/D1.4';     % control terminal  e.g. '/vDAQ0/DIO0'
 invertOutput = false;     % invert output drive signal to shutter
@@ -296,6 +300,8 @@ frameClockIn = '';     % Terminal to which external frame clock is connected. Le
 referenceClockIn = '';     % Terminal to which external reference clock is connected. Leave empty for automatic routing via PXI/RTSI bus
 referenceClockRate = 1e+07;     % if referenceClockIn is used, referenceClockRate defines the rate of the reference clock in Hz. Default: 10e6Hz
 
+minimizeOnStart = true;
+
 %% dabs.generic.DigitalShutter (1035nm P2)
 DOControl = '/vDAQ0/D1.3';     % control terminal  e.g. '/vDAQ0/DIO0'
 invertOutput = false;     % invert output drive signal to shutter
@@ -306,22 +312,22 @@ shutterTarget = 'Excitation';     % one of {', 'Excitation', 'Detection'}
 AOControl = '/vDAQ0/AO9';     % control terminal  e.g. '/vDAQ0/AO0'
 AIFeedback = '/vDAQ0/AI8';     % feedback terminal e.g. '/vDAQ0/AI0'
 
-outputRange_V = [0 0.27];     % Control output range in Volts
+outputRange_V = [0 0.5];     % Control output range in Volts
 feedbackUsesRejectedLight = false;     % Indicates if photodiode is in rejected path of beams modulator.
 calibrationOpenShutters = {'1035nm P2'};     % List of shutters to open during the calibration. (e.g. {'Shutter1' 'Shutter2'}
 
 powerFractionLimit = 1;     % Maximum allowed power fraction (between 0 and 1)
 
 % Calibration data
-powerFraction2ModulationVoltLut = [0 0.0790909;0.000286679 0.0818182;0.000313367 0.0845455;0.000647615 0.0872727;0.000706133 0.09;0.00105412 0.0927273;0.00132374 0.0954545;0.00159916 0.0981818;0.00192334 0.100909;0.0022615 0.103636;0.00298633 0.106364;0.00351053 0.109091;0.00411555 0.111818;0.00476188 0.114545;0.00578338 0.117273;0.00686937 0.12;0.00797403 0.122727;0.00934179 0.125455;0.0108869 0.128182;0.0124649 0.130909;0.0143026 0.133636;0.0164868 0.136364;0.0191094 0.139091;0.0216416 0.141818;0.0248833 0.144545;0.0282743 0.147273;0.0322365 0.15;0.0361818 0.152727;0.0410527 0.155455;0.0458061 0.158182;0.05122 0.160909;0.0572921 0.163636;0.0643089 0.166364;0.0715173 0.169091;0.0796644 0.171818;0.086873 0.174545;0.0964031 0.177273;0.107058 0.18;0.115606 0.182727;0.127258 0.185455;0.139287 0.188182;0.152342 0.190909;0.166249 0.193636;0.180554 0.196364;0.196729 0.199091;0.212465 0.201818;0.229409 0.204545;0.247832 0.207273;0.267788 0.21;0.287997 0.212727;0.306759 0.215455;0.329343 0.218182;0.353269 0.220909;0.378813 0.223636;0.403152 0.226364;0.430805 0.229091;0.461834 0.231818;0.49098 0.234545;0.522534 0.237273;0.553715 0.24;0.588204 0.242727;0.623269 0.245455;0.659992 0.248182;0.698137 0.250909;0.738542 0.253636;0.777515 0.256364;0.815512 0.259091;0.859202 0.261818;0.904003 0.264545;0.949209 0.267273;1 0.27];
-powerFraction2PowerWattLut = [0 0;1 0.225];
-powerFraction2FeedbackVoltLut = [0 0.0324616;1 0.307829];
-feedbackOffset_V = 0;
+powerFraction2ModulationVoltLut = zeros(0,2);
+powerFraction2PowerWattLut = zeros(0,2);
+powerFraction2FeedbackVoltLut = zeros(0,2);
+feedbackOffset_V = 0.174049;
 
 % Calibration settings
 calibrationNumPoints = 100;     % number of equidistant points to measure within the analog output range
-calibrationAverageSamples = 5;     % per analog output voltage, average N analog input samples. This helps to reduce noise
-calibrationNumRepeats = 5;     % number of times to repeat the calibration routine. the end result is the average of all calibration runs
+calibrationAverageSamples = 20;     % per analog output voltage, average N analog input samples. This helps to reduce noise
+calibrationNumRepeats = 10;     % number of times to repeat the calibration routine. the end result is the average of all calibration runs
 calibrationSettlingTime_s = 0.001;     % pause between measurement points. this allows the beam modulation to settle
 calibrationFlybackTime_s = 0.2;     % pause between calibration runs
 
@@ -330,6 +336,10 @@ modifiedLineClockIn = '';     % Terminal to which external beam trigger is conne
 frameClockIn = '';     % Terminal to which external frame clock is connected. Leave empty for automatic routing via PXI/RTSI bus
 referenceClockIn = '';     % Terminal to which external reference clock is connected. Leave empty for automatic routing via PXI/RTSI bus
 referenceClockRate = 1e+07;     % if referenceClockIn is used, referenceClockRate defines the rate of the reference clock in Hz. Default: 10e6Hz
+
+minimizeOnStart = false;
+
+widgetVisibility = 1;
 
 %% dabs.generic.PMTAnalog (Green PMT)
 AOGain = '/Dev2/AO0';     % <optional> resource name of the analog output channel that controls the PMT gain (e.g. /vDAQ0/AO0)
@@ -344,6 +354,8 @@ DOTripReset = '';     % <optional> resource name of the analog output channel th
 wavelength_nm = 510;     % wavelength in nanometer
 autoOn = true;     % powers the PMT automatically on for the duration of a scan
 gain_V = 0.6;     % PMT power supply voltage
+
+minimizeOnStart = false;
 
 %% dabs.generic.PMTAnalog (Red PMT)
 AOGain = '/Dev2/AO1';     % <optional> resource name of the analog output channel that controls the PMT gain (e.g. /vDAQ0/AO0)
@@ -515,7 +527,7 @@ beamModifiedLineClockOut = '';     % Output line for beam clock
 volumeTriggerOut = '';     % Output line for the volume clock
 
 % Calibration data
-scannerToRefTransform = [0.998354 0 7.20672;0 0.993133 6.64194;0 0 1];
+scannerToRefTransform = [0.9984 0 6.67315;0 0.9931 5.80613;0 0 1];
 LaserTriggerDebounceTicks = 1;
 virtualChannelsSource = {'AI0' 'AI1'};
 virtualChannelsMode = {'analog' 'analog'};
@@ -535,6 +547,8 @@ communicationProtocol = 'ASCII';     % Communication protocol ('ASCII' or 'Binar
 deviceLibraryPath = '';     % Path to '.sqlite' device library. Only required for offline use.
 homingTimeout_s = 20;     % Timeout for homing move in seconds
 
+
+minimizeOnStart = false;
 
 %% dabs.micromanager.Camera (Basler Camera)
 mmInstallDir = 'C:\Program Files\Micro-Manager-2.0';     % Path to MicroManager installation directory. e.g. 'C:\Program Files\Micro-Manager-1.4'
@@ -565,7 +579,7 @@ slmMagnificationOntoGalvos = 0.25;     % Magnification of SLM onto galvos. E.g. 
 
 
 % Calibration data
-scannerToRefTransform = [1.0059 0.0563347 0;-0.0143752 1.03447 0;0 0 1];
+scannerToRefTransform = [1 0 0;0 1 0;0 0 1];
 lutCalibrationAI = '';     % Name of AI channel for measuring zero order spot for LUT calibration
 
 

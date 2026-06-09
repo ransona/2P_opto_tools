@@ -12,23 +12,35 @@ end
 seedConfigDialogPathsAndLoadDefaultCfg(hSI, configDir);
 hSI.hScan2D.logFramesPerFile=5000;
 
-load(fullfile(configDir, 'GGtoP1_working.mat'))
+load(fullfile(configDir, 'test3.mat'))
 hSI.hScan_RGG_P2.scannerToRefTransform=tf;
-load(fullfile(configDir, 'SLMtoGG_working.mat'))
-hSI.hSlmScan.scannerToRefTransform=tf;
+%load(fullfile(configDir, 'SLMtoGG_working.mat'))
+%hSI.hSlmScan.scannerToRefTransform=tf;
 
 rs = dabs.resources.ResourceStore();
+% Keep this name if the MDF resource is still named that way.
 wg = rs.filterByName('Turnaround Blanking P2 via P1 Sync');
+if iscell(wg), wg = wg{1}; end
 which dabs.generic.waveforms.digital.TurnaroundBlankClock -all
 wg.stopTask();
+% Final runtime config
 wg.sampleRate_Hz = 20e6;
-wg.dutyCycle = 100;
+wg.dutyCycle = 80;
+wg.startTriggerEdge = 'falling';   % final edge choice for D3.4 line clock
+% Optional: only if you want to force the trigger source at runtime too
+trig = rs.filterByName('/vDAQ0/D3.4');
+if iscell(trig), trig = trig{1}; end
+wg.startTriggerPort = trig;
+% Refresh once so linePeriodScan is available
+wg.refreshWvfmParams();
 scan = wg.wvfmParams.linePeriodScan;
-wg.startDelay = 19.82e-05;
+% Since the final TurnaroundBlankClock is one-line-only, fold old delays into one line
+wg.startDelay = mod(19.82e-05, scan);
 wg.refreshWvfmParams();
 disp(wg.wvfmParams)
 w = wg.computeWaveform();
-fprintf('N=%d, high_frac=%.3f\n', numel(w), mean(w>0));
+fprintf('scan = %.6g s, startDelay = %.6g s, N = %d, high_frac = %.3f\n', ...
+scan, wg.startDelay, numel(w), mean(w>0));
 wg.startTask();
 
 function seedConfigDialogPathsAndLoadDefaultCfg(hSiObj, configDir)
