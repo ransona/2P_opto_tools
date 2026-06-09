@@ -3727,6 +3727,52 @@ class ScanImageControlWidget(QWidget):
             return command.strip().lower(), exp_id.strip() or None
         return stripped.lower(), None
 
+    def _resolve_external_json_path(self, raw_path: str) -> Path:
+        raw_path = raw_path.strip()
+        if not raw_path:
+            raise FileNotFoundError("Empty params_path")
+
+        candidates: list[Path] = [Path(raw_path).expanduser()]
+        if sys.platform.startswith("linux"):
+            normalized = raw_path.replace("\\", "/")
+            normalized_lower = normalized.lower()
+            unc_prefix = "//ar-lab-nas1/dataserver/"
+            if normalized_lower.startswith(unc_prefix):
+                relative = normalized[len(unc_prefix):]
+                candidates.append(Path("/mnt/nas2") / relative)
+
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.resolve()
+        candidate_text = ", ".join(str(candidate) for candidate in candidates)
+        raise FileNotFoundError(f"Could not find params_path '{raw_path}' (checked: {candidate_text})")
+
+    def _load_update_experiment_params_message(self, message: dict[str, object]) -> dict[str, object]:
+        params_path_raw = message.get("params_path")
+        if params_path_raw is None:
+            return message
+        params_path = self._resolve_external_json_path(str(params_path_raw))
+        payload = json.loads(params_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Experiment params file must contain a JSON object: {params_path}")
+
+        notification_exp_id = str(message.get("expID", "")).strip()
+        file_exp_id = str(payload.get("expID", "")).strip()
+        if notification_exp_id and file_exp_id and notification_exp_id != file_exp_id:
+            raise ValueError(
+                "update_experiment_params expID mismatch between UDP notification and params file; "
+                f"notification expID='{notification_exp_id}', file expID='{file_exp_id}'"
+            )
+        loaded = dict(payload)
+        loaded["action"] = "update_experiment_params"
+        loaded["params_path"] = str(params_path)
+        if notification_exp_id and not file_exp_id:
+            loaded["expID"] = notification_exp_id
+        self.signals.log_message.emit(
+            f"[udp] loaded update_experiment_params from {params_path}"
+        )
+        return loaded
+
     def _extract_json_command(self, payload: bytes) -> dict[str, object] | None:
         try:
             decoded = payload.decode("utf-8").strip()
@@ -3756,6 +3802,7 @@ class ScanImageControlWidget(QWidget):
                 f"[{path_name}] received experiment parameters for expID='{exp_id}'"
             )
             try:
+                message = self._load_update_experiment_params_message(message)
                 self._handle_update_experiment_params_request(
                     request_path_name=path_name,
                     message=message,
