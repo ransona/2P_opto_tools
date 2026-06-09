@@ -3957,7 +3957,6 @@ class ScanImageControlWidget(QWidget):
         runtime = self._runtimes[request_path_name]
         tracking = runtime.experiment_tracking
         exp_id = str(message.get("expID", "")).strip()
-        schema_name = str(message.get("schema_name", "")).strip()
         conditions_raw = message.get("stimulus_conditions")
         if conditions_raw is None:
             raise ValueError("update_experiment_params requires stimulus_conditions")
@@ -3971,18 +3970,11 @@ class ScanImageControlWidget(QWidget):
             if not isinstance(item, dict):
                 raise ValueError(f"stimulus_conditions[{idx}] must be an object")
             stimulus_conditions.append(dict(item))
-        conditions_schema_name = self._infer_schema_name_from_conditions(stimulus_conditions)
-        if schema_name and conditions_schema_name and schema_name != conditions_schema_name:
-            raise ValueError(
-                "update_experiment_params schema_name does not match opto_2p feature schema_name; "
-                f"top-level schema_name='{schema_name}', first opto_2p schema_name='{conditions_schema_name}'"
+        schema_name = self._infer_schema_name_from_conditions(stimulus_conditions)
+        if schema_name:
+            self.signals.log_message.emit(
+                f"[{request_path_name}] using schema_name='{schema_name}' from opto_2p feature params"
             )
-        if not schema_name:
-            schema_name = conditions_schema_name
-            if schema_name:
-                self.signals.log_message.emit(
-                    f"[{request_path_name}] inferred schema_name='{schema_name}' from opto_2p feature params"
-                )
         trial_condition_indices_raw = message.get("trial_condition_indices")
         trial_condition_indices: list[int] = []
         if trial_condition_indices_raw is not None:
