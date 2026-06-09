@@ -24,11 +24,11 @@ if opts.IgnoreFrequency && isfield(pattern, 'frequency_hz')
 end
 
 if opts.PauseDuration > 0
-    hRoiPause = makeZeroPowerPointRoi(opts.PauseDuration);
+    hRoiPause = makePauseRoi(opts.PauseDuration);
 end
 
 if opts.ParkDuration > 0
-    hRoiPark = makeZeroPowerPointRoi(opts.ParkDuration);
+    hRoiPark = makeParkRoi(opts.ParkDuration);
 end
 
 for idx = 1:numel(pattern.cells)
@@ -64,6 +64,26 @@ if opts.ParkDuration > 0
 end
 
 
+function hRoi = makePauseRoi(durationSeconds)
+hSfPause = scanimage.mroi.scanfield.fields.StimulusField();
+hSfPause.stimfcnhdl = @scanimage.mroi.stimulusfunctions.pause;
+hSfPause.duration = durationSeconds;
+
+hRoi = scanimage.mroi.Roi();
+hRoi.add(0, hSfPause);
+end
+
+
+function hRoi = makeParkRoi(durationSeconds)
+hSfPark = scanimage.mroi.scanfield.fields.StimulusField();
+hSfPark.stimfcnhdl = @scanimage.mroi.stimulusfunctions.park;
+hSfPark.duration = durationSeconds;
+
+hRoi = scanimage.mroi.Roi();
+hRoi.add(0, hSfPark);
+end
+
+
 function powers = resolvePowers(pattern, cellSpec, powerScaleMode)
 basePower = pattern.power_percent;
 
@@ -75,19 +95,5 @@ switch lower(powerScaleMode)
     otherwise
         error('Unknown PowerScaleMode "%s".', powerScaleMode);
 end
-end
-
-
-function hRoi = makeZeroPowerPointRoi(durationSeconds)
-hSfPoint = scanimage.mroi.scanfield.fields.StimulusField();
-hSfPoint.centerXY = [0 0];
-hSfPoint.sizeXY = [0 0];
-hSfPoint.stimfcnhdl = @scanimage.mroi.stimulusfunctions.point;
-hSfPoint.duration = durationSeconds;
-hSfPoint.repetitions = 1;
-hSfPoint.powers = [0 0 0];
-
-hRoi = scanimage.mroi.Roi();
-hRoi.add(0, hSfPoint);
 end
 end
