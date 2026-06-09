@@ -1213,6 +1213,27 @@ class ScanImageControlWidget(QWidget):
             "Condition does not contain an enabled opto_2p feature.",
         }
 
+    def _infer_schema_name_from_conditions(self, conditions: list[dict[str, object]]) -> str:
+        schema_names: list[str] = []
+        for condition in conditions:
+            features = condition.get("features")
+            if not isinstance(features, list):
+                continue
+            for feature in features:
+                if not isinstance(feature, dict):
+                    continue
+                if str(feature.get("name", "")).strip() != "opto_2p":
+                    continue
+                params = feature.get("params")
+                if not isinstance(params, dict):
+                    continue
+                schema_name = str(params.get("schema_name", "")).strip()
+                if schema_name and schema_name not in schema_names:
+                    schema_names.append(schema_name)
+        if len(schema_names) == 1:
+            return schema_names[0]
+        return ""
+
     def _condition_index_for_trial_index(self, tracking: ExperimentTrackingState, trial_index: int) -> int:
         if tracking.trial_condition_indices:
             if trial_index < 0 or trial_index >= len(tracking.trial_condition_indices):
@@ -3724,10 +3745,8 @@ class ScanImageControlWidget(QWidget):
 
         if action == "update_experiment_params":
             exp_id = str(message.get("expID", "")).strip()
-            schema_name = str(message.get("schema_name", "")).strip()
             self.signals.log_message.emit(
-                f"[{path_name}] updated experiment parameters for expID='{exp_id}' "
-                f"schema='{schema_name}'"
+                f"[{path_name}] received experiment parameters for expID='{exp_id}'"
             )
             try:
                 self._handle_update_experiment_params_request(
@@ -3786,6 +3805,8 @@ class ScanImageControlWidget(QWidget):
 
             schema_name = str(message.get("schema_name", "")).strip()
             exp_id = str(message.get("expID", "")).strip()
+            if not schema_name:
+                schema_name = self._runtimes[photostim_path].experiment_tracking.schema_name
             seq_nums_raw = message.get("seq_nums")
             self.signals.log_message.emit(
                 f"[{path_name}] requested photostim prep for schema='{schema_name}' expID='{exp_id}'"
@@ -3839,6 +3860,9 @@ class ScanImageControlWidget(QWidget):
             schema_name = str(message.get("schema_name", "")).strip()
             exp_id = str(message.get("expID", "")).strip()
             seq_num_raw = message.get("seq_num")
+            photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+            if not schema_name and photostim_path in self._runtimes:
+                schema_name = self._runtimes[photostim_path].experiment_tracking.schema_name
             self.signals.log_message.emit(
                 f"[{path_name}] requested photostim trigger for schema='{schema_name}' expID='{exp_id}' seq_num={seq_num_raw}"
             )
@@ -3940,6 +3964,12 @@ class ScanImageControlWidget(QWidget):
             if not isinstance(item, dict):
                 raise ValueError(f"stimulus_conditions[{idx}] must be an object")
             stimulus_conditions.append(dict(item))
+        if not schema_name:
+            schema_name = self._infer_schema_name_from_conditions(stimulus_conditions)
+            if schema_name:
+                self.signals.log_message.emit(
+                    f"[{request_path_name}] inferred schema_name='{schema_name}' from opto_2p feature params"
+                )
         trial_condition_indices_raw = message.get("trial_condition_indices")
         trial_condition_indices: list[int] = []
         if trial_condition_indices_raw is not None:
@@ -3952,6 +3982,12 @@ class ScanImageControlWidget(QWidget):
                         f"trial_condition_indices[{idx}]={trial_index} is out of range for {len(stimulus_conditions)} stimulus condition(s)"
                     )
                 trial_condition_indices.append(trial_index)
+        else:
+            trial_condition_indices = list(range(len(stimulus_conditions)))
+            self.signals.log_message.emit(
+                f"[{request_path_name}] trial_condition_indices missing; using one pass through "
+                f"{len(stimulus_conditions)} stimulus condition(s)"
+            )
 
         tracking.reset()
         tracking.exp_id = exp_id
