@@ -15,6 +15,7 @@ parser.addRequired('hSI');
 parser.addRequired('patternRoiPath', @(x) ischar(x) || isstring(x));
 parser.addParameter('StimGroupIndex', 1, @(x) isnumeric(x) && isscalar(x) && x >= 1);
 parser.addParameter('UseOnDemand', 'auto', @(x) islogical(x) || isnumeric(x) || ischar(x) || isstring(x));
+parser.addParameter('PrimeSettleSeconds', 0.1, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 parser.parse(hSI, patternRoiPath, varargin{:});
 
 assert(isprop(hSI, 'hPhotostim') && ~isempty(hSI.hPhotostim), ...
@@ -23,6 +24,7 @@ assert(isprop(hSI, 'hPhotostim') && ~isempty(hSI.hPhotostim), ...
 ensureBundledScanImageOnPath();
 roiGroup = scanimage.mroi.RoiGroup.loadFromFile(char(patternRoiPath));
 hPhotostim = hSI.hPhotostim;
+ensurePhotostimIdle(hSI, hPhotostim);
 setStimRoiGroupsSuppressingKnownGuiError(hSI, hPhotostim, roiGroup);
 useOnDemand = resolveUseOnDemand(hPhotostim, parser.Results.UseOnDemand);
 
@@ -40,11 +42,53 @@ if ~hPhotostim.active
          'ScanImage ErrorHandler message for the startup failure.']);
     assertPhotostimPrimed(hPhotostim, roiGroup);
 end
+pause(parser.Results.PrimeSettleSeconds);
+drawnow();
 
 if useOnDemand
     callSuppressingKnownGuiError(hSI, @() hPhotostim.onDemandStimNow(parser.Results.StimGroupIndex));
 else
     callSuppressingKnownGuiError(hSI, @() hPhotostim.triggerStim());
+end
+waitThenAbortPhotostim(hSI, hPhotostim, 5);
+end
+
+
+function ensurePhotostimIdle(hSI, hPhotostim)
+if ~isPhotostimActive(hPhotostim)
+    return;
+end
+callSuppressingKnownGuiError(hSI, @() hPhotostim.abort());
+t0 = tic;
+while toc(t0) < 5
+    if ~isPhotostimActive(hPhotostim)
+        return;
+    end
+    pause(0.05);
+    drawnow();
+end
+error('Photostim remained active after abort; cannot safely configure the next burn stimulus.');
+end
+
+
+function waitThenAbortPhotostim(hSI, hPhotostim, timeoutSeconds)
+t0 = tic;
+while toc(t0) < timeoutSeconds
+    if ~isPhotostimActive(hPhotostim)
+        return;
+    end
+    pause(0.02);
+    drawnow();
+end
+callSuppressingKnownGuiError(hSI, @() hPhotostim.abort());
+end
+
+
+function tf = isPhotostimActive(hPhotostim)
+tf = false;
+try
+    tf = isvalid(hPhotostim) && ~isempty(hPhotostim.active) && logical(hPhotostim.active);
+catch
 end
 end
 

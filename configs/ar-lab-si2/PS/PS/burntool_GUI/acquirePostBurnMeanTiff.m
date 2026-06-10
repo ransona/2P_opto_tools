@@ -5,7 +5,7 @@ parser = inputParser();
 parser.addRequired('hSI');
 parser.addRequired('outputDir', @(x) ischar(x) || isstring(x));
 parser.addParameter('NumFrames', 100, @(x) isnumeric(x) && isscalar(x) && x >= 1);
-parser.addParameter('TimeoutSeconds', 30, @(x) isnumeric(x) && isscalar(x) && x > 0);
+parser.addParameter('TimeoutSeconds', [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
 parser.addParameter('LogStem', 'post_burn', @(x) ischar(x) || isstring(x));
 parser.parse(hSI, outputDir, varargin{:});
 
@@ -16,12 +16,12 @@ end
 
 nFrames = max(1, round(parser.Results.NumFrames));
 logStem = char(parser.Results.LogStem);
-timeoutSeconds = double(parser.Results.TimeoutSeconds);
+timeoutSeconds = resolveGrabTimeoutSeconds(hSI, nFrames, parser.Results.TimeoutSeconds);
 
 assert(isValidObj(hSI), 'ScanImage is not running.');
 assert(isprop(hSI, 'hScan2D') && isValidObj(hSI.hScan2D), 'Scan2D component is not available.');
 assert(isprop(hSI, 'hChannels') && isValidObj(hSI.hChannels), 'Channels component is not available.');
-assert(~isScanImageActive(hSI), 'Cannot acquire post-burn mean while ScanImage acquisition is already active.');
+assert(~isScanImageActive(hSI), 'Cannot acquire %s mean while ScanImage acquisition is already active.', logStem);
 
 waitForPhotostimIdle(hSI, 5);
 preparePhotostimForPostBurnGrab(hSI);
@@ -29,12 +29,11 @@ preparePhotostimForPostBurnGrab(hSI);
 cfg = configureGrab(hSI, outputDir, logStem, nFrames);
 cleanupObj = onCleanup(@() restoreGrabConfig(hSI, cfg));
 
-waitForScanImageInactive(hSI, timeoutSeconds);
-rawTiffPath = resolveLoggedTiffPath(cfg);
-assert(~isempty(rawTiffPath), 'Post-burn acquisition finished but no TIFF was found.');
+rawTiffPath = waitForBaselineFrames(cfg, nFrames, timeoutSeconds, logStem, hSI);
+assert(~isempty(rawTiffPath), '%s acquisition finished but no TIFF was found.', logStem);
 
 meanImg = computeMeanImage(rawTiffPath, nFrames);
-assert(~isempty(meanImg), 'Could not compute post-burn mean image from %s.', rawTiffPath);
+assert(~isempty(meanImg), 'Could not compute %s mean image from %s.', logStem, rawTiffPath);
 
 meanTiffPath = fullfile(outputDir, [logStem '_mean.tif']);
 imwrite(meanImg, meanTiffPath);
@@ -50,6 +49,7 @@ cfg.logFilePath = outputDir;
 cfg.logFileStem = logStem;
 cfg.tStartDatenum = now;
 cfg.oldChannelSave = hChannels.channelSave;
+cfg.oldChannelDisplay = [];
 cfg.oldLoggingEnable = hChannels.loggingEnable;
 cfg.oldLogFileStem = hScan2D.logFileStem;
 cfg.oldLogFilePath = hScan2D.logFilePath;
@@ -58,6 +58,10 @@ cfg.oldLogFramesPerFile = hScan2D.logFramesPerFile;
 cfg.oldStackEnable = [];
 cfg.oldStackFramesPerSlice = [];
 cfg.usedStackFramesFallback = false;
+cfg.greenChannel = resolveGreenChannel(hSI);
+cfg.startDisplayFrameNumber = getDisplayFrameNumberSafe(hSI);
+cfg.startStackFramesDone = getStackFramesDoneSafe(hSI);
+cfg.expectedStopSeconds = resolveExpectedGrabSeconds(hSI, nFrames);
 
 try
     if isprop(hSI, 'hStackManager') && isValidObj(hSI.hStackManager)
@@ -66,12 +70,15 @@ try
     end
 catch
 end
+try
+    cfg.oldChannelDisplay = hChannels.channelDisplay;
+catch
+end
 
 try
     hChannels.loggingEnable = true;
-    if isempty(hChannels.channelSave)
-        hChannels.channelSave = resolveGreenChannel(hSI);
-    end
+    hChannels.channelSave = cfg.greenChannel;
+    hChannels.channelDisplay = unique([hChannels.channelDisplay(:).' cfg.greenChannel], 'stable');
     hScan2D.logFilePath = outputDir;
     hScan2D.logFileStem = logStem;
     hScan2D.logFramesPerFile = inf;
@@ -87,9 +94,11 @@ try
         end
     end
     hSI.startGrab();
+    cfg.startDisplayFrameNumber = getDisplayFrameNumberSafe(hSI);
+    cfg.startStackFramesDone = getStackFramesDoneSafe(hSI);
 catch ME
     restoreGrabConfig(hSI, cfg);
-    error('Failed to start post-burn 100-frame GRAB: %s', ME.message);
+    error('Failed to start %s %d-frame GRAB: %s', logStem, nFrames, ME.message);
 end
 end
 
@@ -105,6 +114,9 @@ end
 try
     if isprop(hSI, 'hChannels') && isValidObj(hSI.hChannels)
         hSI.hChannels.channelSave = cfg.oldChannelSave;
+        if isfield(cfg, 'oldChannelDisplay')
+            hSI.hChannels.channelDisplay = cfg.oldChannelDisplay;
+        end
         hSI.hChannels.loggingEnable = cfg.oldLoggingEnable;
     end
 catch
@@ -187,7 +199,7 @@ end
 end
 
 
-function waitForScanImageInactive(hSI, timeoutSeconds)
+function waitForScanImageInactive(hSI, timeoutSeconds, logStem)
 t0 = tic;
 while toc(t0) < timeoutSeconds
     if ~isScanImageActive(hSI)
@@ -200,7 +212,171 @@ while toc(t0) < timeoutSeconds
         suppressKnownPhotostimControlsError(ME);
     end
 end
-error('Post-burn GRAB did not finish within %.1f seconds.', timeoutSeconds);
+error('%s GRAB did not finish within %.1f seconds. Current ScanImage state: %s.', ...
+    logStem, timeoutSeconds, getScanImageAcqState(hSI));
+end
+
+
+function tiffPath = waitForBaselineFrames(cfg, nFrames, timeoutSeconds, logStem, hSI)
+tiffPath = '';
+lastFrameCount = 0;
+lastObservedFrames = 0;
+t0 = tic;
+while toc(t0) < timeoutSeconds
+    observedFrames = getObservedAcquiredFrames(hSI, cfg);
+    if isfinite(observedFrames)
+        lastObservedFrames = max(lastObservedFrames, observedFrames);
+    end
+
+    candidatePath = resolveLoggedTiffPath(cfg);
+    if ~isempty(candidatePath)
+        frameCount = countTiffFramesSafe(candidatePath);
+        if frameCount >= nFrames || lastObservedFrames >= nFrames
+            tiffPath = candidatePath;
+            stopScanImageAcquisition(hSI, logStem);
+            tiffPath = waitForLoggedTiffAfterStop(cfg, tiffPath, logStem);
+            return;
+        end
+        lastFrameCount = max(lastFrameCount, frameCount);
+        tiffPath = candidatePath;
+    end
+
+    if lastObservedFrames >= nFrames || shouldStopByElapsedTime(t0, cfg)
+        stopScanImageAcquisition(hSI, logStem);
+        try
+            waitForScanImageInactive(hSI, min(10, timeoutSeconds), logStem);
+        catch
+        end
+        tiffPath = waitForLoggedTiffAfterStop(cfg, tiffPath, logStem);
+        return;
+    end
+
+    try
+        pause(0.1);
+        drawnow();
+    catch ME
+        suppressKnownPhotostimControlsError(ME);
+    end
+end
+
+if isempty(tiffPath)
+    error('%s GRAB did not create a TIFF within %.1f seconds. Current ScanImage state: %s.', ...
+        logStem, timeoutSeconds, getScanImageAcqState(hSI));
+end
+error('%s GRAB wrote %d/%d TIFF frame(s), observed %d/%d ScanImage frame(s) within %.1f seconds. Current ScanImage state: %s.', ...
+    logStem, lastFrameCount, nFrames, lastObservedFrames, nFrames, timeoutSeconds, getScanImageAcqState(hSI));
+end
+
+
+function tf = shouldStopByElapsedTime(t0, cfg)
+tf = isfield(cfg, 'expectedStopSeconds') ...
+    && isfinite(cfg.expectedStopSeconds) ...
+    && cfg.expectedStopSeconds > 0 ...
+    && toc(t0) >= cfg.expectedStopSeconds;
+end
+
+
+function tiffPath = waitForLoggedTiffAfterStop(cfg, initialPath, logStem)
+tiffPath = initialPath;
+t0 = tic;
+while toc(t0) < 10
+    candidatePath = resolveLoggedTiffPath(cfg);
+    if ~isempty(candidatePath)
+        tiffPath = candidatePath;
+        return;
+    end
+    pause(0.1);
+    drawnow();
+end
+if isempty(tiffPath)
+    error('%s GRAB stopped but no TIFF was found.', logStem);
+end
+end
+
+
+function stopScanImageAcquisition(hSI, logStem)
+if ~isScanImageActive(hSI)
+    return;
+end
+try
+    hSI.abort();
+catch ME
+    error('Failed to stop %s GRAB after collecting requested frames: %s', logStem, ME.message);
+end
+t0 = tic;
+while toc(t0) < 10
+    if ~isScanImageActive(hSI)
+        return;
+    end
+    try
+        pause(0.05);
+        drawnow();
+    catch ME
+        suppressKnownPhotostimControlsError(ME);
+    end
+end
+end
+
+
+function observedFrames = getObservedAcquiredFrames(hSI, cfg)
+observedFrames = NaN;
+
+frameNumber = getDisplayFrameNumberSafe(hSI);
+if isfinite(frameNumber) && isfield(cfg, 'startDisplayFrameNumber') ...
+        && isfinite(cfg.startDisplayFrameNumber)
+    observedFrames = maxFinite(observedFrames, frameNumber - cfg.startDisplayFrameNumber);
+end
+
+framesDone = getStackFramesDoneSafe(hSI);
+if isfinite(framesDone) && isfield(cfg, 'startStackFramesDone') ...
+        && isfinite(cfg.startStackFramesDone)
+    observedFrames = maxFinite(observedFrames, framesDone - cfg.startStackFramesDone);
+end
+end
+
+
+function value = maxFinite(currentValue, newValue)
+if ~isfinite(currentValue)
+    value = newValue;
+elseif ~isfinite(newValue)
+    value = currentValue;
+else
+    value = max(currentValue, newValue);
+end
+end
+
+
+function frameNumber = getDisplayFrameNumberSafe(hSI)
+frameNumber = NaN;
+try
+    if isprop(hSI, 'hDisplay') && isValidObj(hSI.hDisplay)
+        frameNumber = localScalarNumeric(hSI.hDisplay.lastFrameNumber, NaN);
+    end
+catch
+    frameNumber = NaN;
+end
+end
+
+
+function framesDone = getStackFramesDoneSafe(hSI)
+framesDone = NaN;
+try
+    if isprop(hSI, 'hStackManager') && isValidObj(hSI.hStackManager)
+        framesDone = localScalarNumeric(hSI.hStackManager.framesDone, NaN);
+    end
+catch
+    framesDone = NaN;
+end
+end
+
+
+function frameCount = countTiffFramesSafe(tiffPath)
+try
+    info = imfinfo(tiffPath);
+    frameCount = numel(info);
+catch
+    frameCount = 0;
+end
 end
 
 
@@ -308,6 +484,62 @@ if isempty(ch)
     ch = 1;
 end
 ch = round(ch(1));
+end
+
+
+function timeoutSeconds = resolveGrabTimeoutSeconds(hSI, nFrames, requestedTimeout)
+if ~isempty(requestedTimeout)
+    timeoutSeconds = double(requestedTimeout);
+    return;
+end
+
+expectedSeconds = resolveExpectedGrabSeconds(hSI, nFrames);
+timeoutSeconds = max(120, expectedSeconds + 30);
+end
+
+
+function expectedSeconds = resolveExpectedGrabSeconds(hSI, nFrames)
+frameRateHz = getFrameRateSafe(hSI);
+if isfinite(frameRateHz) && frameRateHz > 0
+    expectedSeconds = double(nFrames) ./ frameRateHz + 1;
+else
+    expectedSeconds = double(nFrames) ./ 2 + 1;
+end
+expectedSeconds = max(2, expectedSeconds);
+end
+
+
+function rate = getFrameRateSafe(hSI)
+rate = NaN;
+try
+    if isprop(hSI, 'hRoiManager') && isValidObj(hSI.hRoiManager)
+        rate = localScalarNumeric(hSI.hRoiManager.scanFrameRate, NaN);
+    end
+catch
+    rate = NaN;
+end
+end
+
+
+function value = localScalarNumeric(value, fallback)
+try
+    if isnumeric(value) && isscalar(value) && isfinite(value)
+        value = double(value);
+    else
+        value = fallback;
+    end
+catch
+    value = fallback;
+end
+end
+
+
+function state = getScanImageAcqState(hSI)
+state = '<unknown>';
+try
+    state = char(hSI.acqState);
+catch
+end
 end
 
 

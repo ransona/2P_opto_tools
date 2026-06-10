@@ -25,6 +25,8 @@ function result = runIterativeAffineCalibration(patternRoiPath, varargin)
 %       'MinMatchedPoints'    Minimum matches needed to fit. Default: 3
 %       'UseFullAffine'       True for 6-DOF affine, false for translation only.
 %                             Default: true
+%       'UseScaleCorrection'  With UseFullAffine=false, allow independent X/Y
+%                             scale plus translation. Default: false
 %       'ApplyTransformFcn'   @(transformMatrix, state) ...
 %       'BurnAndAcquireFcn'   @(iterStimRoiPath, iterationState) tiffPath
 %       'DetectHolesFcn'      @(tiffPath, iterationState) achievedRefXY
@@ -62,6 +64,7 @@ parser.addParameter('MinImprovementUm', 1, @(x) isnumeric(x) && isscalar(x) && x
 parser.addParameter('MaxMatchDistanceUm', inf, @(x) isnumeric(x) && isscalar(x) && x > 0);
 parser.addParameter('MinMatchedPoints', 3, @(x) isnumeric(x) && isscalar(x) && x >= 2);
 parser.addParameter('UseFullAffine', true, @(x) islogical(x) || isnumeric(x));
+parser.addParameter('UseScaleCorrection', false, @(x) islogical(x) || isnumeric(x));
 parser.addParameter('StopOnNonImprovement', true, @(x) islogical(x) || isnumeric(x));
 parser.addParameter('ApplyTransformFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
 parser.addParameter('BurnAndAcquireFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
@@ -154,7 +157,8 @@ for iterationIndex = 1:opts.MaxIterations
         size(matchPairs, 1), iterationIndex);
 
     correctionAchievedToRequested = fitAffineCorrection( ...
-        matchedAchievedRefXY, matchedRequestedRefXY, logical(opts.UseFullAffine));
+        matchedAchievedRefXY, matchedRequestedRefXY, ...
+        logical(opts.UseFullAffine), logical(opts.UseScaleCorrection));
     candidateTransform = correctionAchievedToRequested * currentTransform;
     candidateRequestedRefXY = applyAffineToPoints(scannerXY, candidateTransform);
 
@@ -231,6 +235,7 @@ result.bestTransform = bestTransform;
 result.requestedRefXY = applyAffineToPoints(scannerXY, bestTransform);
 opts.ApplyTransformFcn(bestTransform, opts.State);
 opts.SaveTransformFcn(bestTransform, fullfile(outputDir, 'best_transform.mat'), opts.State);
+saveFinalTransform(result, fullfile(outputDir, 'final_transform.mat'));
 writeFinalSummary(result, fullfile(outputDir, 'final_summary.txt'));
 end
 
@@ -272,6 +277,17 @@ end
 function defaultSaveTransform(transformMatrix, savePath, ~)
 T = transformMatrix;
 save(savePath, 'T');
+end
+
+
+function saveFinalTransform(result, savePath)
+T = result.bestTransform;
+bestTransform = result.bestTransform;
+bestIteration = result.bestIteration;
+requestedRefXY = result.requestedRefXY;
+scannerXY = result.scannerXY;
+outputDir = result.outputDir;
+save(savePath, 'T', 'bestTransform', 'bestIteration', 'requestedRefXY', 'scannerXY', 'outputDir');
 end
 
 
@@ -348,7 +364,7 @@ distanceMatrix = hypot(dx, dy);
 end
 
 
-function transformMatrix = fitAffineCorrection(sourceXY, targetXY, useFullAffine)
+function transformMatrix = fitAffineCorrection(sourceXY, targetXY, useFullAffine, useScaleCorrection)
 assert(size(sourceXY, 1) == size(targetXY, 1), 'Source and target point counts must match.');
 assert(size(sourceXY, 2) == 2 && size(targetXY, 2) == 2, 'Expected Nx2 point arrays.');
 
@@ -357,6 +373,10 @@ if useFullAffine
     coeffX = design \ targetXY(:, 1);
     coeffY = design \ targetXY(:, 2);
     transformMatrix = [coeffX.'; coeffY.'; 0 0 1];
+elseif useScaleCorrection
+    coeffX = [sourceXY(:, 1), ones(size(sourceXY, 1), 1)] \ targetXY(:, 1);
+    coeffY = [sourceXY(:, 2), ones(size(sourceXY, 1), 1)] \ targetXY(:, 2);
+    transformMatrix = [coeffX(1) 0 coeffX(2); 0 coeffY(1) coeffY(2); 0 0 1];
 else
     delta = mean(targetXY - sourceXY, 1);
     transformMatrix = [1 0 delta(1); 0 1 delta(2); 0 0 1];

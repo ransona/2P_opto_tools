@@ -1,0 +1,47 @@
+{
+	"ver": 1,
+	"classname": "scanimage.mroi.RoiGroup",
+	"name": "New stimulus group - Target 9",
+	"UserData": null,
+	"roiUuid": "6A4401766F75CA3D",
+	"roiUuiduint64": 7.657246875e+18,
+	"rois": {
+		"ver": 1,
+		"classname": "scanimage.mroi.Roi",
+		"name": "ROI 4",
+		"UserData": null,
+		"roiUuid": "3E8273BD427B697C",
+		"roiUuiduint64": 4.504289834e+18,
+		"zs": 0,
+		"scanfields": {
+			"ver": 1,
+			"classname": "scanimage.mroi.scanfield.fields.StimulusField",
+			"name": "",
+			"UserData": null,
+			"roiUuid": "DDB127041AE038D",
+			"roiUuiduint64": 9.984120157e+17,
+			"centerXY": [0,0],
+			"sizeXY": [0.1300672578,0.1300672578],
+			"rotationDegrees": 0,
+			"enable": 1,
+			"stimulusFunction": "scanimage.mroi.stimulusfunctions.logspiral",
+			"stimparams": [
+				"revolutions",
+				"5"
+			],
+			"duration": 0.02,
+			"repetitions": 1,
+			"powers": [0,0,8],
+			"zSpan": 0,
+			"beamsFunction": "scanimage.mroi.stimulusbeamfunctions.beamPowers",
+			"slmPattern": [0,-0.6503362889,0,1]
+		},
+		"discretePlaneMode": 0,
+		"powers": null,
+		"pzAdjust": [],
+		"Lzs": null,
+		"interlaceDecimation": null,
+		"interlaceOffset": null,
+		"enable": 1
+	}
+}

@@ -15,6 +15,9 @@ function hFig = affineCalibrationGui(varargin)
 %       'DetectHolesFcn'
 %       'MoveAfterIterationFcn'
 %       'AutoStageStepUm'
+%       'SequentialHolePauseSeconds'
+%       'UseFullAffineCorrection'
+%       'UseScaleCorrection'
 %
 %   The GUI assumes each entry in the pattern ROI should be burned individually.
 %   A "pass" means iterating through those entries one-by-one, then acquiring
@@ -32,8 +35,15 @@ parser.addParameter('AcquireAfterPassFcn', [], @(x) isempty(x) || isa(x, 'functi
 parser.addParameter('DetectHolesFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
 parser.addParameter('MoveAfterIterationFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
 parser.addParameter('AutoStageStepUm', [50 50], @(x) isnumeric(x) && numel(x) == 2 && all(isfinite(x)));
+parser.addParameter('SequentialHolePauseSeconds', 0.75, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+parser.addParameter('UseFullAffineCorrection', false, @(x) islogical(x) || isnumeric(x));
+parser.addParameter('UseScaleCorrection', true, @(x) islogical(x) || isnumeric(x));
 parser.parse(varargin{:});
 cfg = configureDefaultCallbacks(parser.Results);
+cfg.InitialTransformWasProvided = ~any(strcmpi(parser.UsingDefaults, 'InitialTransform'));
+if ~cfg.InitialTransformWasProvided
+    cfg.InitialTransform = readInitialTransformFromScanImage(cfg);
+end
 
 ui = struct();
 ui.stopRequested = false;
@@ -207,6 +217,7 @@ onLoadPattern();
                 'BurnSingleHoleFcn', data.cfg.BurnSingleHoleFcn, ...
                 'AcquireBeforePassFcn', data.cfg.AcquireBeforePassFcn, ...
                 'AcquireAfterPassFcn', data.cfg.AcquireAfterPassFcn, ...
+                'PauseSeconds', data.cfg.SequentialHolePauseSeconds, ...
                 'OutputDir', fullfile(get(data.ui.outputDirEdit, 'String'), 'manual_full_pass'), ...
                 'State', data.cfg.State, ...
                 'ProgressFcn', @progressCallback, ...
@@ -238,12 +249,19 @@ onLoadPattern();
             setStatus('Running sequential affine calibration...');
 
             options = struct();
+            if ~data.cfg.InitialTransformWasProvided
+                data.cfg.InitialTransform = readInitialTransformFromScanImage(data.cfg);
+                guidata(hFig, data);
+                logMessage('Using current ScanImage photostim scanner transform as calibration baseline.');
+            end
             options.InitialTransform = double(data.cfg.InitialTransform);
             options.OutputDir = get(data.ui.outputDirEdit, 'String');
             options.MaxIterations = maxIterations;
             options.MinImprovementUm = parseNumericField(ui.minImproveEdit, 1);
             options.MaxMatchDistanceUm = parseNumericField(ui.maxMatchEdit, inf);
             options.MinMatchedPoints = parseNumericField(ui.minMatchesEdit, 3);
+            options.UseFullAffine = logical(data.cfg.UseFullAffineCorrection);
+            options.UseScaleCorrection = logical(data.cfg.UseScaleCorrection);
             options.ApplyTransformFcn = data.cfg.ApplyTransformFcn;
             options.DetectHolesFcn = data.cfg.DetectHolesFcn;
             options.State = data.cfg.State;
@@ -255,6 +273,7 @@ onLoadPattern();
                 'BurnSingleHoleFcn', data.cfg.BurnSingleHoleFcn, ...
                 'AcquireBeforePassFcn', data.cfg.AcquireBeforePassFcn, ...
                 'AcquireAfterPassFcn', data.cfg.AcquireAfterPassFcn, ...
+                'PauseSeconds', data.cfg.SequentialHolePauseSeconds, ...
                 'OutputDir', fullfile(iterState.iterationDir, 'sequential_burn'), ...
                 'State', iterState, ...
                 'ProgressFcn', @progressCallback, ...
@@ -407,6 +426,35 @@ onLoadPattern();
     function defaultApplyTransform(transformMatrix, localState)
         hSiObj = resolveScanImageHandle(localState);
         setPhotostimScannerTransform(hSiObj, transformMatrix);
+    end
+
+    function transformMatrix = readInitialTransformFromScanImage(localCfg)
+        try
+            hSiObj = resolveScanImageHandle(localCfg.State);
+            transformMatrix = readPhotostimScannerTransform(hSiObj);
+        catch ME
+            transformMatrix = eye(3);
+            try
+                logMessage(sprintf('Could not read live photostim transform; using identity. %s', ME.message));
+            catch
+            end
+        end
+    end
+
+    function transformMatrix = readPhotostimScannerTransform(hSiObj)
+        if isprop(hSiObj, 'hScan_RGG_P2') && ~isempty(hSiObj.hScan_RGG_P2) ...
+                && isprop(hSiObj.hScan_RGG_P2, 'scannerToRefTransform')
+            transformMatrix = double(hSiObj.hScan_RGG_P2.scannerToRefTransform);
+        elseif isprop(hSiObj, 'hPhotostim') && ~isempty(hSiObj.hPhotostim) ...
+                && isprop(hSiObj.hPhotostim, 'hScan') && ~isempty(hSiObj.hPhotostim.hScan) ...
+                && isprop(hSiObj.hPhotostim.hScan, 'scannerToRefTransform')
+            transformMatrix = double(hSiObj.hPhotostim.hScan.scannerToRefTransform);
+        else
+            error(['Could not locate hSI.hScan_RGG_P2.scannerToRefTransform ' ...
+                'or hSI.hPhotostim.hScan.scannerToRefTransform.']);
+        end
+        validateattributes(transformMatrix, {'numeric'}, {'size', [3 3], 'finite', 'real'}, ...
+            mfilename, 'scannerToRefTransform');
     end
 
     function tiffPath = defaultAcquireAfterPass(passState)

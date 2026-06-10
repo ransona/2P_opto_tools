@@ -268,8 +268,39 @@ if isempty(selected)
     return;
 end
 centroidsXY = refinePeakCentroids(residual, peakX(selected), peakY(selected), scale.centroidRadiusPx);
+if ~isempty(baselineImg)
+    centroidsXY = keepBaselineDarkenedCandidates(centroidsXY, baselineImg - img, scale);
+end
 centroidsXY = sortrows(centroidsXY, [2 1]);
 mask = selectedPeakMask(size(residual), centroidsXY, scale.centroidRadiusPx);
+end
+
+
+function centroidsXY = keepBaselineDarkenedCandidates(centroidsXY, deltaDarkening, scale)
+if isempty(centroidsXY)
+    return;
+end
+
+keep = false(size(centroidsXY, 1), 1);
+[gridX, gridY] = meshgrid(1:size(deltaDarkening, 2), 1:size(deltaDarkening, 1));
+centerRadiusPx = max(1, round(scale.centroidRadiusPx));
+annulusInnerPx = max(centerRadiusPx + 2, round(scale.centroidRadiusPx * 2));
+annulusOuterPx = max(annulusInnerPx + 2, round(scale.centroidRadiusPx * 4));
+
+for idx = 1:size(centroidsXY, 1)
+    radiusPx = hypot(gridX - centroidsXY(idx, 1), gridY - centroidsXY(idx, 2));
+    centerValues = deltaDarkening(radiusPx <= centerRadiusPx);
+    annulusValues = deltaDarkening(radiusPx >= annulusInnerPx & radiusPx <= annulusOuterPx);
+    if isempty(centerValues) || isempty(annulusValues)
+        continue;
+    end
+
+    centerDarkening = mean(centerValues, 'omitnan');
+    localDarkening = centerDarkening - median(annulusValues, 'omitnan');
+    keep(idx) = centerDarkening > 0 && localDarkening > 0;
+end
+
+centroidsXY = centroidsXY(keep, :);
 end
 
 
