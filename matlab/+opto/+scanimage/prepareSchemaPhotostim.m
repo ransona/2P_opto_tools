@@ -395,7 +395,7 @@ end
 
 beamPowersOn = zeros(1, nBeams);
 if ~forceZeroPower
-    beamPowersOn(3) = pattern.power_percent;
+    beamPowersOn(3) = double(pattern.power_percent) .* double(numel(patternCells));
 end
 beamPowersOff = zeros(1, nBeams);
 

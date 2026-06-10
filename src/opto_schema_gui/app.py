@@ -2307,6 +2307,7 @@ class PatternEditor(QWidget):
         self.power_spin.setRange(0.0, 100.0)
         self.power_spin.setDecimals(2)
         self.power_spin.setValue(20.0)
+        self.power_spin.setToolTip("Percent power per cell. ScanImage receives this value multiplied by the number of cells in the pattern.")
 
         self.spiral_width_spin = QDoubleSpinBox()
         self.spiral_width_spin.setRange(0.0, 9999.0)
@@ -2325,7 +2326,7 @@ class PatternEditor(QWidget):
         form.addRow("Duration (s)", self.duration_spin)
         form.addRow("Frequency (Hz)", self.freq_spin)
         form.addRow("Duty Cycle", self.duty_cycle_spin)
-        form.addRow("Power (%)", self.power_spin)
+        form.addRow("Power (% per cell)", self.power_spin)
         form.addRow("Spiral Width", self.spiral_width_spin)
         form.addRow("Spiral Height", self.spiral_height_spin)
         form.addRow("Notes", self.notes_edit)

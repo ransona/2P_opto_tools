@@ -270,6 +270,7 @@ The import YAML should contain:
 - `source.exp_id` / `source.expID`: source experiment ID.
 - `source.channel`: optional processed channel, default `0`.
 - `patterns`: list of patterns to create.
+- `patterns[].power_percent`: percent laser power per cell. The ScanImage laser-3 beam power is this value multiplied by the number of cells in the pattern.
 - `patterns[].cells`: list of processed cell IDs and per-cell power scaling factors.
 - `sequences`: list of sequences to create.
 - `sequences[].steps`: ordered list of pattern names and sequence-relative start times.
@@ -289,7 +290,7 @@ imports:
         duration_s: 1.0
         frequency_hz: 10.0
         duty_cycle: 0.2
-        power_percent: 30.0
+        power_percent: 30.0  # percent per cell; two cells sends 60% total laser-3 power to ScanImage
         spiral_width: 15.0
         spiral_height: 15.0
         notes: Slow 10 Hz pattern targeting two processed cells.
@@ -303,7 +304,7 @@ imports:
         duration_s: 0.5
         frequency_hz: 20.0
         duty_cycle: 0.5
-        power_percent: 25.0
+        power_percent: 25.0  # percent per cell; one cell sends 25% total laser-3 power to ScanImage
         spiral_width: 10.0
         spiral_height: 10.0
         notes: Faster 20 Hz pattern targeting one processed cell.

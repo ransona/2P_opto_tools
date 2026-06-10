@@ -85,7 +85,7 @@ end
 
 
 function powers = resolvePowers(pattern, cellSpec, powerScaleMode)
-basePower = pattern.power_percent;
+basePower = pattern.power_percent .* numel(pattern.cells);
 
 switch lower(powerScaleMode)
     case "multiply"
