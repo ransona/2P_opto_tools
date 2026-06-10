@@ -208,11 +208,11 @@ def resolve_processed_cell_to_imaging_pixel(
             f"Available cells: 0..{neuron_count - 1}."
         )
 
-    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
-    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
+    has_scanpath = "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None
+    has_siroi = "SIRois" in processed_data and processed_data["SIRois"] is not None
 
-    scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
-    siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+    scanpath_number = _row_scalar(processed_data.get("Scanpaths"), processed_cell_id, default=1)
+    siroi_number = _row_scalar(processed_data.get("SIRois"), processed_cell_id, default=1)
     depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
     imaging_path = f"P{scanpath_number}" if has_scanpath else default_imaging_path
     roi_folder_name = f"R{siroi_number:03d}" if has_siroi else "R001"
@@ -305,15 +305,15 @@ def load_processed_cell_overlay(
     z_um: float | None = None,
 ) -> ProcessedCellOverlay:
     processed_data, _processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=user_id)
-    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
-    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
+    has_scanpath = "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None
+    has_siroi = "SIRois" in processed_data and processed_data["SIRois"] is not None
     resolved_imaging_path = imaging_path or (
-        f"P{_row_scalar(processed_data.get('allScanpaths'), processed_cell_id, default=1)}"
+        f"P{_row_scalar(processed_data.get('Scanpaths'), processed_cell_id, default=1)}"
         if has_scanpath
         else default_imaging_path
     )
     resolved_roi_folder_name = roi_folder_name or (
-        f"R{_row_scalar(processed_data.get('allSIRois'), processed_cell_id, default=1):03d}"
+        f"R{_row_scalar(processed_data.get('SIRois'), processed_cell_id, default=1):03d}"
         if has_siroi
         else "R001"
     )
@@ -375,14 +375,14 @@ def list_processed_fov_groups(
     resolved_user_id = (user_id or "").strip() or getpass.getuser()
     processed_data, _processed_path = _load_processed_s2p_pickle(exp_id, channel, user_id=resolved_user_id)
     neuron_count = _processed_neuron_count(processed_data)
-    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
-    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
+    has_scanpath = "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None
+    has_siroi = "SIRois" in processed_data and processed_data["SIRois"] is not None
 
     scanfield_bundles: dict[str, MetadataBundle] = {}
     groups: dict[tuple[int, int, int], list[int]] = {}
     for processed_cell_id in range(neuron_count):
-        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
-        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+        scanpath_number = _row_scalar(processed_data.get("Scanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("SIRois"), processed_cell_id, default=1)
         depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
         key = (
             int(scanpath_number if has_scanpath else 1),
@@ -493,16 +493,16 @@ def _row_scalar(value: object, row_index: int, default: int) -> int:
 
 
 def _local_cell_index_for_processed_row(processed_data: dict, processed_cell_id: int, default_imaging_path: str) -> int:
-    has_scanpath = "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None
-    has_siroi = "allSIRois" in processed_data and processed_data["allSIRois"] is not None
-    target_path = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1) if has_scanpath else None
-    target_roi = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1) if has_siroi else None
+    has_scanpath = "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None
+    has_siroi = "SIRois" in processed_data and processed_data["SIRois"] is not None
+    target_path = _row_scalar(processed_data.get("Scanpaths"), processed_cell_id, default=1) if has_scanpath else None
+    target_roi = _row_scalar(processed_data.get("SIRois"), processed_cell_id, default=1) if has_siroi else None
     target_depth = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
 
     count = 0
     for row_index in range(processed_cell_id):
-        row_path = _row_scalar(processed_data.get("allScanpaths"), row_index, default=1) if has_scanpath else None
-        row_roi = _row_scalar(processed_data.get("allSIRois"), row_index, default=1) if has_siroi else None
+        row_path = _row_scalar(processed_data.get("Scanpaths"), row_index, default=1) if has_scanpath else None
+        row_roi = _row_scalar(processed_data.get("SIRois"), row_index, default=1) if has_siroi else None
         row_depth = _row_scalar(processed_data.get("Depths"), row_index, default=0)
         if row_path == target_path and row_roi == target_roi and row_depth == target_depth:
             count += 1
@@ -516,9 +516,9 @@ def _lookup_processed_roi_pixels(processed_data: dict, processed_cell_id: int, d
 
     local_cell_index = _local_cell_index_for_processed_row(processed_data, processed_cell_id, default_imaging_path)
     depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
-    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
-        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
-        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+    if "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("Scanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("SIRois"), processed_cell_id, default=1)
         try:
             scanpath_block = _lookup_nested_dict_value(roi_pix, int(scanpath_number))
             roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
@@ -550,9 +550,9 @@ def _lookup_processed_fov_shape(processed_data: dict, processed_cell_id: int, de
         raise ValueError("Processed payload is missing AllFOV.")
 
     depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
-    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
-        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
-        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+    if "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("Scanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("SIRois"), processed_cell_id, default=1)
         try:
             scanpath_block = _lookup_nested_dict_value(all_fov, int(scanpath_number))
             roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
@@ -579,9 +579,9 @@ def _lookup_processed_roi_map(processed_data: dict, processed_cell_id: int, defa
         raise ValueError("Processed payload is missing AllRoiMaps.")
 
     depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
-    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
-        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
-        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+    if "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("Scanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("SIRois"), processed_cell_id, default=1)
         try:
             scanpath_block = _lookup_nested_dict_value(roi_maps, int(scanpath_number))
             roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
@@ -606,9 +606,9 @@ def _lookup_processed_fov_image(processed_data: dict, processed_cell_id: int, de
         raise ValueError("Processed payload is missing AllFOV.")
 
     depth_value = _row_scalar(processed_data.get("Depths"), processed_cell_id, default=0)
-    if "allScanpaths" in processed_data and processed_data["allScanpaths"] is not None:
-        scanpath_number = _row_scalar(processed_data.get("allScanpaths"), processed_cell_id, default=1)
-        siroi_number = _row_scalar(processed_data.get("allSIRois"), processed_cell_id, default=1)
+    if "Scanpaths" in processed_data and processed_data["Scanpaths"] is not None:
+        scanpath_number = _row_scalar(processed_data.get("Scanpaths"), processed_cell_id, default=1)
+        siroi_number = _row_scalar(processed_data.get("SIRois"), processed_cell_id, default=1)
         try:
             scanpath_block = _lookup_nested_dict_value(all_fov, int(scanpath_number))
             roi_block = _lookup_nested_dict_value(scanpath_block, int(siroi_number), one_based_fallback=True)
