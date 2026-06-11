@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Right lightning bolt">
+  <defs>
+    <linearGradient id="boltGradient" x1="64" y1="26" x2="198" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff176"/>
+      <stop offset="0.42" stop-color="#ffc400"/>
+      <stop offset="1" stop-color="#ff7a00"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="8" dy="12" stdDeviation="10" flood-color="#111827" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#0b1020"/>
+  <path
+    d="M146 18 54 137h63l-18 101 104-134h-66l9-86Z"
+    fill="url(#boltGradient)"
+    stroke="#fff7b0"
+    stroke-width="8"
+    stroke-linejoin="round"
+    filter="url(#shadow)"
+  />
+  <path d="M151 39 82 128h55l-12 66 57-74h-64l8-81Z" fill="#fff59d" opacity="0.24"/>
+</svg>

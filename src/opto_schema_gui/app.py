@@ -17,7 +17,7 @@ import numpy as np
 import yaml
 
 from PyQt6.QtCore import QObject, Qt, QRect, QRectF, QSize, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -80,6 +80,10 @@ def _preferred_startup_geometry(app: QApplication) -> QRect | None:
             return geometry
     screen = app.primaryScreen()
     return screen.availableGeometry() if screen is not None else None
+
+
+def _app_icon() -> QIcon:
+    return QIcon(str(Path(__file__).resolve().parent / "assets" / "app_icon.svg"))
 
 
 def _linux_monitor_geometry() -> QRect | None:
@@ -3156,6 +3160,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Opto Schema GUI")
+        self.setWindowIcon(_app_icon())
         self.repo_root = _repo_root()
         self.project = ExperimentProject()
         self.save_root = _load_save_root()
@@ -4152,6 +4157,7 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    app.setWindowIcon(_app_icon())
     window = MainWindow()
     geometry = _preferred_startup_geometry(app)
     if geometry is not None:
