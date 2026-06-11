@@ -20,7 +20,12 @@ function result = runIterativeAffineCalibration(patternRoiPath, varargin)
 %       'OutputDir'           Directory for iteration outputs. Default:
 %                             <pwd>\iterative_affine_calibration_<timestamp>
 %       'MaxIterations'       Maximum refinement rounds. Default: 5
-%       'MinImprovementUm'    Minimum RMS improvement to continue. Default: 1
+%       'MinImprovementUm'    Minimum confirmed RMS improvement to continue.
+%                             Default: 1
+%       'MinPredictedImprovementUm'
+%                             Minimum same-iteration RMS improvement needed
+%                             before applying a fitted transform update.
+%                             Default: 0
 %       'MaxMatchDistanceUm'  Max target-achieved match distance. Default: inf
 %       'MinMatchedPoints'    Minimum matches needed to fit. Default: 3
 %       'UseFullAffine'       True for 6-DOF affine, false for translation only.
@@ -61,6 +66,7 @@ parser.addParameter('InitialTransform', [], @(x) isnumeric(x) && isequal(size(x)
 parser.addParameter('OutputDir', '', @(x) ischar(x) || isstring(x));
 parser.addParameter('MaxIterations', 5, @(x) isnumeric(x) && isscalar(x) && x >= 1);
 parser.addParameter('MinImprovementUm', 1, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+parser.addParameter('MinPredictedImprovementUm', 0, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 parser.addParameter('MaxMatchDistanceUm', inf, @(x) isnumeric(x) && isscalar(x) && x > 0);
 parser.addParameter('MinMatchedPoints', 3, @(x) isnumeric(x) && isscalar(x) && x >= 2);
 parser.addParameter('UseFullAffine', true, @(x) islogical(x) || isnumeric(x));
@@ -99,18 +105,18 @@ if isempty(opts.DetectHolesFcn)
 end
 
 stimRoiGroup = opts.LoadStimGroupFcn(patternRoiPath, opts.State);
-scannerXY = extractStimulusCenters(stimRoiGroup);
-assert(size(scannerXY, 1) >= opts.MinMatchedPoints, ...
+requestedRefXY = extractStimulusCenters(stimRoiGroup);
+assert(size(requestedRefXY, 1) >= opts.MinMatchedPoints, ...
     'Pattern ROI contains %d points, fewer than MinMatchedPoints=%d.', ...
-    size(scannerXY, 1), opts.MinMatchedPoints);
+    size(requestedRefXY, 1), opts.MinMatchedPoints);
 
 currentTransform = double(opts.InitialTransform);
-currentRequestedRefXY = applyAffineToPoints(scannerXY, currentTransform);
+currentRequestedRefXY = requestedRefXY;
 
 result = struct();
 result.outputDir = outputDir;
 result.patternRoiPath = patternRoiPath;
-result.scannerXY = scannerXY;
+result.scannerXY = requestedRefXY;
 result.requestedRefXY = currentRequestedRefXY;
 result.iterations = repmat(emptyIterationRecord(), 0, 1);
 result.bestTransform = currentTransform;
@@ -118,6 +124,7 @@ result.bestIteration = 0;
 
 bestMeasuredRmsUm = inf;
 bestTransform = currentTransform;
+bestTransformSource = 'initial';
 stopRequested = false;
 previousMeasuredRmsUm = [];
 
@@ -133,7 +140,8 @@ for iterationIndex = 1:opts.MaxIterations
     iterState.currentTransform = currentTransform;
     iterState.currentRequestedRefXY = currentRequestedRefXY;
     iterState.patternRoiPath = patternRoiPath;
-    iterState.scannerXY = scannerXY;
+    iterState.scannerXY = requestedRefXY;
+    iterState.requestedRefXY = requestedRefXY;
 
     opts.ApplyTransformFcn(currentTransform, iterState);
     opts.SaveTransformFcn(currentTransform, fullfile(iterationDir, 'transform_before_burn.mat'), iterState);
@@ -160,14 +168,16 @@ for iterationIndex = 1:opts.MaxIterations
         matchedAchievedRefXY, matchedRequestedRefXY, ...
         logical(opts.UseFullAffine), logical(opts.UseScaleCorrection));
     candidateTransform = correctionAchievedToRequested * currentTransform;
-    candidateRequestedRefXY = applyAffineToPoints(scannerXY, candidateTransform);
+    candidateRequestedRefXY = currentRequestedRefXY;
 
     measuredResidualUm = rowwiseDistance(matchedAchievedRefXY, matchedRequestedRefXY);
     predictedResidualAfterUpdateUm = rowwiseDistance( ...
-        matchedAchievedRefXY, candidateRequestedRefXY(matchPairs(:, 1), :));
+        applyAffineToPoints(matchedAchievedRefXY, correctionAchievedToRequested), ...
+        matchedRequestedRefXY);
 
     measuredRmsUm = rmsMagnitude(measuredResidualUm);
     predictedRmsAfterUpdateUm = rmsMagnitude(predictedResidualAfterUpdateUm);
+    predictedImprovementUm = measuredRmsUm - predictedRmsAfterUpdateUm;
 
     if isempty(previousMeasuredRmsUm)
         confirmedImprovementUm = nan;
@@ -195,11 +205,10 @@ for iterationIndex = 1:opts.MaxIterations
     iterRecord.iterationDir = iterationDir;
     result.iterations(end + 1, 1) = iterRecord;
 
-    writeIterationArtifacts(iterRecord, candidateRequestedRefXY, fullfile(iterationDir, 'iteration_summary'));
-
     if measuredRmsUm < bestMeasuredRmsUm
         bestMeasuredRmsUm = measuredRmsUm;
         bestTransform = currentTransform;
+        bestTransformSource = 'measured';
         result.bestIteration = iterationIndex;
         result.bestTransform = bestTransform;
     end
@@ -209,15 +218,31 @@ for iterationIndex = 1:opts.MaxIterations
             stopRequested = true;
         end
     end
+    if predictedImprovementUm < opts.MinPredictedImprovementUm
+        if opts.StopOnNonImprovement
+            stopRequested = true;
+        end
+    end
 
     if stopRequested
+        writeIterationArtifacts(result.iterations(end), candidateRequestedRefXY, ...
+            fullfile(iterationDir, 'iteration_summary'));
         break;
     end
 
     result.iterations(end).accepted = true;
+    writeIterationArtifacts(result.iterations(end), candidateRequestedRefXY, ...
+        fullfile(iterationDir, 'iteration_summary'));
+
     currentTransform = candidateTransform;
     currentRequestedRefXY = candidateRequestedRefXY;
     previousMeasuredRmsUm = measuredRmsUm;
+    if strcmp(bestTransformSource, 'initial') || iterationIndex >= result.bestIteration
+        bestTransform = currentTransform;
+        bestTransformSource = 'acceptedCandidate';
+        result.bestIteration = iterationIndex;
+        result.bestTransform = bestTransform;
+    end
 
     if ~isempty(opts.MoveAfterIterationFcn) && iterationIndex < opts.MaxIterations
         moveState = iterState;
@@ -232,7 +257,7 @@ for iterationIndex = 1:opts.MaxIterations
 end
 
 result.bestTransform = bestTransform;
-result.requestedRefXY = applyAffineToPoints(scannerXY, bestTransform);
+result.requestedRefXY = requestedRefXY;
 opts.ApplyTransformFcn(bestTransform, opts.State);
 opts.SaveTransformFcn(bestTransform, fullfile(outputDir, 'best_transform.mat'), opts.State);
 saveFinalTransform(result, fullfile(outputDir, 'final_transform.mat'));
@@ -318,7 +343,17 @@ function [matchPairs, matchedTargetXY, matchedAchievedXY] = matchTargetAndAchiev
 distanceMatrix = pairwiseDistanceMatrix(targetXY, achievedXY);
 
 if exist('matchpairs', 'file') == 2
-    pairRows = matchpairs(distanceMatrix, maxDistanceUm);
+    if isinf(maxDistanceUm)
+        finiteDistances = distanceMatrix(isfinite(distanceMatrix));
+        if isempty(finiteDistances)
+            costUnmatched = 1;
+        else
+            costUnmatched = max(finiteDistances(:)) + 1;
+        end
+    else
+        costUnmatched = maxDistanceUm;
+    end
+    pairRows = matchpairs(distanceMatrix, costUnmatched);
     matchPairs = pairRows;
 else
     matchPairs = greedyMatchPairs(distanceMatrix, maxDistanceUm);
