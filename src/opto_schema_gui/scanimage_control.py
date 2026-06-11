@@ -1241,6 +1241,58 @@ class ScanImageControlWidget(QWidget):
                     )
         return first_schema_name
 
+    def _normalize_stimulus_conditions_payload(self, conditions_raw: object) -> list[dict[str, object]]:
+        if isinstance(conditions_raw, dict):
+            raw_items = [conditions_raw]
+        elif isinstance(conditions_raw, list):
+            raw_items = conditions_raw
+        else:
+            raise ValueError(
+                "update_experiment_params requires stimulus_conditions to be an object or list; "
+                f"received {type(conditions_raw).__name__}"
+            )
+
+        stimulus_conditions: list[dict[str, object]] = []
+        for idx, item in enumerate(raw_items):
+            if not isinstance(item, dict):
+                raise ValueError(f"stimulus_conditions[{idx}] must be an object")
+            condition = dict(item)
+            features = condition.get("features")
+            if isinstance(features, dict):
+                condition["features"] = [features]
+            elif features is None:
+                condition["features"] = []
+            elif not isinstance(features, list):
+                raise ValueError(
+                    f"stimulus_conditions[{idx}].features must be an object or list; "
+                    f"received {type(features).__name__}"
+                )
+            stimulus_conditions.append(condition)
+        return stimulus_conditions
+
+    def _normalize_trial_condition_indices_payload(
+        self,
+        trial_condition_indices_raw: object,
+        stimulus_condition_count: int,
+    ) -> list[int]:
+        if trial_condition_indices_raw is None:
+            return list(range(stimulus_condition_count))
+        if isinstance(trial_condition_indices_raw, list):
+            raw_items = trial_condition_indices_raw
+        else:
+            raw_items = [trial_condition_indices_raw]
+
+        trial_condition_indices: list[int] = []
+        for idx, item in enumerate(raw_items):
+            trial_index = int(item)
+            if trial_index < 0 or trial_index >= stimulus_condition_count:
+                raise ValueError(
+                    f"trial_condition_indices[{idx}]={trial_index} is out of range for "
+                    f"{stimulus_condition_count} stimulus condition(s)"
+                )
+            trial_condition_indices.append(trial_index)
+        return trial_condition_indices
+
     def _condition_index_for_trial_index(self, tracking: ExperimentTrackingState, trial_index: int) -> int:
         if tracking.trial_condition_indices:
             if trial_index < 0 or trial_index >= len(tracking.trial_condition_indices):
@@ -4032,35 +4084,18 @@ class ScanImageControlWidget(QWidget):
         conditions_raw = message.get("stimulus_conditions")
         if conditions_raw is None:
             raise ValueError("update_experiment_params requires stimulus_conditions")
-        if not isinstance(conditions_raw, list):
-            raise ValueError(
-                "update_experiment_params requires stimulus_conditions to be a list; "
-                f"received {type(conditions_raw).__name__}"
-            )
-        stimulus_conditions: list[dict[str, object]] = []
-        for idx, item in enumerate(conditions_raw):
-            if not isinstance(item, dict):
-                raise ValueError(f"stimulus_conditions[{idx}] must be an object")
-            stimulus_conditions.append(dict(item))
+        stimulus_conditions = self._normalize_stimulus_conditions_payload(conditions_raw)
         schema_name = self._infer_schema_name_from_conditions(stimulus_conditions)
         if schema_name:
             self.signals.log_message.emit(
                 f"[{request_path_name}] using schema_name='{schema_name}' from opto_2p feature params"
             )
         trial_condition_indices_raw = message.get("trial_condition_indices")
-        trial_condition_indices: list[int] = []
-        if trial_condition_indices_raw is not None:
-            if not isinstance(trial_condition_indices_raw, list):
-                raise ValueError("update_experiment_params trial_condition_indices must be a list when provided")
-            for idx, item in enumerate(trial_condition_indices_raw):
-                trial_index = int(item)
-                if trial_index < 0 or trial_index >= len(stimulus_conditions):
-                    raise ValueError(
-                        f"trial_condition_indices[{idx}]={trial_index} is out of range for {len(stimulus_conditions)} stimulus condition(s)"
-                    )
-                trial_condition_indices.append(trial_index)
-        else:
-            trial_condition_indices = list(range(len(stimulus_conditions)))
+        trial_condition_indices = self._normalize_trial_condition_indices_payload(
+            trial_condition_indices_raw,
+            len(stimulus_conditions),
+        )
+        if trial_condition_indices_raw is None:
             self.signals.log_message.emit(
                 f"[{request_path_name}] trial_condition_indices missing; using one pass through "
                 f"{len(stimulus_conditions)} stimulus condition(s)"
@@ -4070,6 +4105,8 @@ class ScanImageControlWidget(QWidget):
         tracking.exp_id = exp_id
         tracking.schema_name = schema_name
         tracking.params = {k: v for k, v in message.items() if k != "action"}
+        tracking.params["stimulus_conditions"] = stimulus_conditions
+        tracking.params["trial_condition_indices"] = trial_condition_indices
         tracking.stimulus_conditions = stimulus_conditions
         tracking.trial_condition_indices = trial_condition_indices
 
