@@ -693,13 +693,16 @@ def _require_processed_import_platform() -> None:
         raise NotImplementedError("Processed cell ROI import is available on Ubuntu and Windows only.")
 
 
-def _windows_processed_experiment_root(animal_id: str, exp_id: str) -> Path:
-    return Path("F:/Local_Repository_Processed") / animal_id / exp_id
+def _windows_processed_experiment_root(animal_id: str, exp_id: str, user_id: str) -> Path:
+    resolved_user_id = user_id.strip()
+    if not resolved_user_id:
+        raise ValueError("user_id is required to resolve local processed data on Windows.")
+    return Path("F:/Local_Repository_Processed") / resolved_user_id / animal_id / exp_id
 
 
 def _processed_recording_roots(animal_id: str, exp_id: str, user_id: str) -> list[Path]:
     if sys.platform.startswith("win"):
-        exp_root = _windows_processed_experiment_root(animal_id, exp_id)
+        exp_root = _windows_processed_experiment_root(animal_id, exp_id, user_id)
         return [exp_root / "recordings", exp_root]
     return [Path("/home") / user_id / "data" / "Repository" / animal_id / exp_id / "recordings"]
 
@@ -709,12 +712,14 @@ def _resolve_experiment_dir(exp_id: str, imaging_config, imaging_path: str, user
     checked: list[Path] = []
 
     if sys.platform.startswith("win"):
-        exp_root = _windows_processed_experiment_root(animal_id, exp_id)
+        resolved_user_id = (user_id or "").strip() or getpass.getuser()
+        exp_root = _windows_processed_experiment_root(animal_id, exp_id, resolved_user_id)
         checked.append(exp_root)
         if exp_root.is_dir():
             return exp_root
         raise FileNotFoundError(
-            f"Could not resolve experiment directory for '{exp_id}' on Windows. Checked: {exp_root}"
+            f"Could not resolve experiment directory for '{exp_id}' from user '{resolved_user_id}' on Windows. "
+            f"Checked: {exp_root}"
         )
 
     resolved_user_id = (user_id or "").strip()
