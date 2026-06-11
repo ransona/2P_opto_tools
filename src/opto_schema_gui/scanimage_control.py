@@ -1638,11 +1638,18 @@ class ScanImageControlWidget(QWidget):
         if condition is None:
             return
         start_min = trial.start_timestamp - state.pre_s
+        end_timestamp = trial.start_timestamp + state.post_s
         for roi_name in condition.cell_roi_names:
+            trigger_frame = trial.trigger_frame_by_roi.get(roi_name)
             seeded = [
                 sample
                 for sample in state.recent_samples_by_roi.get(roi_name, deque())
-                if start_min <= sample.timestamp <= trial.start_timestamp
+                if start_min <= sample.timestamp <= end_timestamp
+                and not (
+                    sample.timestamp > trial.start_timestamp
+                    and trigger_frame is not None
+                    and sample.frame_number <= trigger_frame
+                )
             ]
             trial.samples_by_roi[roi_name] = list(seeded)
 
