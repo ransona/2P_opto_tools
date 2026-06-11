@@ -1576,16 +1576,32 @@ class ScanImageControlWidget(QWidget):
         timestamps_raw = payload.get("timestamps", [])
         frame_numbers_raw = payload.get("frame_numbers", [])
 
-        if not isinstance(cursors_raw, list):
-            cursors_raw = [cursors_raw] if cursors_raw not in (None, "") else []
-        cursors = [int(float(value)) for value in cursors_raw]
+        def _normalize_flat_series(raw: object, expected_count: int) -> list[object]:
+            if raw in (None, ""):
+                return []
+            if isinstance(raw, list):
+                return raw
+            if expected_count == 1:
+                return [raw]
+            return []
 
-        def _normalize_roi_series(raw: object) -> list[list[object]]:
+        cursors_raw_list = _normalize_flat_series(cursors_raw, len(roi_names))
+        cursors = [int(float(value)) for value in cursors_raw_list]
+
+        def _normalize_roi_series(raw: object, expected_count: int) -> list[list[object]]:
+            if raw in (None, ""):
+                return [[] for _ in range(expected_count)]
             if not isinstance(raw, list):
-                return []
+                if expected_count == 1:
+                    return [[raw]]
+                return [[] for _ in range(expected_count)]
             if not raw:
-                return []
+                return [[] for _ in range(expected_count)]
             if all(not isinstance(item, list) for item in raw):
+                if expected_count <= 1:
+                    return [raw]
+                if len(raw) == expected_count:
+                    return [[item] for item in raw]
                 return [raw]
             normalized: list[list[object]] = []
             for item in raw:
@@ -1595,11 +1611,13 @@ class ScanImageControlWidget(QWidget):
                     normalized.append([])
                 else:
                     normalized.append([item])
+            while len(normalized) < expected_count:
+                normalized.append([])
             return normalized
 
-        values = _normalize_roi_series(values_raw)
-        timestamps = _normalize_roi_series(timestamps_raw)
-        frame_numbers = _normalize_roi_series(frame_numbers_raw)
+        values = _normalize_roi_series(values_raw, len(roi_names))
+        timestamps = _normalize_roi_series(timestamps_raw, len(roi_names))
+        frame_numbers = _normalize_roi_series(frame_numbers_raw, len(roi_names))
 
         with self._online_analysis.lock:
             state = self._online_analysis
@@ -1838,11 +1856,11 @@ class ScanImageControlWidget(QWidget):
                 else:
                     roi_names = []
                 if not isinstance(timestamps_raw, list):
-                    timestamps_raw = []
+                    timestamps_raw = [timestamps_raw] if len(roi_names) == 1 and timestamps_raw not in (None, "") else []
                 if not isinstance(frame_numbers_raw, list):
-                    frame_numbers_raw = []
+                    frame_numbers_raw = [frame_numbers_raw] if len(roi_names) == 1 and frame_numbers_raw not in (None, "") else []
                 if not isinstance(cursors_raw, list):
-                    cursors_raw = [cursors_raw] if cursors_raw not in (None, "") else []
+                    cursors_raw = [cursors_raw] if len(roi_names) == 1 and cursors_raw not in (None, "") else []
                 for idx, roi_name in enumerate(roi_names):
                     if idx < len(timestamps_raw):
                         try:
