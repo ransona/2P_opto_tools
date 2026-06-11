@@ -1765,6 +1765,8 @@ class ScanImageControlWidget(QWidget):
         trial = state.active_trial
         if trial is None:
             return
+        if trial.start_timestamp is not None:
+            self._seed_active_trial_from_recent_locked(trial)
         state.completed_trials_by_condition.setdefault(trial.condition_index, []).append(trial)
         state.completed_trials_by_condition[trial.condition_index] = state.completed_trials_by_condition[
             trial.condition_index
