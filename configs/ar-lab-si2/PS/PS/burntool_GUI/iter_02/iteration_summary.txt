@@ -1,16 +1,16 @@
 Iteration: 2
 Matched points: 16
-Measured RMS at current transform (um): 1.935376
-Predicted RMS after fitted update (um): 0.072146
-Confirmed improvement from previous burn (um): -0.972993
+Measured RMS at current transform (um): 0.193362
+Fit residual after candidate update (um): 0.031283
+Confirmed improvement from previous burn (um): 0.317096
 Accepted: 0
 
 Correction achieved->requested:
-  0.971686622022, 0, -0.141235150995
-  0, 1.00175935303, 1.93136962493
+  0.971857374394, 0, -0.171880158874
+  0, 1.00710285568, 0.053141120877
   0, 0, 1
 
 Transform after update:
-  0.90709039231, 0, 5.82212805148
-  0, 1.01254379034, 9.27113151976
+  1.05592704615, 0, 6.81562748704
+  0, 0.977792744743, 5.25184522492
   0, 0, 1

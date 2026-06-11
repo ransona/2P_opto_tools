@@ -108,8 +108,15 @@ end
 
 [folderPath, fileStem] = fileparts(tiffPath);
 logStem = regexprep(fileStem, '_mean$', '');
+firstRawPath = fullfile(folderPath, [logStem '_00001.tif']);
+if exist(firstRawPath, 'file') == 2 && hasScanImageArtistMetadata(firstRawPath)
+    metadataPath = firstRawPath;
+    return;
+end
+
 files = dir(fullfile(folderPath, [logStem '_*.tif']));
-files = files(~endsWith({files.name}, '_mean.tif'));
+fileNames = {files.name};
+files = files(~endsWith(fileNames, '_mean.tif') & ~contains(fileNames, '_detection_'));
 assert(~isempty(files), 'No sibling raw ScanImage TIFF found for %s.', tiffPath);
 [~, order] = sort([files.datenum], 'descend');
 for fileIndex = order
