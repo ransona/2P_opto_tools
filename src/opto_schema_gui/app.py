@@ -61,6 +61,7 @@ from .imaging_coordinates import (
     resolve_processed_cell_to_imaging_pixel,
 )
 from .io import load_schema, save_schema
+from .local_analysis import LocalAnalysisWidget
 from .models import SCHEMA_TIME_QUANTUM_S, CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
 from .matlab_bridge import autodetect_machine_name
 from .scanimage_control import ScanImageControlWidget
@@ -3208,6 +3209,7 @@ class MainWindow(QMainWindow):
         )
         self.online_activity_widget = OnlineActivityWidget(self.scanimage_control)
         self.diagnostics_widget = DiagnosticsWidget(self.scanimage_control)
+        self.local_analysis_widget = LocalAnalysisWidget()
 
         self.pattern_list = QListWidget()
         self.sequence_list = QListWidget()
@@ -3316,6 +3318,7 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self.schema_splitter, "Stimulation Schema")
         self.main_tabs.addTab(self.online_activity_widget, "Online activity")
         self.main_tabs.addTab(self.diagnostics_widget, "Diagnostics")
+        self.main_tabs.addTab(self.local_analysis_widget, "Local Analysis")
         self.setCentralWidget(self.main_tabs)
 
         self.add_pattern_btn.clicked.connect(self.add_pattern)
