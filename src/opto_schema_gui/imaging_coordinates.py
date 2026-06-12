@@ -694,10 +694,7 @@ def _require_processed_import_platform() -> None:
 
 
 def _windows_processed_experiment_root(animal_id: str, exp_id: str, user_id: str) -> Path:
-    resolved_user_id = user_id.strip()
-    if not resolved_user_id:
-        raise ValueError("user_id is required to resolve local processed data on Windows.")
-    return Path("F:/Local_Repository_Processed") / resolved_user_id / animal_id / exp_id
+    return Path("F:/Local_Repository_Processed") / animal_id / exp_id
 
 
 def _processed_recording_roots(animal_id: str, exp_id: str, user_id: str) -> list[Path]:
