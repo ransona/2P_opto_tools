@@ -527,7 +527,7 @@ beamModifiedLineClockOut = '';     % Output line for beam clock
 volumeTriggerOut = '';     % Output line for the volume clock
 
 % Calibration data
-scannerToRefTransform = [0.9984 0 6.67315;0 0.9931 5.80613;0 0 1];
+scannerToRefTransform = [1.02621 0 6.63413;0 0.984738 5.30381;0 0 1];
 LaserTriggerDebounceTicks = 1;
 virtualChannelsSource = {'AI0' 'AI1'};
 virtualChannelsMode = {'analog' 'analog'};
