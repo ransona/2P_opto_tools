@@ -83,7 +83,7 @@ def _preferred_startup_geometry(app: QApplication) -> QRect | None:
 
 
 def _app_icon() -> QIcon:
-    return QIcon(str(Path(__file__).resolve().parent / "assets" / "app_icon.svg"))
+    return QIcon(str(Path(__file__).resolve().parent / "assets" / "app_icon.png"))
 
 
 def _set_windows_app_user_model_id() -> None:

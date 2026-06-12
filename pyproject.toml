@@ -27,4 +27,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-opto_schema_gui = ["assets/*.svg"]
+opto_schema_gui = ["assets/*.png"]
