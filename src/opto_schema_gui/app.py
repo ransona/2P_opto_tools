@@ -86,6 +86,17 @@ def _app_icon() -> QIcon:
     return QIcon(str(Path(__file__).resolve().parent / "assets" / "app_icon.svg"))
 
 
+def _set_windows_app_user_model_id() -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ar-lab.2p-opto-tools.opto-schema-gui")
+    except Exception:
+        pass
+
+
 def _linux_monitor_geometry() -> QRect | None:
     try:
         result = subprocess.run(
@@ -4156,7 +4167,10 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    _set_windows_app_user_model_id()
     app = QApplication(sys.argv)
+    app.setApplicationName("Opto Schema GUI")
+    app.setOrganizationName("AR Lab")
     app.setWindowIcon(_app_icon())
     window = MainWindow()
     geometry = _preferred_startup_geometry(app)
