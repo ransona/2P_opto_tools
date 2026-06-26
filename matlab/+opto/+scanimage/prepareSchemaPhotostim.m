@@ -17,6 +17,7 @@ arguments
     opts.StartPhotostim (1,1) logical = true
     opts.PrefixBlankToSequence (1,1) logical = false
     opts.EmbedBlankAndParkInStimGroup (1,1) logical = false
+    opts.SingleEpochPattern (1,1) logical = false
     opts.NumSequences (1,1) double = 1
 end
 
@@ -400,6 +401,10 @@ beamPowersOff = zeros(1, nBeams);
 
 segmentStart_s = double(patternOffset_s);
 segmentEnd_s = segmentStart_s + double(segmentDuration_s);
+if opts.SingleEpochPattern
+    hGroup.add(makePowerStimRoi(stimField, beamPowersOn, segmentDuration_s));
+    return;
+end
 cursor_s = segmentStart_s;
 firstActiveLeadIn_s = 0;
 if isFirstBlockOfSequence && segmentStart_s <= 1e-9

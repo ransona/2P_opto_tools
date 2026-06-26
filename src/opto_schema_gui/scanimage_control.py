@@ -3277,7 +3277,8 @@ class ScanImageControlWidget(QWidget):
                     blank_duration=0.1,
                     block_duration=pattern_duration_s,
                     prefix_blank_to_sequence=False,
-                    embed_blank_and_park_in_stim_group=True,
+                    embed_blank_and_park_in_stim_group=False,
+                    single_epoch_pattern=True,
                     num_sequences=float("inf"),
                 ),
                 timeout_s=runtime.path_config.command_timeout_s,
@@ -3291,7 +3292,7 @@ class ScanImageControlWidget(QWidget):
             runtime.prepared_photostim.prepared_sequence_names = ["S1"]
             runtime.prepared_photostim.imported_pattern_names = [pattern_name]
             self.signals.log_message.emit(
-                f"[{path_name}] started single test pattern '{pattern_name}' as one stim group with embedded blank-then-pattern-then-park timing"
+                f"[{path_name}] started single test pattern '{pattern_name}' as a single active SLM epoch"
             )
 
     def _generate_diagnostic_photostim_grid(

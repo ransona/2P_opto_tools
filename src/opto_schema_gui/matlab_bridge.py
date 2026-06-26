@@ -799,6 +799,7 @@ def build_prepare_schema_photostim_command(
     block_duration: float | None = None,
     prefix_blank_to_sequence: bool = False,
     embed_blank_and_park_in_stim_group: bool = False,
+    single_epoch_pattern: bool = False,
     num_sequences: float = 1.0,
 ) -> str:
     trial_seq_nums_expr = "[]" if not trial_seq_nums else "[" + " ".join(str(int(v)) for v in trial_seq_nums) + "]"
@@ -818,6 +819,7 @@ def build_prepare_schema_photostim_command(
         f"    StartPhotostim={'true' if start_photostim else 'false'}, ...",
         f"    PrefixBlankToSequence={'true' if prefix_blank_to_sequence else 'false'}, ...",
         f"    EmbedBlankAndParkInStimGroup={'true' if embed_blank_and_park_in_stim_group else 'false'}, ...",
+        f"    SingleEpochPattern={'true' if single_epoch_pattern else 'false'}, ...",
         f"    NumSequences={resolved_num_sequences}, ...",
         "    MinCenterDistanceUm=15, ...",
         "    Revolutions=5);",
