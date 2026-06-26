@@ -2109,10 +2109,12 @@ def _extract_schema_path_from_import(command: str) -> str | None:
             break
     if idx < 0:
         return None
-    quoted_start = command.find("'", idx)
+    first_continuation = command.find("...", idx)
+    search_stop = first_continuation if first_continuation >= 0 else len(command)
+    quoted_start = command.find("'", idx, search_stop)
     if quoted_start < 0:
         return None
-    quoted_end = command.find("'", quoted_start + 1)
+    quoted_end = command.find("'", quoted_start + 1, search_stop)
     if quoted_end < 0:
         return None
     return command[quoted_start + 1 : quoted_end].replace("''", "'")
