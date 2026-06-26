@@ -2,8 +2,8 @@ clearvars -global hSI hSICtl;
 global hSI
 global hSICtl
 configDir = fileparts(mfilename('fullpath'));
-mdfPath = fullfile(configDir, '250710_MDF_RGG-RGG - all except SLM.m');
-scanimageRoot = '\\ar-lab-nas1\DataServer\Temp\scanimagenew\ScanImage-Remote-Dev';
+mdfPath = fullfile(configDir, '26_06_2026_MDF.m');
+scanimageRoot = 'C:\Users\ScanImage\Documents\ScanImage-Remote-Dev';
 assert(exist(fullfile(scanimageRoot, 'scanimage.m'), 'file') == 2, ...
     'ScanImage root does not contain scanimage.m: %s', scanimageRoot);
 addpath(genpath(scanimageRoot), '-begin');
@@ -15,11 +15,6 @@ while or(~exist('hSI'),~exist('hSICtl'))
 end
 seedConfigDialogPathsAndLoadDefaultCfg(hSI, configDir);
 hSI.hScan2D.logFramesPerFile=5000;
-
-load(fullfile(configDir, 'test3.mat'))
-hSI.hScan_RGG_P2.scannerToRefTransform=tf;
-%load(fullfile(configDir, 'SLMtoGG_working.mat'))
-%hSI.hSlmScan.scannerToRefTransform=tf;
 
 rs = dabs.resources.ResourceStore();
 % Keep this name if the MDF resource is still named that way.
