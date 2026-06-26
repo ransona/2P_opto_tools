@@ -1,0 +1,28 @@
+goes in: +dabs/+generic/+waveforms/+digital
+add to mdf: %% dabs.generic.WaveformGenerator (Binary Clock 2kHz)
+taskType = 'Digital';
+hControl = '/vDAQ0/D3.6';
+hAIFeedback = '';
+sampleRate_Hz = 2000000;
+startTriggerPort = '/vDAQ0/D0.6';   % external trigger input
+startTriggerEdge = 'rising';
+sampleMode = 'finite';
+allowRetrigger = false;
+wvfrmFcn = 'BinaryVectorClock2kHz';
+amplitude = 1;
+defaultValueVolts = 0;
+periodSec = 0.1;
+startDelay = 0;
+dutyCycle = 50;
+use as: % Put the 2 kHz binary vector into base workspace
+binaryClock2kHz = yourBinaryVector(:) ~= 0;
+assignin('base','binaryClock2kHz',binaryClock2kHz);
+
+% Arm the WaveformGenerator so it waits for the external trigger
+rs = dabs.resources.ResourceStore();
+wg = rs.filterByName('Binary Clock 2kHz');
+if iscell(wg), wg = wg{1}; end
+
+wg.stopTask();          % safe if already armed/running
+wg.refreshWvfmParams(); % rebuild parameter object
+wg.startTask();         % task now waits for startTriggerPort edge
