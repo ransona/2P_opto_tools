@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .matlab_bridge import autodetect_machine_name, load_machine_config
+from .matlab_bridge import autodetect_machine_name, list_config_names, load_machine_config
 
 
 @dataclass(frozen=True)
@@ -443,13 +443,35 @@ def list_processed_fov_groups(
 def _load_v1_configs(repo_root: Path, imaging_path: str, photostim_path: str):
     machine_name = autodetect_machine_name(repo_root) or "ar-lab-si2"
     imaging_machine_config = load_machine_config(repo_root, machine_name, "P1_imaging")
-    photostim_machine_config = load_machine_config(repo_root, machine_name, "PS")
+    photostim_machine_config = _load_photostim_config_for_path(repo_root, machine_name, photostim_path)
 
     if imaging_path not in imaging_machine_config.paths:
         raise KeyError(f"Imaging path '{imaging_path}' is not defined in config '{imaging_machine_config.name}'.")
     if photostim_path not in photostim_machine_config.paths:
         raise KeyError(f"Photostim path '{photostim_path}' is not defined in config '{photostim_machine_config.name}'.")
     return imaging_machine_config.paths[imaging_path], photostim_machine_config.paths[photostim_path]
+
+
+def _load_photostim_config_for_path(repo_root: Path, machine_name: str, photostim_path: str):
+    candidate_names = list_config_names(repo_root, machine_name)
+    preferred_names = [photostim_path, "PS"]
+    ordered_names = list(dict.fromkeys([name for name in preferred_names if name in candidate_names] + candidate_names))
+    matching_configs = []
+    for config_name in ordered_names:
+        try:
+            machine_config = load_machine_config(repo_root, machine_name, config_name)
+        except Exception:
+            continue
+        if photostim_path not in machine_config.paths:
+            continue
+        if machine_config.photostim_path == photostim_path:
+            return machine_config
+        matching_configs.append(machine_config)
+    if matching_configs:
+        return matching_configs[0]
+    raise KeyError(
+        f"Photostim path '{photostim_path}' is not defined in any config for machine '{machine_name}'."
+    )
 
 
 def _load_processed_s2p_pickle(exp_id: str, channel: int, user_id: str | None = None) -> tuple[dict, Path]:

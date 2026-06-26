@@ -1255,6 +1255,7 @@ def _resolve_import_cell(
     source: dict,
     cell_data: dict,
     pattern_name: str,
+    photostim_path: str = "PS",
 ) -> CellSpec:
     cell_label = f"pattern '{pattern_name}' cell"
     processed_cell_id = _require_int_any(cell_data, ("cell_id", "cellID"), cell_label)
@@ -1266,6 +1267,7 @@ def _resolve_import_cell(
         channel=int(source["channel"]),
         user_id=source["user_id"] or None,
         default_imaging_path="P1",
+        photostim_path=photostim_path,
     )
     converted = convert_imaging_pixel_to_pattern_coords(
         repo_root,
@@ -1275,6 +1277,7 @@ def _resolve_import_cell(
         y_px=resolved.y_px,
         imaging_path=resolved.imaging_path,
         user_id=source["user_id"] or None,
+        photostim_path=photostim_path,
     )
     return CellSpec(
         label=str(cell_data.get("label") or f"cell_{processed_cell_id}"),
@@ -1293,7 +1296,12 @@ def _resolve_import_cell(
     )
 
 
-def import_project_items_from_file(repo_root: Path, path: str | Path, existing_project: ExperimentProject) -> ExperimentProject:
+def import_project_items_from_file(
+    repo_root: Path,
+    path: str | Path,
+    existing_project: ExperimentProject,
+    photostim_path: str = "PS",
+) -> ExperimentProject:
     payload = yaml.safe_load(Path(path).read_text()) or {}
     payload = _require_mapping(payload, "import file")
     top_level_source = payload.get("source", {})
@@ -1326,6 +1334,7 @@ def import_project_items_from_file(repo_root: Path, path: str | Path, existing_p
                     source,
                     _require_mapping(cell_data, f"pattern '{name}'.cells[{cell_index}]"),
                     name,
+                    photostim_path=photostim_path,
                 )
                 for cell_index, cell_data in enumerate(cell_items, start=1)
             ]
@@ -1564,9 +1573,16 @@ class TimelinePreview(QWidget):
 
 
 class ImagingPixelImportDialog(QDialog):
-    def __init__(self, repo_root: Path, default_exp_id: str = "", parent: QWidget | None = None):
+    def __init__(
+        self,
+        repo_root: Path,
+        default_exp_id: str = "",
+        photostim_path: str = "PS",
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.repo_root = repo_root
+        self.photostim_path = photostim_path
         self.bundle = None
         self._resolved_cell_note = ""
         self._resolved_origin = ""
@@ -1646,6 +1662,7 @@ class ImagingPixelImportDialog(QDialog):
                 self.repo_root,
                 exp_id,
                 imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
+                photostim_path=self.photostim_path,
             )
         except Exception as exc:
             self.info_label.setText(str(exc))
@@ -1680,6 +1697,7 @@ class ImagingPixelImportDialog(QDialog):
                 exp_id,
                 processed_cell_id=self.cell_id_spin.value(),
                 default_imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
+                photostim_path=self.photostim_path,
             )
             self.imaging_path_combo.setCurrentText(resolved.imaging_path)
             self.load_scanfields(show_error_dialog=True)
@@ -1731,6 +1749,7 @@ class ImagingPixelImportDialog(QDialog):
             x_px=self.x_spin.value(),
             y_px=self.y_spin.value(),
             imaging_path=self.imaging_path_combo.currentText().strip() or "P1",
+            photostim_path=self.photostim_path,
         )
         matched_scanfield = self.bundle.scanfields[scanfield_index - 1]
         imaging_path = self.imaging_path_combo.currentText().strip() or "P1"
@@ -1767,11 +1786,13 @@ class ProcessedCellGroupImportDialog(QDialog):
         repo_root: Path,
         default_exp_id: str = "",
         default_user_id: str = "",
+        photostim_path: str = "PS",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.repo_root = repo_root
         self.default_user_id = default_user_id.strip()
+        self.photostim_path = photostim_path
         self._cells: list[CellSpec] = []
         self._details = ""
         self.setWindowTitle("Add Cells by Cell ID")
@@ -1838,6 +1859,7 @@ class ProcessedCellGroupImportDialog(QDialog):
                     processed_cell_id=processed_cell_id,
                     user_id=self.default_user_id or None,
                     default_imaging_path="P1",
+                    photostim_path=self.photostim_path,
                 )
                 converted = convert_imaging_pixel_to_pattern_coords(
                     self.repo_root,
@@ -1847,6 +1869,7 @@ class ProcessedCellGroupImportDialog(QDialog):
                     y_px=resolved.y_px,
                     imaging_path=resolved.imaging_path,
                     user_id=self.default_user_id or None,
+                    photostim_path=self.photostim_path,
                 )
                 resolved_cells.append(
                     CellSpec(
@@ -1890,11 +1913,13 @@ class AddCellsFromFovDialog(QDialog):
         repo_root: Path,
         default_exp_id: str = "",
         default_user_id: str = "",
+        photostim_path: str = "PS",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.repo_root = repo_root
         self.default_user_id = default_user_id.strip()
+        self.photostim_path = photostim_path
         self._groups: tuple[ProcessedFovGroup, ...] = ()
         self._selected_cells: dict[int, CellSpec] = {}
         self.setWindowTitle("Add from FOV")
@@ -2032,6 +2057,7 @@ class AddCellsFromFovDialog(QDialog):
                 exp_id,
                 user_id=self.default_user_id or None,
                 channel=int(channel),
+                photostim_path=self.photostim_path,
             )
             path_names = sorted({group.imaging_path for group in self._groups})
             self.path_combo.blockSignals(True)
@@ -2127,6 +2153,7 @@ class AddCellsFromFovDialog(QDialog):
                 user_id=group.user_id,
                 channel=group.channel,
                 default_imaging_path=group.imaging_path,
+                photostim_path=self.photostim_path,
             )
             converted = convert_imaging_pixel_to_pattern_coords(
                 self.repo_root,
@@ -2136,6 +2163,7 @@ class AddCellsFromFovDialog(QDialog):
                 y_px=resolved.y_px,
                 imaging_path=resolved.imaging_path,
                 user_id=group.user_id or None,
+                photostim_path=self.photostim_path,
             )
             cell = CellSpec(
                 label=f"cell_{processed_cell_id}",
@@ -2280,6 +2308,7 @@ class PatternEditor(QWidget):
         resolve_sequence_overlaps=None,
         on_live_commit=None,
         on_send_to_scanimage=None,
+        photostim_path_getter=None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -2290,9 +2319,16 @@ class PatternEditor(QWidget):
         self.resolve_sequence_overlaps = resolve_sequence_overlaps
         self.on_live_commit = on_live_commit
         self.on_send_to_scanimage = on_send_to_scanimage
+        self.photostim_path_getter = photostim_path_getter
         self.current_name = ""
         self._loading = False
         self._build_ui()
+
+    def _photostim_path(self) -> str:
+        if self.photostim_path_getter is None:
+            return "PS"
+        value = str(self.photostim_path_getter() or "").strip()
+        return value or "PS"
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -2426,7 +2462,12 @@ class PatternEditor(QWidget):
         if not _roi_coordinate_import_enabled():
             QMessageBox.information(self, "Unavailable on this platform", "Imaging pixel ROI import is available on Ubuntu only.")
             return
-        dialog = ImagingPixelImportDialog(self.repo_root, self.project.origin_exp_id, self)
+        dialog = ImagingPixelImportDialog(
+            self.repo_root,
+            self.project.origin_exp_id,
+            self._photostim_path(),
+            self,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -2448,6 +2489,7 @@ class PatternEditor(QWidget):
             self.repo_root,
             self.project.origin_exp_id,
             self.project.origin_user_id,
+            self._photostim_path(),
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -2468,6 +2510,7 @@ class PatternEditor(QWidget):
             self.repo_root,
             self.project.origin_exp_id,
             self.project.origin_user_id,
+            self._photostim_path(),
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -3194,6 +3237,7 @@ class MainWindow(QMainWindow):
             self._resolve_sequence_overlaps_after_pattern_edit,
             self._refresh_lists_live,
             self._send_pattern_to_scanimage,
+            self._current_photostim_path,
         )
         self.sequence_editor = SequenceEditor(
             self.project,
@@ -3228,6 +3272,12 @@ class MainWindow(QMainWindow):
 
     def _send_pattern_to_scanimage(self, pattern: Pattern) -> None:
         self.scanimage_control.send_pattern_to_scanimage(pattern)
+
+    def _current_photostim_path(self) -> str:
+        scanimage_control = getattr(self, "scanimage_control", None)
+        if scanimage_control is None:
+            return "PS"
+        return scanimage_control.preferred_photostim_path_name() or "PS"
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("File")
@@ -3980,7 +4030,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            imported = import_project_items_from_file(self.repo_root, path, self.project)
+            imported = import_project_items_from_file(
+                self.repo_root,
+                path,
+                self.project,
+                photostim_path=self._current_photostim_path(),
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Import cancelled", str(exc))
             return
