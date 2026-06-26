@@ -384,14 +384,13 @@ stimField.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;
 stimField.stimparams = {'revolutions', opts.Revolutions, 'direction', 'outward'};
 nPoints = size(pointsRef, 1);
 slmPattern = zeros(nPoints, 4);
-slmPattern(:,1) = pointsRef(:,1) - centerRef(1);
-slmPattern(:,2) = pointsRef(:,2) - centerRef(2);
+% SI_2026 stores SLM point XY in absolute reference coordinates; centerXY
+% only controls the galvo/logspiral offset.
+slmPattern(:,1) = pointsRef(:,1);
+slmPattern(:,2) = pointsRef(:,2);
 slmPattern(:,3) = pointsRef(:,3);
 slmPattern(:,4) = pointsRef(:,4);
 stimField.slmPattern = slmPattern;
-if ismethod(stimField, 'recenterGalvoOntoSlmPattern')
-    stimField.recenterGalvoOntoSlmPattern();
-end
 
 beamPowersOn = zeros(1, nBeams);
 if ~forceZeroPower
