@@ -1,0 +1,22 @@
+Pattern ROI: affine_test_pattern.roi
+Iterations run: 2
+Best iteration: 2
+
+Best transform:
+  1.02621048662, 0, 6.63413457859
+  0, 0.984737865492, 5.30380622736
+  0, 0, 1
+
+Iteration 1
+  matches: 16
+  measured rms at current transform (um): 0.510458
+  fit residual after candidate update (um): 0.030906
+  confirmed improvement from previous burn (um): NaN
+  accepted: 1
+
+Iteration 2
+  matches: 16
+  measured rms at current transform (um): 0.193362
+  fit residual after candidate update (um): 0.031283
+  confirmed improvement from previous burn (um): 0.317096
+  accepted: 0
