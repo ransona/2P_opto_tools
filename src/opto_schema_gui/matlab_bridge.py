@@ -127,6 +127,8 @@ class MatlabSession:
         self.started_with_launch = False
         self.attached = False
         self.launch_process = None
+        self._launch_output_lines: list[str] = []
+        self._launch_output_lock = threading.Lock()
         self.sim_sequence: list[int] = []
         self.sim_sequence_position = 1
 
@@ -162,7 +164,7 @@ class MatlabSession:
             try:
                 if status_callback is not None:
                     status_callback(f"Validating existing MATLAB session for config {self.config.config_name}")
-                self._validate_connected_session()
+                self._validate_scanimage_started()
                 self._set_working_directory()
                 return
             except Exception:
@@ -308,16 +310,14 @@ class MatlabSession:
                 f"MATLAB session for path '{self.config.name}' could not be shared as '{self.config.engine_name}': {exc}"
             ) from exc
 
-    def _validate_connected_session(self) -> None:
+    def _validate_scanimage_started(self) -> None:
         lines = self.eval(
             "\n".join(
                 [
                     build_global_preamble(self.config),
                     f"assert(exist({matlab_string(self.config.hsi_variable)}, 'var') == 1, 'Missing {self.config.hsi_variable} in MATLAB workspace.');",
-                    f"assert(exist({matlab_string(self.config.hsictl_variable)}, 'var') == 1, 'Missing {self.config.hsictl_variable} in MATLAB workspace.');",
                     f"assert(~isempty({self.config.hsi_variable}), '{self.config.hsi_variable} is empty.');",
-                    f"assert(isprop({self.config.hsi_variable}, 'hPhotostim'), '{self.config.hsi_variable} is not a valid ScanImage handle.');",
-                    "disp('MATLAB reconnect validation passed');",
+                    "disp('ScanImage hSI detected');",
                 ]
             ),
             timeout_s=self.config.command_timeout_s,
@@ -356,14 +356,28 @@ class MatlabSession:
         if status_callback is not None:
             status_callback(f"Launching MATLAB for config {self.config.config_name}")
         try:
-            self.launch_process = subprocess.Popen(matlab_cmd, cwd=str(self.config.directory))
+            self.launch_process = subprocess.Popen(
+                matlab_cmd,
+                cwd=str(self.config.directory),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
         except Exception as exc:
             raise MatlabSessionError(
                 f"Could not launch MATLAB process for path '{self.config.name}': {exc}"
             ) from exc
 
+        self._launch_output_lines = []
+        if self.launch_process.stdout is not None:
+            threading.Thread(target=self._capture_launch_output, daemon=True).start()
+
         deadline = time.monotonic() + self.config.startup_timeout_s
         last_error = None
+        process_exit_code: int | None = None
         while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 raise MatlabSessionCancelled(
@@ -373,9 +387,7 @@ class MatlabSession:
             if self.launch_process is not None:
                 return_code = self.launch_process.poll()
                 if return_code is not None:
-                    raise MatlabSessionError(
-                        f"MATLAB process for path '{self.config.name}' exited early with code {return_code}."
-                    )
+                    process_exit_code = return_code
             try:
                 available = matlab_engine.find_matlab()
             except Exception as exc:
@@ -392,7 +404,7 @@ class MatlabSession:
                         timeout_s=5.0,
                         cancel_event=cancel_event,
                     )
-                    self._validate_connected_session()
+                    self._validate_scanimage_started()
                     self._set_working_directory()
                     return
                 except Exception as exc:
@@ -402,10 +414,37 @@ class MatlabSession:
                     f"Waiting for MATLAB session '{self.config.engine_name}' for config {self.config.config_name}"
                 )
             time.sleep(1.0)
-        raise MatlabSessionError(
-            f"Timed out waiting to connect to shared MATLAB engine '{self.config.engine_name}' "
-            f"for path '{self.config.name}'. Last error: {last_error}"
+        detail = (
+            f"Timed out waiting for ScanImage hSI in shared MATLAB engine '{self.config.engine_name}' "
+            f"for path '{self.config.name}'."
         )
+        if process_exit_code is not None:
+            detail += f" MATLAB launcher process exited with code {process_exit_code}."
+        if last_error is not None:
+            detail += f" Last error: {last_error}"
+        startup_output = self._format_launch_output()
+        if startup_output:
+            detail += f"\nMATLAB startup output:\n{startup_output}"
+        raise MatlabSessionError(detail)
+
+    def _capture_launch_output(self) -> None:
+        if self.launch_process is None or self.launch_process.stdout is None:
+            return
+        try:
+            for raw_line in self.launch_process.stdout:
+                line = raw_line.rstrip()
+                if not line:
+                    continue
+                with self._launch_output_lock:
+                    self._launch_output_lines.append(line)
+                    if len(self._launch_output_lines) > 200:
+                        self._launch_output_lines = self._launch_output_lines[-200:]
+        except Exception:
+            return
+
+    def _format_launch_output(self) -> str:
+        with self._launch_output_lock:
+            return "\n".join(self._launch_output_lines).strip()
 
     def _build_startup_command(self, startup_command: str | None) -> str:
         commands: list[str] = [
