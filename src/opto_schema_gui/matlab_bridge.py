@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -113,6 +113,10 @@ class MatlabSessionError(RuntimeError):
     pass
 
 
+class MatlabSessionCancelled(MatlabSessionError):
+    pass
+
+
 class MatlabSession:
     def __init__(self, config: PathConfig, force_simulated: bool = False):
         self.config = config
@@ -126,30 +130,38 @@ class MatlabSession:
         self.sim_sequence: list[int] = []
         self.sim_sequence_position = 1
 
-    def start(self, startup_command: str | None = None) -> None:
+    def start(
+        self,
+        startup_command: str | None = None,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         if self.engine is not None or self.simulated:
             return
 
-        if self.force_simulated or self.config.simulation_mode == "always":
+        if self.force_simulated:
+            if status_callback is not None:
+                status_callback(f"Starting simulated MATLAB session for config {self.config.config_name}")
             self._start_simulated()
             self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
             return
 
         if matlab_engine is None:
-            if self.config.simulation_mode == "auto":
-                self._start_simulated()
-                self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-                return
             raise MatlabSessionError(
                 "matlab.engine is not installed in this Python environment. "
                 "Install the MATLAB Engine for Python to run live ScanImage control."
             )
 
-        connected = self._try_connect_existing()
+        if status_callback is not None:
+            status_callback(f"Checking for existing MATLAB session for config {self.config.config_name}")
+        connected = self._try_connect_existing(status_callback=status_callback, cancel_event=cancel_event)
         if connected:
             self.attached = True
             self.started_with_launch = False
             try:
+                if status_callback is not None:
+                    status_callback(f"Validating existing MATLAB session for config {self.config.config_name}")
                 self._validate_connected_session()
                 self._set_working_directory()
                 return
@@ -159,13 +171,11 @@ class MatlabSession:
 
         self.attached = False
         self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-        try:
-            self._launch_external_and_connect(startup_command)
-        except MatlabSessionError:
-            if self.config.simulation_mode == "auto":
-                self._start_simulated()
-                return
-            raise
+        self._launch_external_and_connect(
+            startup_command,
+            status_callback=status_callback,
+            cancel_event=cancel_event,
+        )
 
     def stop(self) -> None:
         if self.simulated:
@@ -220,7 +230,12 @@ class MatlabSession:
         self.sim_sequence = []
         self.sim_sequence_position = 1
 
-    def _try_connect_existing(self) -> bool:
+    def _try_connect_existing(
+        self,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
         assert matlab_engine is not None
         engine_name = self.config.engine_name
         try:
@@ -230,14 +245,24 @@ class MatlabSession:
         if engine_name not in available:
             return False
         try:
-            self.engine = self._connect_matlab_with_timeout(engine_name, timeout_s=5.0)
-        except Exception as exc:
+            if status_callback is not None:
+                status_callback(f"Connecting to existing MATLAB session '{engine_name}'")
+            self.engine = self._connect_matlab_with_timeout(
+                engine_name,
+                timeout_s=5.0,
+                cancel_event=cancel_event,
+            )
+        except Exception:
             self.engine = None
             return False
         return True
 
     @staticmethod
-    def _connect_matlab_with_timeout(engine_name: str, timeout_s: float):
+    def _connect_matlab_with_timeout(
+        engine_name: str,
+        timeout_s: float,
+        cancel_event: threading.Event | None = None,
+    ):
         assert matlab_engine is not None
         result: list[object] = []
         error_holder: list[BaseException] = []
@@ -252,7 +277,11 @@ class MatlabSession:
                 done.set()
 
         threading.Thread(target=worker, daemon=True).start()
-        if not done.wait(timeout_s):
+        if not MatlabSession._wait_for_event(done, timeout_s, cancel_event):
+            if cancel_event is not None and cancel_event.is_set():
+                raise MatlabSessionCancelled(
+                    f"Cancelled while connecting to shared MATLAB engine '{engine_name}'."
+                )
             raise MatlabSessionError(
                 f"Timed out connecting to shared MATLAB engine '{engine_name}'."
             )
@@ -296,11 +325,36 @@ class MatlabSession:
         if not lines:
             return
 
-    def _launch_external_and_connect(self, startup_command: str | None) -> None:
+    @staticmethod
+    def _wait_for_event(
+        done: threading.Event,
+        timeout_s: float,
+        cancel_event: threading.Event | None,
+        poll_interval_s: float = 0.1,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return done.is_set()
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            if done.wait(min(poll_interval_s, remaining)):
+                return True
+
+    def _launch_external_and_connect(
+        self,
+        startup_command: str | None,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         assert matlab_engine is not None
         matlab_cmd = [self.config.matlab_executable, *self.config.matlab_flags]
         startup = self._build_startup_command(startup_command)
         matlab_cmd.extend(["-r", startup])
+        if status_callback is not None:
+            status_callback(f"Launching MATLAB for config {self.config.config_name}")
         try:
             self.launch_process = subprocess.Popen(matlab_cmd, cwd=str(self.config.directory))
         except Exception as exc:
@@ -311,6 +365,17 @@ class MatlabSession:
         deadline = time.monotonic() + self.config.startup_timeout_s
         last_error = None
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise MatlabSessionCancelled(
+                    f"Cancelled while waiting for MATLAB session '{self.config.engine_name}' "
+                    f"for path '{self.config.name}'."
+                )
+            if self.launch_process is not None:
+                return_code = self.launch_process.poll()
+                if return_code is not None:
+                    raise MatlabSessionError(
+                        f"MATLAB process for path '{self.config.name}' exited early with code {return_code}."
+                    )
             try:
                 available = matlab_engine.find_matlab()
             except Exception as exc:
@@ -318,12 +383,24 @@ class MatlabSession:
                 available = ()
             if self.config.engine_name in available:
                 try:
-                    self.engine = self._connect_matlab_with_timeout(self.config.engine_name, timeout_s=5.0)
+                    if status_callback is not None:
+                        status_callback(
+                            f"Connecting to MATLAB session '{self.config.engine_name}' for config {self.config.config_name}"
+                        )
+                    self.engine = self._connect_matlab_with_timeout(
+                        self.config.engine_name,
+                        timeout_s=5.0,
+                        cancel_event=cancel_event,
+                    )
                     self._validate_connected_session()
                     self._set_working_directory()
                     return
                 except Exception as exc:
                     last_error = exc
+            elif status_callback is not None:
+                status_callback(
+                    f"Waiting for MATLAB session '{self.config.engine_name}' for config {self.config.config_name}"
+                )
             time.sleep(1.0)
         raise MatlabSessionError(
             f"Timed out waiting to connect to shared MATLAB engine '{self.config.engine_name}' "
