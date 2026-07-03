@@ -39,8 +39,11 @@ wg.refreshWvfmParams();
 disp(wg.wvfmParams)
 w = wg.computeWaveform();
 fprintf('scan = %.6g s, startDelay = %.6g s, N = %d, high_frac = %.3f\n', ...
-scan, wg.startDelay, numel(w), mean(w>0));
+    scan, wg.startDelay, numel(w), mean(w>0));
 wg.startTask();
+
+
+
 
 function seedConfigDialogPathsAndLoadDefaultCfg(hSiObj, configDir)
 %SEEDCONFIGDIALOGPATHSANDLOADDEFAULTCFG Seed ScanImage config paths and load a default CFG.

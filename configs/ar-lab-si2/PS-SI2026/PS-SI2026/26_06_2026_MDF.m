@@ -25,6 +25,8 @@ widgetVisibility = true;
 % SI Coordinate System Component.
 classDataFileName = 'default-CoordinateSystems_classData.mat';     % File containing the previously generated alignment data corresponding to the currently installed objective, SLM, scanners, etc.
 
+tfObjectivePointingDown = true;
+
 %% scanimage.components.Motors (SI Motors)
 % SI Stage/Motor Component.
 motorXYZ = {'Zaber Motor' 'Zaber Motor' 'Zaber Motor'};     % Defines the motor for ScanImage axes X Y Z.
@@ -91,7 +93,7 @@ AIFeedback = '/vDAQ0/AI1';     % feedback terminal e.g. '/vDAQ0/AI0'
 angularRange = 55;     % total angular range in optical degrees (e.g. for a galvo with -20..+20 optical degrees, enter 40)
 voltsPerOpticalDegrees = 0.2;     % volts per optical degrees for the control signal
 voltsOffset = 0.4;     % voltage to be added to the output
-parkPosition = 26.2929;     % park position in optical degrees
+parkPosition = 26.2863;     % park position in optical degrees
 slewRateLimit = Inf;     % Slew rate limit of the analog output in Volts per second
 
 % Calibration settings
@@ -112,7 +114,7 @@ settleTime = 0.5;     % settle time in seconds to allow the resonant scanner to 
 
 % Calibration Settings
 amplitudeToLinePhaseMap = [1.333 -5.06971e-08;2 -2.40811e-07;2.6 -2.816e-07;2.667 -3.16857e-07;3 -4.352e-07;3.429 -3.584e-07;4 -4.81622e-07;4.798 3.92902e-07;4.8 -2.432e-07;6 -4.608e-07;8 -5.504e-07;8.667 -5.504e-07;11.994 -3.92902e-07;12 -6.21039e-07;14.712 -5.888e-07;24 -6.21039e-07;26 -6.144e-07];     % translates an amplitude (degrees) to a line phase (seconds)
-amplitudeToFrequencyMap = [1.333 7920.57;2 7917.02;2.6 7918.94;2.615 7922.26;2.667 7916.58;3 7919.64;3.429 7919.94;3.433 7921.74;4 7918.97;4.74 7921.03;4.8 7920.48;5.231 7921.15;5.435 7918.99;5.556 7920.79;6 7914.46;6.175 7920.56;6.5 7917.7;7.111 7920.15;8 7921.21;8.667 7917.81;10.48 7917.17;12 7917.86;13.567 7920.53;14.712 7917.96;20 7916.12;20.392 7917.64;23.473 7910.28;23.875 7911.57;23.926 7915.06;24 7913.97;26 7914.06];     % translates an amplitude (degrees) to a resonant frequency (Hz)
+amplitudeToFrequencyMap = [1.333 7920.57;2 7917.02;2.6 7918.94;2.615 7922.26;2.667 7916.58;3 7919.64;3.429 7919.94;3.433 7921.74;4 7918.97;4.74 7921.03;4.8 7920.48;5.231 7921.15;5.435 7918.99;5.556 7920.79;6 7914.46;6.175 7920.56;6.5 7917.7;7.111 7920.15;8 7921.21;8.667 7917.81;10.48 7917.17;12 7917.86;13.567 7920.53;14.712 7917.96;20 7916.12;20.392 7917.64;23.473 7910.28;23.837 7910.69;23.875 7911.57;23.926 7915.06;24 7913.97;26 7914.06];     % translates an amplitude (degrees) to a resonant frequency (Hz)
 amplitudeLUT = zeros(0,2);     % translates a nominal amplitude (degrees) to an output amplitude (degrees)
 
 minimizeOnStart = true;
@@ -125,14 +127,14 @@ AIFeedback = '/vDAQ0/AI6';     % feedback terminal e.g. '/vDAQ0/AI0'
 angularRange = 55;     % total angular range in optical degrees (e.g. for a galvo with -20..+20 optical degrees, enter 40)
 voltsPerOpticalDegrees = -0.204;     % volts per optical degrees for the control signal
 voltsOffset = 0;     % voltage to be added to the output
-parkPosition = 26.3284;     % park position in optical degrees
+parkPosition = 25.5109;     % park position in optical degrees
 slewRateLimit = Inf;     % Slew rate limit of the analog output in Volts per second
 
 % Calibration settings
 feedbackVoltLUT = [-2.32177 -5.61;-1.80584 -4.36333;-1.28973 -3.11667;-0.773987 -1.87;-0.258463 -0.623333;0.257635 0.623333;0.773303 1.87;1.28892 3.11667;1.80483 4.36333;2.32068 5.61];     % [Nx2] lut translating feedback volts into position volts
 offsetVoltScaling = 1;     % scalar factor for offset volts
 
-minimizeOnStart = false;
+minimizeOnStart = true;
 
 %% dabs.generic.GalvoPureAnalog (Y Galvo P2)
 AOControl = '/vDAQ0/AO7';     % control terminal  e.g. '/vDAQ0/AO0'
@@ -142,14 +144,14 @@ AIFeedback = '/vDAQ0/AI7';     % feedback terminal e.g. '/vDAQ0/AI0'
 angularRange = 55;     % total angular range in optical degrees (e.g. for a galvo with -20..+20 optical degrees, enter 40)
 voltsPerOpticalDegrees = 0.2;     % volts per optical degrees for the control signal
 voltsOffset = 0.6;     % voltage to be added to the output
-parkPosition = 20.4663;     % park position in optical degrees
+parkPosition = 22.7274;     % park position in optical degrees
 slewRateLimit = Inf;     % Slew rate limit of the analog output in Volts per second
 
 % Calibration settings
 feedbackVoltLUT = [-1.98051 -4.9;-1.48634 -3.67778;-0.99259 -2.45556;-0.498685 -1.23333;-0.00465088 -0.0111111;0.489777 1.21111;0.983704 2.43333;1.47751 3.65556;1.97169 4.87778;2.46577 6.1];     % [Nx2] lut translating feedback volts into position volts
 offsetVoltScaling = 1;     % scalar factor for offset volts
 
-minimizeOnStart = false;
+minimizeOnStart = true;
 
 %% dabs.generic.FastZPureAnalog (ETL P1)
 AOControl = '/vDAQ0/AO4';     % control terminal  e.g. '/vDAQ0/AO0'
@@ -175,6 +177,8 @@ DOControl = '/vDAQ0/D0.2';     % control terminal  e.g. '/vDAQ0/DIO0'
 invertOutput = false;     % invert output drive signal to shutter
 openTime_s = 0.5;     % settling time for shutter in seconds
 shutterTarget = 'Excitation';     % one of {', 'Excitation', 'Detection'}
+
+minimizeOnStart = true;
 
 %% dabs.generic.BeamModulatorFastAnalog (920nm P1 Power)
 AOControl = '/vDAQ0/AO2';     % control terminal  e.g. '/vDAQ0/AO0'
@@ -330,6 +334,8 @@ invertOutput = false;     % invert output drive signal to shutter
 openTime_s = 0.5;     % settling time for shutter in seconds
 shutterTarget = 'Excitation';     % one of {', 'Excitation', 'Detection'}
 
+minimizeOnStart = true;
+
 %% dabs.generic.BeamModulatorFastAnalog (1035nm P2 Power)
 AOControl = '/vDAQ0/AO9';     % control terminal  e.g. '/vDAQ0/AO0'
 AIFeedback = '/vDAQ0/AI8';     % feedback terminal e.g. '/vDAQ0/AI0'
@@ -359,7 +365,7 @@ frameClockIn = '';     % Terminal to which external frame clock is connected. Le
 referenceClockIn = '';     % Terminal to which external reference clock is connected. Leave empty for automatic routing via PXI/RTSI bus
 referenceClockRate = 1e+07;     % if referenceClockIn is used, referenceClockRate defines the rate of the reference clock in Hz. Default: 10e6Hz
 
-minimizeOnStart = false;
+minimizeOnStart = true;
 
 widgetVisibility = 1;
 
@@ -390,7 +396,7 @@ DOTripReset = '';     % <optional> resource name of the analog output channel th
 
 % Calibration settings
 wavelength_nm = 630;     % wavelength in nanometer
-autoOn = true;     % powers the PMT automatically on for the duration of a scan
+autoOn = false;     % powers the PMT automatically on for the duration of a scan
 gain_V = 0.6;     % PMT power supply voltage
 
 %% scanimage.components.scan2d.RggScan (RGG)
@@ -436,7 +442,7 @@ auxTrigger3In = '/vDAQ0/D0.5';     % Digital input lines for aux trigger 3
 auxTrigger4In = '';     % Digital input lines for aux trigger 4
 
 % Signal Conditioning
-disableMaskDivide = [0 0];     % disable averaging of samples into pixels; instead accumulate samples
+disableMaskDivide = zeros(1,0);     % disable averaging of samples into pixels; instead accumulate samples
 photonDiscriminatorThresholds = [500 500];
 photonDiscriminatorModes = {'threshold crossing' 'threshold crossing'};
 photonDiscriminatorDifferentiateWidths = [4 4];
@@ -520,7 +526,7 @@ auxTrigger3In = '/vDAQ0/D0.5';     % Digital input lines for aux trigger 3
 auxTrigger4In = '';     % Digital input lines for aux trigger 4
 
 % Signal Conditioning
-disableMaskDivide = [0 0];     % disable averaging of samples into pixels; instead accumulate samples
+disableMaskDivide = zeros(1,0);     % disable averaging of samples into pixels; instead accumulate samples
 photonDiscriminatorThresholds = [500 1000];
 photonDiscriminatorModes = {'threshold crossing' 'threshold crossing'};
 photonDiscriminatorDifferentiateWidths = [4 4];
@@ -571,6 +577,12 @@ homingTimeout_s = 20;     % Timeout for homing move in seconds
 
 
 minimizeOnStart = false;
+
+hostInBackgroundProcess = true; % host this device in a background MATLAB process
+remotePollPeriod_s = 0.2;
+streamMaxVelocity_umPerS = 13000;
+streamAcceleration_umPerSs = 400000;
+streamFrameClockIn = 1;
 
 %% dabs.meadowlark.Slm1024v2 (slmv2)
 PathFileLUT = 'C:\Program Files\Meadowlark Optics\Blink Plus\LUT Files\slm7116_at1064.lut';     % Absolute Path to the SLM look up table file. e.g. 'C:\pathToLutFile\myLut.lut' Note: this lut file is loaded directly to the hardware. The ScanImage software LUT is applied on top of the hardware LUT.
