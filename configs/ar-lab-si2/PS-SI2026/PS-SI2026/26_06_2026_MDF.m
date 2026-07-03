@@ -62,8 +62,8 @@ voltsPerOpticalDegrees = 0.1923;     % volts per optical degrees for the control
 settleTime = 0.5;     % settle time in seconds to allow the resonant scanner to turn on
 
 % Calibration Settings
-amplitudeToLinePhaseMap = [1.19 -1.8048e-06;1.316 -1.8816e-06;1.786 -2.112e-06;1.846 -2.15463e-06;1.923 -2.2144e-06;2.349 -2.69962e-06;2.4 -2.28137e-06;2.5 -2.3168e-06;3 -2.38276e-06;3.429 -2.48416e-06;4 -2.53485e-06;4.167 -2.5344e-06;4.8 -2.5344e-06;5 -2.5728e-06;6 -2.5602e-06;8 -2.6109e-06;8.333 -2.6496e-06;12 -2.72497e-06;24 -2.73764e-06;25 -2.8032e-06];     % translates an amplitude (degrees) to a line phase (seconds)
-amplitudeToFrequencyMap = [1.333 7923.69;1.714 7924.26;1.846 7921.01;2 7924.66;2.083 7924.12;2.349 7927.37;2.4 7918.36;2.5 7921.72;3 7922.43;3.25 7923.28;3.429 7920.22;3.523 7927.27;3.789 7923.12;4 7924.47;4.8 7924.46;5.2 7922.66;6 7919.36;6.909 7920.34;6.918 7926.27;8 7921.19;8.968 7926.61;10.909 7922.74;12 7919.21;12.122 7916.85;14.092 7926.01;16 7925.66;16.526 7915.86;18.147 7915.07;19.2 7925.12;19.36 7919.19;20 7915.07;21.202 7917.44;21.774 7918.6;22.035 7911.17;22.715 7920.29;23.473 7916.01;23.572 7918.72;23.638 7919.4;23.679 7915.3;23.956 7911.38;24 7923.01;25 7920.74;25.999 7920.34;26 7919.65;28 7916.27];     % translates an amplitude (degrees) to a resonant frequency (Hz)
+amplitudeToLinePhaseMap = [1.19 -1.8048e-06;1.316 -1.8816e-06;1.786 -2.112e-06;1.846 -2.15463e-06;1.923 -2.2144e-06;2.349 -2.69962e-06;2.4 -2.28137e-06;2.5 -2.3168e-06;3 -2.38276e-06;3.429 -2.48416e-06;4 -2.53485e-06;4.167 -2.5344e-06;4.8 -2.5344e-06;5 -2.5728e-06;6 -2.59823e-06;8 -2.6109e-06;8.333 -2.6496e-06;12 -2.72497e-06;24 -2.73764e-06;25 -2.8032e-06];     % translates an amplitude (degrees) to a line phase (seconds)
+amplitudeToFrequencyMap = [1.333 7923.69;1.714 7924.26;1.846 7921.01;2 7924.66;2.083 7924.12;2.349 7927.37;2.4 7918.36;2.5 7921.72;2.967 7924.69;3 7922.43;3.25 7923.28;3.38 7924.73;3.429 7920.22;3.523 7927.27;3.789 7923.12;4 7924.47;4.8 7924.46;5.2 7922.66;6 7919.36;6.909 7920.34;6.918 7926.27;8 7921.19;8.968 7926.61;10.909 7922.74;12 7919.21;12.122 7916.85;14.092 7926.01;16 7925.66;16.526 7915.86;18.147 7915.07;19.2 7925.12;19.36 7919.19;20 7915.07;21.202 7917.44;21.774 7918.6;22.035 7911.17;22.715 7920.29;23.473 7916.01;23.572 7918.72;23.638 7919.4;23.679 7915.3;23.956 7911.38;24 7923.01;25 7920.74;25.999 7920.34;26 7919.65;28 7916.27];     % translates an amplitude (degrees) to a resonant frequency (Hz)
 amplitudeLUT = zeros(0,2);     % translates a nominal amplitude (degrees) to an output amplitude (degrees)
 
 minimizeOnStart = true;
@@ -442,7 +442,7 @@ auxTrigger3In = '/vDAQ0/D0.5';     % Digital input lines for aux trigger 3
 auxTrigger4In = '';     % Digital input lines for aux trigger 4
 
 % Signal Conditioning
-disableMaskDivide = zeros(1,0);     % disable averaging of samples into pixels; instead accumulate samples
+disableMaskDivide = [0 0];     % disable averaging of samples into pixels; instead accumulate samples
 photonDiscriminatorThresholds = [500 500];
 photonDiscriminatorModes = {'threshold crossing' 'threshold crossing'};
 photonDiscriminatorDifferentiateWidths = [4 4];
@@ -526,7 +526,7 @@ auxTrigger3In = '/vDAQ0/D0.5';     % Digital input lines for aux trigger 3
 auxTrigger4In = '';     % Digital input lines for aux trigger 4
 
 % Signal Conditioning
-disableMaskDivide = zeros(1,0);     % disable averaging of samples into pixels; instead accumulate samples
+disableMaskDivide = [0 0];     % disable averaging of samples into pixels; instead accumulate samples
 photonDiscriminatorThresholds = [500 1000];
 photonDiscriminatorModes = {'threshold crossing' 'threshold crossing'};
 photonDiscriminatorDifferentiateWidths = [4 4];
