@@ -58,6 +58,8 @@ from .matlab_bridge import (
     build_abort_photostim_command,
     build_begin_slm_psf_diagnostic_command,
     build_check_slm_psf_volume_status_command,
+    build_clear_integration_rois_command,
+    build_clear_photostim_command,
     build_experiment_context,
     build_global_preamble,
     build_generate_photostim_grid_command,
@@ -4216,6 +4218,56 @@ class ScanImageControlWidget(QWidget):
             return
         self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
 
+    def _clear_scanimage_state_for_new_experiment(self, old_exp_id: str, new_exp_id: str) -> None:
+        self.signals.log_message.emit(
+            f"[experiment] clearing ScanImage photostim and integration ROIs for new experiment "
+            f"old='{old_exp_id or '<none>'}' new='{new_exp_id}'"
+        )
+        self._stop_online_analysis_poller()
+
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if photostim_path and photostim_path in self._runtimes:
+            photostim_runtime = self._runtimes[photostim_path]
+            photostim_runtime.prepared_photostim.reset()
+            if photostim_runtime.session is not None:
+                try:
+                    lines = photostim_runtime.session.eval(
+                        build_clear_photostim_command(photostim_runtime.path_config),
+                        timeout_s=photostim_runtime.path_config.command_timeout_s,
+                    )
+                    for line in lines:
+                        if line.strip():
+                            self.signals.log_message.emit(f"[{photostim_path}] {line}")
+                except Exception as exc:
+                    self.signals.log_message.emit(f"[{photostim_path}] clear photostim warning: {exc}")
+
+        for path_name, runtime in self._runtimes.items():
+            if runtime.session is None:
+                continue
+            try:
+                lines = runtime.session.eval(
+                    build_clear_integration_rois_command(runtime.path_config),
+                    timeout_s=runtime.path_config.command_timeout_s,
+                )
+                for line in lines:
+                    if line.strip():
+                        self.signals.log_message.emit(f"[{path_name}] {line}")
+            except Exception as exc:
+                self.signals.log_message.emit(f"[{path_name}] clear integration ROI warning: {exc}")
+
+        with self._online_analysis.lock:
+            self._online_analysis.configured = False
+            self._clear_online_analysis_runtime_buffers_locked(
+                f"new_experiment:{new_exp_id}",
+                emit_log=False,
+            )
+            self._online_analysis.conditions = {}
+            self._online_analysis.cells_by_roi_name = {}
+            self._online_analysis.imaging_path = ""
+            self._online_analysis.exp_id = ""
+            self._online_analysis.current_condition_index = None
+            self._online_analysis.last_error = ""
+
     def _handle_update_experiment_params_request(
         self,
         request_path_name: str,
@@ -4244,6 +4296,10 @@ class ScanImageControlWidget(QWidget):
                 f"[{request_path_name}] trial_condition_indices missing; using one pass through "
                 f"{len(stimulus_conditions)} stimulus condition(s)"
             )
+
+        old_exp_id = tracking.exp_id
+        if exp_id and exp_id != old_exp_id:
+            self._clear_scanimage_state_for_new_experiment(old_exp_id, exp_id)
 
         tracking.reset()
         tracking.exp_id = exp_id

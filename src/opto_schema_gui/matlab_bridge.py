@@ -1628,6 +1628,30 @@ def build_abort_photostim_command(path_config: PathConfig) -> str:
     )
 
 
+def build_clear_photostim_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "if hPs.active;",
+            "    hPs.abort();",
+            "end",
+            "try; hPs.stimulusMode = 'sequence'; catch; end",
+            "try; hPs.sequenceSelectedStimuli = []; catch; end",
+            "try; hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0); catch; end",
+            "try; hPs.numSequences = 1; catch; end",
+            "result = struct();",
+            "result.status = 'ready';",
+            "result.stimulus_group_count = double(numel(hPs.stimRoiGroups));",
+            "result.sequence_length = double(numel(hPs.sequenceSelectedStimuli));",
+            "disp('PHOTOSTIM_CLEAR_JSON');",
+            "disp(jsonencode(result));",
+        ]
+    )
+
+
 def build_prepare_trial_waveform_command(
     path_config: PathConfig,
     trigger_times_s: list[float],
@@ -1891,6 +1915,30 @@ def build_restore_online_analysis_command(path_config: PathConfig) -> str:
             "result.status = 'ready';",
             "result.restored = logical(restored);",
             "disp('ONLINE_ANALYSIS_RESTORE_JSON');",
+            "disp(jsonencode(result));",
+        ]
+    )
+
+
+def build_clear_integration_rois_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "result = struct();",
+            "result.status = 'ready';",
+            "result.available = false;",
+            "result.roi_count = 0;",
+            f"if ~isempty({hsi}) && isprop({hsi}, 'hIntegrationRoiManager') && ~isempty({hsi}.hIntegrationRoiManager)",
+            "    hInt = " + hsi + ".hIntegrationRoiManager;",
+            "    result.available = true;",
+            "    try; hInt.enable = false; catch; end",
+            "    try; hInt.enableDisplay = false; catch; end",
+            "    try; hInt.roiGroup = scanimage.mroi.RoiGroup(); catch; end",
+            "    try; result.roi_count = double(numel(hInt.roiGroup.rois)); catch; result.roi_count = 0; end",
+            "end",
+            "evalin('base', 'clear optoOnlineAnalysisBackup');",
+            "disp('INTEGRATION_ROIS_CLEAR_JSON');",
             "disp(jsonencode(result));",
         ]
     )
