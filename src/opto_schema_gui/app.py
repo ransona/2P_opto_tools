@@ -3287,17 +3287,20 @@ class MainWindow(QMainWindow):
         load_schema_btn = QPushButton("Load Schema")
         save_schema_btn = QPushButton("Save Schema")
         self.online_analysis_checkbox = QCheckBox("Online Analysis")
+        update_restart_btn = QPushButton("Update And Restart")
 
         toolbar.addWidget(new_btn)
         toolbar.addWidget(load_schema_btn)
         toolbar.addWidget(save_schema_btn)
         toolbar.addWidget(self.online_analysis_checkbox)
+        toolbar.addWidget(update_restart_btn)
 
         new_btn.clicked.connect(self.new_project)
         load_schema_btn.clicked.connect(self.load_schema_dialog)
         save_schema_btn.clicked.connect(self.save_schema_dialog)
         self.online_analysis_checkbox.setChecked(self.scanimage_control.online_analysis_enabled())
         self.online_analysis_checkbox.toggled.connect(self.scanimage_control.set_online_analysis_enabled)
+        update_restart_btn.clicked.connect(self.scanimage_control.update_and_restart)
 
         schema_left = QWidget()
         schema_left_layout = QVBoxLayout(schema_left)

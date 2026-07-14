@@ -2041,7 +2041,6 @@ class ScanImageControlWidget(QWidget):
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
         self.reload_btn = QPushButton("Reload Configs")
-        self.update_restart_btn = QPushButton("Update And Restart")
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
         self.test_stim_waveform_btn = QPushButton("Test stim waveform")
         self.test_stim_waveform_external_btn = QPushButton("Test stim waveform ext")
@@ -2052,7 +2051,6 @@ class ScanImageControlWidget(QWidget):
             self.start_config_btn,
             self.stop_config_btn,
             self.reload_btn,
-            self.update_restart_btn,
             self.test_prep_patterns_btn,
             self.test_stim_waveform_btn,
             self.test_stim_waveform_external_btn,
@@ -2107,7 +2105,6 @@ class ScanImageControlWidget(QWidget):
         self.config_combo.currentTextChanged.connect(self._on_config_changed)
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
-        self.update_restart_btn.clicked.connect(self._update_and_restart)
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
         self.test_stim_waveform_btn.clicked.connect(self._run_test_stim_waveform)
         self.test_stim_waveform_external_btn.clicked.connect(self._run_test_stim_waveform_external)
@@ -2391,6 +2388,9 @@ class ScanImageControlWidget(QWidget):
         restore_result = self._run_git_command(["restore", "--source=HEAD", "--", *tracked_paths])
         self._log_process_output("[update]", restore_result)
         return restore_result.returncode == 0
+
+    def update_and_restart(self) -> None:
+        self._update_and_restart()
 
     def _update_and_restart(self) -> None:
         status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=all"])
