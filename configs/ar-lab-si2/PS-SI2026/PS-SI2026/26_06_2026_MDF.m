@@ -93,7 +93,7 @@ AIFeedback = '/vDAQ0/AI1';     % feedback terminal e.g. '/vDAQ0/AI0'
 angularRange = 55;     % total angular range in optical degrees (e.g. for a galvo with -20..+20 optical degrees, enter 40)
 voltsPerOpticalDegrees = 0.2;     % volts per optical degrees for the control signal
 voltsOffset = 0.4;     % voltage to be added to the output
-parkPosition = 26.2863;     % park position in optical degrees
+parkPosition = 26.3167;     % park position in optical degrees
 slewRateLimit = Inf;     % Slew rate limit of the analog output in Volts per second
 
 % Calibration settings
