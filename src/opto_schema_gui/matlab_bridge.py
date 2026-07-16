@@ -61,6 +61,7 @@ class PathConfig:
     stimulus_function: str
     power_scale_mode: str
     sequence_block_duration_s: float
+    min_center_distance_um: float
     trial_waveform_output_port: str
     trial_waveform_photostim_trigger_term: str
     trial_waveform_start_trigger_port: str
@@ -787,6 +788,7 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             stimulus_function=_get_string(section, None, "stimulus_function", "point"),
             power_scale_mode=_get_string(section, None, "power_scale_mode", "multiply"),
             sequence_block_duration_s=_get_float(section, None, "sequence_block_duration_s", 0.25),
+            min_center_distance_um=_get_float(section, None, "min_center_distance_um", 15.0),
             trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D1.7"),
             trial_waveform_photostim_trigger_term=_get_string(
                 section, None, "trial_waveform_photostim_trigger_term", "D1.7"
@@ -850,7 +852,7 @@ def build_import_command(
             "    BlankDuration=0.001, ...",
             "    ParkDuration=0.001, ...",
             f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
-            "    MinCenterDistanceUm=15, ...",
+            f"    MinCenterDistanceUm={path_config.min_center_distance_um:.12g}, ...",
             "    Revolutions=5);",
             "disp('Prepared schema photostim patterns used by sequence groups:');",
             "disp(importedPatternNames);",
@@ -937,7 +939,7 @@ def build_prepare_schema_photostim_command(
         f"    EmbedBlankAndParkInStimGroup={'true' if embed_blank_and_park_in_stim_group else 'false'}, ...",
         f"    SingleEpochPattern={'true' if single_epoch_pattern else 'false'}, ...",
         f"    NumSequences={resolved_num_sequences}, ...",
-        "    MinCenterDistanceUm=15, ...",
+        f"    MinCenterDistanceUm={path_config.min_center_distance_um:.12g}, ...",
         "    Revolutions=5);",
         "disp('Prepared schema photostim patterns used by sequence groups:');",
         "disp(importedPatternNames);",
