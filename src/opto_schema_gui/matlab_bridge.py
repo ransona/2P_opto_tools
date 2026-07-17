@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -61,6 +61,7 @@ class PathConfig:
     stimulus_function: str
     power_scale_mode: str
     sequence_block_duration_s: float
+    min_center_distance_um: float
     trial_waveform_output_port: str
     trial_waveform_photostim_trigger_term: str
     trial_waveform_start_trigger_port: str
@@ -113,6 +114,10 @@ class MatlabSessionError(RuntimeError):
     pass
 
 
+class MatlabSessionCancelled(MatlabSessionError):
+    pass
+
+
 class MatlabSession:
     def __init__(self, config: PathConfig, force_simulated: bool = False):
         self.config = config
@@ -123,34 +128,44 @@ class MatlabSession:
         self.started_with_launch = False
         self.attached = False
         self.launch_process = None
+        self._launch_output_lines: list[str] = []
+        self._launch_output_lock = threading.Lock()
         self.sim_sequence: list[int] = []
         self.sim_sequence_position = 1
 
-    def start(self, startup_command: str | None = None) -> None:
+    def start(
+        self,
+        startup_command: str | None = None,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         if self.engine is not None or self.simulated:
             return
 
-        if self.force_simulated or self.config.simulation_mode == "always":
+        if self.force_simulated:
+            if status_callback is not None:
+                status_callback(f"Starting simulated MATLAB session for config {self.config.config_name}")
             self._start_simulated()
             self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
             return
 
         if matlab_engine is None:
-            if self.config.simulation_mode == "auto":
-                self._start_simulated()
-                self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-                return
             raise MatlabSessionError(
                 "matlab.engine is not installed in this Python environment. "
                 "Install the MATLAB Engine for Python to run live ScanImage control."
             )
 
-        connected = self._try_connect_existing()
+        if status_callback is not None:
+            status_callback(f"Checking for existing MATLAB session for config {self.config.config_name}")
+        connected = self._try_connect_existing(status_callback=status_callback, cancel_event=cancel_event)
         if connected:
             self.attached = True
             self.started_with_launch = False
             try:
-                self._validate_connected_session()
+                if status_callback is not None:
+                    status_callback(f"Validating existing MATLAB session for config {self.config.config_name}")
+                self._validate_scanimage_started()
                 self._set_working_directory()
                 return
             except Exception:
@@ -159,13 +174,11 @@ class MatlabSession:
 
         self.attached = False
         self.started_with_launch = bool(startup_command and "run('launch.m')" in startup_command)
-        try:
-            self._launch_external_and_connect(startup_command)
-        except MatlabSessionError:
-            if self.config.simulation_mode == "auto":
-                self._start_simulated()
-                return
-            raise
+        self._launch_external_and_connect(
+            startup_command,
+            status_callback=status_callback,
+            cancel_event=cancel_event,
+        )
 
     def stop(self) -> None:
         if self.simulated:
@@ -220,7 +233,12 @@ class MatlabSession:
         self.sim_sequence = []
         self.sim_sequence_position = 1
 
-    def _try_connect_existing(self) -> bool:
+    def _try_connect_existing(
+        self,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
         assert matlab_engine is not None
         engine_name = self.config.engine_name
         try:
@@ -230,14 +248,24 @@ class MatlabSession:
         if engine_name not in available:
             return False
         try:
-            self.engine = self._connect_matlab_with_timeout(engine_name, timeout_s=5.0)
-        except Exception as exc:
+            if status_callback is not None:
+                status_callback(f"Connecting to existing MATLAB session '{engine_name}'")
+            self.engine = self._connect_matlab_with_timeout(
+                engine_name,
+                timeout_s=5.0,
+                cancel_event=cancel_event,
+            )
+        except Exception:
             self.engine = None
             return False
         return True
 
     @staticmethod
-    def _connect_matlab_with_timeout(engine_name: str, timeout_s: float):
+    def _connect_matlab_with_timeout(
+        engine_name: str,
+        timeout_s: float,
+        cancel_event: threading.Event | None = None,
+    ):
         assert matlab_engine is not None
         result: list[object] = []
         error_holder: list[BaseException] = []
@@ -252,7 +280,11 @@ class MatlabSession:
                 done.set()
 
         threading.Thread(target=worker, daemon=True).start()
-        if not done.wait(timeout_s):
+        if not MatlabSession._wait_for_event(done, timeout_s, cancel_event):
+            if cancel_event is not None and cancel_event.is_set():
+                raise MatlabSessionCancelled(
+                    f"Cancelled while connecting to shared MATLAB engine '{engine_name}'."
+                )
             raise MatlabSessionError(
                 f"Timed out connecting to shared MATLAB engine '{engine_name}'."
             )
@@ -279,16 +311,14 @@ class MatlabSession:
                 f"MATLAB session for path '{self.config.name}' could not be shared as '{self.config.engine_name}': {exc}"
             ) from exc
 
-    def _validate_connected_session(self) -> None:
+    def _validate_scanimage_started(self) -> None:
         lines = self.eval(
             "\n".join(
                 [
                     build_global_preamble(self.config),
                     f"assert(exist({matlab_string(self.config.hsi_variable)}, 'var') == 1, 'Missing {self.config.hsi_variable} in MATLAB workspace.');",
-                    f"assert(exist({matlab_string(self.config.hsictl_variable)}, 'var') == 1, 'Missing {self.config.hsictl_variable} in MATLAB workspace.');",
                     f"assert(~isempty({self.config.hsi_variable}), '{self.config.hsi_variable} is empty.');",
-                    f"assert(isprop({self.config.hsi_variable}, 'hPhotostim'), '{self.config.hsi_variable} is not a valid ScanImage handle.');",
-                    "disp('MATLAB reconnect validation passed');",
+                    "disp('ScanImage hSI detected');",
                 ]
             ),
             timeout_s=self.config.command_timeout_s,
@@ -296,21 +326,69 @@ class MatlabSession:
         if not lines:
             return
 
-    def _launch_external_and_connect(self, startup_command: str | None) -> None:
+    @staticmethod
+    def _wait_for_event(
+        done: threading.Event,
+        timeout_s: float,
+        cancel_event: threading.Event | None,
+        poll_interval_s: float = 0.1,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return done.is_set()
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            if done.wait(min(poll_interval_s, remaining)):
+                return True
+
+    def _launch_external_and_connect(
+        self,
+        startup_command: str | None,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         assert matlab_engine is not None
         matlab_cmd = [self.config.matlab_executable, *self.config.matlab_flags]
         startup = self._build_startup_command(startup_command)
         matlab_cmd.extend(["-r", startup])
+        if status_callback is not None:
+            status_callback(f"Launching MATLAB for config {self.config.config_name}")
         try:
-            self.launch_process = subprocess.Popen(matlab_cmd, cwd=str(self.config.directory))
+            self.launch_process = subprocess.Popen(
+                matlab_cmd,
+                cwd=str(self.config.directory),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
         except Exception as exc:
             raise MatlabSessionError(
                 f"Could not launch MATLAB process for path '{self.config.name}': {exc}"
             ) from exc
 
+        self._launch_output_lines = []
+        if self.launch_process.stdout is not None:
+            threading.Thread(target=self._capture_launch_output, daemon=True).start()
+
         deadline = time.monotonic() + self.config.startup_timeout_s
         last_error = None
+        process_exit_code: int | None = None
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise MatlabSessionCancelled(
+                    f"Cancelled while waiting for MATLAB session '{self.config.engine_name}' "
+                    f"for path '{self.config.name}'."
+                )
+            if self.launch_process is not None:
+                return_code = self.launch_process.poll()
+                if return_code is not None:
+                    process_exit_code = return_code
             try:
                 available = matlab_engine.find_matlab()
             except Exception as exc:
@@ -318,25 +396,65 @@ class MatlabSession:
                 available = ()
             if self.config.engine_name in available:
                 try:
-                    self.engine = self._connect_matlab_with_timeout(self.config.engine_name, timeout_s=5.0)
-                    self._validate_connected_session()
+                    if status_callback is not None:
+                        status_callback(
+                            f"Connecting to MATLAB session '{self.config.engine_name}' for config {self.config.config_name}"
+                        )
+                    self.engine = self._connect_matlab_with_timeout(
+                        self.config.engine_name,
+                        timeout_s=5.0,
+                        cancel_event=cancel_event,
+                    )
+                    self._validate_scanimage_started()
                     self._set_working_directory()
                     return
                 except Exception as exc:
                     last_error = exc
+            elif status_callback is not None:
+                status_callback(
+                    f"Waiting for MATLAB session '{self.config.engine_name}' for config {self.config.config_name}"
+                )
             time.sleep(1.0)
-        raise MatlabSessionError(
-            f"Timed out waiting to connect to shared MATLAB engine '{self.config.engine_name}' "
-            f"for path '{self.config.name}'. Last error: {last_error}"
+        detail = (
+            f"Timed out waiting for ScanImage hSI in shared MATLAB engine '{self.config.engine_name}' "
+            f"for path '{self.config.name}'."
         )
+        if process_exit_code is not None:
+            detail += f" MATLAB launcher process exited with code {process_exit_code}."
+        if last_error is not None:
+            detail += f" Last error: {last_error}"
+        startup_output = self._format_launch_output()
+        if startup_output:
+            detail += f"\nMATLAB startup output:\n{startup_output}"
+        raise MatlabSessionError(detail)
+
+    def _capture_launch_output(self) -> None:
+        if self.launch_process is None or self.launch_process.stdout is None:
+            return
+        try:
+            for raw_line in self.launch_process.stdout:
+                line = raw_line.rstrip()
+                if not line:
+                    continue
+                with self._launch_output_lock:
+                    self._launch_output_lines.append(line)
+                    if len(self._launch_output_lines) > 200:
+                        self._launch_output_lines = self._launch_output_lines[-200:]
+        except Exception:
+            return
+
+    def _format_launch_output(self) -> str:
+        with self._launch_output_lock:
+            return "\n".join(self._launch_output_lines).strip()
 
     def _build_startup_command(self, startup_command: str | None) -> str:
-        commands: list[str] = []
+        commands: list[str] = [
+            f"matlab.engine.shareEngine({matlab_string(self.config.engine_name)})"
+        ]
         if startup_command:
             commands.append(startup_command)
         else:
             commands.append(f"addpath(genpath({matlab_string(str(self.config.repo_matlab_path))}))")
-        commands.append(f"matlab.engine.shareEngine({matlab_string(self.config.engine_name)})")
         body = "; ".join(commands)
         return (
             "try; "
@@ -670,6 +788,7 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             stimulus_function=_get_string(section, None, "stimulus_function", "point"),
             power_scale_mode=_get_string(section, None, "power_scale_mode", "multiply"),
             sequence_block_duration_s=_get_float(section, None, "sequence_block_duration_s", 0.25),
+            min_center_distance_um=_get_float(section, None, "min_center_distance_um", 15.0),
             trial_waveform_output_port=_get_string(section, None, "trial_waveform_output_port", "/vDAQ0/D1.7"),
             trial_waveform_photostim_trigger_term=_get_string(
                 section, None, "trial_waveform_photostim_trigger_term", "D1.7"
@@ -733,7 +852,7 @@ def build_import_command(
             "    BlankDuration=0.001, ...",
             "    ParkDuration=0.001, ...",
             f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
-            "    MinCenterDistanceUm=15, ...",
+            f"    MinCenterDistanceUm={path_config.min_center_distance_um:.12g}, ...",
             "    Revolutions=5);",
             "disp('Prepared schema photostim patterns used by sequence groups:');",
             "disp(importedPatternNames);",
@@ -798,6 +917,7 @@ def build_prepare_schema_photostim_command(
     block_duration: float | None = None,
     prefix_blank_to_sequence: bool = False,
     embed_blank_and_park_in_stim_group: bool = False,
+    single_epoch_pattern: bool = False,
     num_sequences: float = 1.0,
 ) -> str:
     trial_seq_nums_expr = "[]" if not trial_seq_nums else "[" + " ".join(str(int(v)) for v in trial_seq_nums) + "]"
@@ -817,8 +937,9 @@ def build_prepare_schema_photostim_command(
         f"    StartPhotostim={'true' if start_photostim else 'false'}, ...",
         f"    PrefixBlankToSequence={'true' if prefix_blank_to_sequence else 'false'}, ...",
         f"    EmbedBlankAndParkInStimGroup={'true' if embed_blank_and_park_in_stim_group else 'false'}, ...",
+        f"    SingleEpochPattern={'true' if single_epoch_pattern else 'false'}, ...",
         f"    NumSequences={resolved_num_sequences}, ...",
-        "    MinCenterDistanceUm=15, ...",
+        f"    MinCenterDistanceUm={path_config.min_center_distance_um:.12g}, ...",
         "    Revolutions=5);",
         "disp('Prepared schema photostim patterns used by sequence groups:');",
         "disp(importedPatternNames);",
@@ -1025,8 +1146,7 @@ def build_run_slm_psf_volume_command(
         "sf.repetitions = 1;",
         "sf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;",
         f"sf.stimparams = {{'revolutions', {float(revolutions)!r}, 'direction', 'outward'}};",
-        f"sf.slmPattern = [0 0 {float(z_um)!r} 1];",
-        "if ismethod(sf, 'recenterGalvoOntoSlmPattern'); sf.recenterGalvoOntoSlmPattern(); end",
+        f"sf.slmPattern = [centerRef {float(z_um)!r} 1];",
         "sf.powers = beamPowers;",
         "roi = scanimage.mroi.Roi();",
         "roi.add(0, sf);",
@@ -1235,8 +1355,7 @@ def build_test_photostim_command(
                 "sf.repetitions = 1;",
                 "sf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;",
                 "sf.stimparams = {'revolutions', 5, 'direction', 'outward'};",
-                "sf.slmPattern = [pointsRef(:,1:2) - centerRef, pointsRef(:,3:4)];",
-                "if ismethod(sf, 'recenterGalvoOntoSlmPattern'); sf.recenterGalvoOntoSlmPattern(); end",
+                "sf.slmPattern = [pointsRef(:,1:2), pointsRef(:,3:4)];",
                 f"if isprop(sf,'powerFractions'); sf.powerFractions = {power_fractions}; end",
                 "powers = zeros(1, nBeams);",
                 f"powers(3) = {overall_power};",
@@ -1343,8 +1462,7 @@ def build_generate_photostim_grid_command(
             "sf.repetitions = 1;",
             "sf.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;",
             f"sf.stimparams = {{'revolutions', {float(revolutions):.12g}, 'direction', 'outward'}};",
-            "sf.slmPattern = [pointsRef(:,1:2) - centerRef, pointsRef(:,3:4)];",
-            "if ismethod(sf, 'recenterGalvoOntoSlmPattern'); sf.recenterGalvoOntoSlmPattern(); end",
+            "sf.slmPattern = [pointsRef(:,1:2), pointsRef(:,3:4)];",
             "powers = zeros(1, nBeams);",
             f"powers(3) = {float(power_percent):.12g};",
             "sf.powers = powers;",
@@ -1508,6 +1626,30 @@ def build_abort_photostim_command(path_config: PathConfig) -> str:
             "    hPs.abort();",
             "end",
             "disp('ABORT_PHOTOSTIM_READY');",
+        ]
+    )
+
+
+def build_clear_photostim_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            "hPs = " + hsi + ".hPhotostim;",
+            "if hPs.active;",
+            "    hPs.abort();",
+            "end",
+            "try; hPs.stimulusMode = 'sequence'; catch; end",
+            "try; hPs.sequenceSelectedStimuli = []; catch; end",
+            "try; hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0); catch; end",
+            "try; hPs.numSequences = 1; catch; end",
+            "result = struct();",
+            "result.status = 'ready';",
+            "result.stimulus_group_count = double(numel(hPs.stimRoiGroups));",
+            "result.sequence_length = double(numel(hPs.sequenceSelectedStimuli));",
+            "disp('PHOTOSTIM_CLEAR_JSON');",
+            "disp(jsonencode(result));",
         ]
     )
 
@@ -1775,6 +1917,30 @@ def build_restore_online_analysis_command(path_config: PathConfig) -> str:
             "result.status = 'ready';",
             "result.restored = logical(restored);",
             "disp('ONLINE_ANALYSIS_RESTORE_JSON');",
+            "disp(jsonencode(result));",
+        ]
+    )
+
+
+def build_clear_integration_rois_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            "result = struct();",
+            "result.status = 'ready';",
+            "result.available = false;",
+            "result.roi_count = 0;",
+            f"if ~isempty({hsi}) && isprop({hsi}, 'hIntegrationRoiManager') && ~isempty({hsi}.hIntegrationRoiManager)",
+            "    hInt = " + hsi + ".hIntegrationRoiManager;",
+            "    result.available = true;",
+            "    try; hInt.enable = false; catch; end",
+            "    try; hInt.enableDisplay = false; catch; end",
+            "    try; hInt.roiGroup = scanimage.mroi.RoiGroup(); catch; end",
+            "    try; result.roi_count = double(numel(hInt.roiGroup.rois)); catch; result.roi_count = 0; end",
+            "end",
+            "evalin('base', 'clear optoOnlineAnalysisBackup');",
+            "disp('INTEGRATION_ROIS_CLEAR_JSON');",
             "disp(jsonencode(result));",
         ]
     )
@@ -2112,10 +2278,12 @@ def _extract_schema_path_from_import(command: str) -> str | None:
             break
     if idx < 0:
         return None
-    quoted_start = command.find("'", idx)
+    first_continuation = command.find("...", idx)
+    search_stop = first_continuation if first_continuation >= 0 else len(command)
+    quoted_start = command.find("'", idx, search_stop)
     if quoted_start < 0:
         return None
-    quoted_end = command.find("'", quoted_start + 1)
+    quoted_end = command.find("'", quoted_start + 1, search_stop)
     if quoted_end < 0:
         return None
     return command[quoted_start + 1 : quoted_end].replace("''", "'")

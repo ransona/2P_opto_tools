@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -51,11 +52,14 @@ from .matlab_bridge import (
     ExperimentContext,
     MachineConfig,
     MatlabSession,
+    MatlabSessionCancelled,
     PathConfig,
     autodetect_machine_name,
     build_abort_photostim_command,
     build_begin_slm_psf_diagnostic_command,
     build_check_slm_psf_volume_status_command,
+    build_clear_integration_rois_command,
+    build_clear_photostim_command,
     build_experiment_context,
     build_global_preamble,
     build_generate_photostim_grid_command,
@@ -99,6 +103,9 @@ class ScanImageSignals(QObject):
     path_status = pyqtSignal(str, str)
     path_udp_log = pyqtSignal(str, str)
     waveform_test_result = pyqtSignal(str, int, int, int)
+    show_connecting_dialog = pyqtSignal(str, str, object)
+    update_connecting_dialog = pyqtSignal(str, str)
+    hide_connecting_dialog = pyqtSignal(str)
 
 
 @dataclass
@@ -778,6 +785,74 @@ class StimWaveformTestDialog(QDialog):
         self._refresh_preview()
 
 
+class MatlabConnectDialog(QDialog):
+    _spinner_frames = ("|", "/", "-", "\\")
+
+    def __init__(self, config_name: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._spinner_index = 0
+        self._cancel_callback: Callable[[], None] | None = None
+        self._closing_programmatically = False
+        self.setWindowTitle("Connecting to MATLAB")
+        self.setModal(True)
+        self.resize(460, 150)
+
+        layout = QVBoxLayout(self)
+        self.title_label = QLabel(f"Connecting to MATLAB session with config {config_name}")
+        self.title_label.setWordWrap(True)
+        layout.addWidget(self.title_label)
+
+        spinner_row = QHBoxLayout()
+        self.spinner_label = QLabel(self._spinner_frames[0])
+        self.spinner_label.setMinimumWidth(24)
+        spinner_row.addWidget(self.spinner_label)
+        self.status_label = QLabel("Starting MATLAB session...")
+        self.status_label.setWordWrap(True)
+        spinner_row.addWidget(self.status_label, 1)
+        layout.addLayout(spinner_row)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        layout.addWidget(self.progress_bar)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self._cancel_requested)
+        button_row.addWidget(self.cancel_btn)
+        layout.addLayout(button_row)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(120)
+        self._timer.timeout.connect(self._advance_spinner)
+        self._timer.start()
+
+    def set_status_text(self, text: str) -> None:
+        self.status_label.setText(text)
+
+    def set_cancel_callback(self, callback: Callable[[], None]) -> None:
+        self._cancel_callback = callback
+
+    def mark_cancelling(self) -> None:
+        self.status_label.setText("Cancelling MATLAB connection...")
+        self.cancel_btn.setEnabled(False)
+
+    def _advance_spinner(self) -> None:
+        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
+        self.spinner_label.setText(self._spinner_frames[self._spinner_index])
+
+    def _cancel_requested(self) -> None:
+        self.mark_cancelling()
+        if self._cancel_callback is not None:
+            self._cancel_callback()
+
+    def closeEvent(self, event) -> None:
+        self._timer.stop()
+        if not self._closing_programmatically and self.cancel_btn.isEnabled():
+            self._cancel_requested()
+        super().closeEvent(event)
+
+
 class ScanImageControlWidget(QWidget):
     def __init__(
         self,
@@ -796,9 +871,13 @@ class ScanImageControlWidget(QWidget):
         self.signals.waveform_test_result.connect(lambda *_: None)
         self.signals.udp_message.connect(self._handle_udp_message)
         self.signals.remote_prompt_response.connect(self._handle_remote_prompt_response)
+        self.signals.show_connecting_dialog.connect(self._show_connecting_dialog)
+        self.signals.update_connecting_dialog.connect(self._update_connecting_dialog)
+        self.signals.hide_connecting_dialog.connect(self._hide_connecting_dialog)
         self.machine_config: MachineConfig | None = None
         self._runtimes: dict[str, PathRuntime] = {}
         self._path_tabs: dict[str, PathTabWidgets] = {}
+        self._connect_dialogs: dict[str, MatlabConnectDialog] = {}
         self._ignore_combo_changes = False
         self._current_machine_name = ""
         self._current_config_name = ""
@@ -1962,7 +2041,6 @@ class ScanImageControlWidget(QWidget):
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
         self.reload_btn = QPushButton("Reload Configs")
-        self.update_restart_btn = QPushButton("Update And Restart")
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
         self.test_stim_waveform_btn = QPushButton("Test stim waveform")
         self.test_stim_waveform_external_btn = QPushButton("Test stim waveform ext")
@@ -1973,7 +2051,6 @@ class ScanImageControlWidget(QWidget):
             self.start_config_btn,
             self.stop_config_btn,
             self.reload_btn,
-            self.update_restart_btn,
             self.test_prep_patterns_btn,
             self.test_stim_waveform_btn,
             self.test_stim_waveform_external_btn,
@@ -2028,7 +2105,6 @@ class ScanImageControlWidget(QWidget):
         self.config_combo.currentTextChanged.connect(self._on_config_changed)
         self.start_config_btn.clicked.connect(self.start_config)
         self.stop_config_btn.clicked.connect(self.stop_config)
-        self.update_restart_btn.clicked.connect(self._update_and_restart)
         self.test_prep_patterns_btn.clicked.connect(self._open_photostim_test_dialog)
         self.test_stim_waveform_btn.clicked.connect(self._run_test_stim_waveform)
         self.test_stim_waveform_external_btn.clicked.connect(self._run_test_stim_waveform_external)
@@ -2041,6 +2117,28 @@ class ScanImageControlWidget(QWidget):
         self.log_text.clear()
         for widgets in self._path_tabs.values():
             widgets.udp_text.clear()
+
+    def _show_connecting_dialog(self, path_name: str, config_name: str, cancel_event: object) -> None:
+        self._hide_connecting_dialog(path_name)
+        dialog = MatlabConnectDialog(config_name, self)
+        if isinstance(cancel_event, threading.Event):
+            dialog.set_cancel_callback(cancel_event.set)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._connect_dialogs[path_name] = dialog
+
+    def _update_connecting_dialog(self, path_name: str, message: str) -> None:
+        dialog = self._connect_dialogs.get(path_name)
+        if dialog is not None:
+            dialog.set_status_text(message)
+
+    def _hide_connecting_dialog(self, path_name: str) -> None:
+        dialog = self._connect_dialogs.pop(path_name, None)
+        if dialog is not None:
+            dialog._closing_programmatically = True
+            dialog.close()
+            dialog.deleteLater()
 
     def reload_discovery(self) -> None:
         machine_names = list_machine_names(self.repo_root)
@@ -2290,6 +2388,9 @@ class ScanImageControlWidget(QWidget):
         restore_result = self._run_git_command(["restore", "--source=HEAD", "--", *tracked_paths])
         self._log_process_output("[update]", restore_result)
         return restore_result.returncode == 0
+
+    def update_and_restart(self) -> None:
+        self._update_and_restart()
 
     def _update_and_restart(self) -> None:
         status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=all"])
@@ -2865,6 +2966,9 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit(f"[{path_name}] {label}")
         try:
             fn(path_name)
+        except MatlabSessionCancelled as exc:
+            self.signals.log_message.emit(f"[{path_name}] {exc}")
+            return False
         except Exception as exc:
             self.signals.log_message.emit(f"[{path_name}] ERROR: {exc}")
             return False
@@ -2962,15 +3066,36 @@ class ScanImageControlWidget(QWidget):
         runtime = self._runtimes[path_name]
         with runtime.lock:
             if runtime.session is None:
+                show_connect_dialog = not self.force_simulated_checkbox.isChecked()
+                cancel_event = threading.Event()
                 session = MatlabSession(
                     runtime.path_config,
                     force_simulated=self.force_simulated_checkbox.isChecked(),
                 )
                 try:
-                    session.start(startup_command=self._build_launch_startup_command(runtime.path_config))
+                    if show_connect_dialog:
+                        self.signals.show_connecting_dialog.emit(
+                            path_name,
+                            runtime.path_config.config_name,
+                            cancel_event,
+                        )
+                    session.start(
+                        startup_command=self._build_launch_startup_command(runtime.path_config),
+                        status_callback=(
+                            lambda message, current_path=path_name: self.signals.update_connecting_dialog.emit(
+                                current_path, message
+                            )
+                        )
+                        if show_connect_dialog
+                        else None,
+                        cancel_event=cancel_event if show_connect_dialog else None,
+                    )
                 except Exception:
                     runtime.session = None
                     raise
+                finally:
+                    if show_connect_dialog:
+                        self.signals.hide_connecting_dialog.emit(path_name)
                 runtime.session = session
                 if session.simulated:
                     runtime.status = "simulated"
@@ -3236,6 +3361,7 @@ class ScanImageControlWidget(QWidget):
         pattern_name = str(pattern_payload.get("name", "")).strip()
         if not pattern_name:
             raise ValueError("Pattern name cannot be empty.")
+        self._clear_online_analysis_integration_rois("send_pattern_to_scanimage")
         schema_payload = {
             "version": 1,
             "project": "manual_send",
@@ -3277,7 +3403,8 @@ class ScanImageControlWidget(QWidget):
                     blank_duration=0.1,
                     block_duration=pattern_duration_s,
                     prefix_blank_to_sequence=False,
-                    embed_blank_and_park_in_stim_group=True,
+                    embed_blank_and_park_in_stim_group=False,
+                    single_epoch_pattern=True,
                     num_sequences=float("inf"),
                 ),
                 timeout_s=runtime.path_config.command_timeout_s,
@@ -3291,7 +3418,7 @@ class ScanImageControlWidget(QWidget):
             runtime.prepared_photostim.prepared_sequence_names = ["S1"]
             runtime.prepared_photostim.imported_pattern_names = [pattern_name]
             self.signals.log_message.emit(
-                f"[{path_name}] started single test pattern '{pattern_name}' as one stim group with embedded blank-then-pattern-then-park timing"
+                f"[{path_name}] started single test pattern '{pattern_name}' as a single active SLM epoch"
             )
 
     def _generate_diagnostic_photostim_grid(
@@ -4092,6 +4219,64 @@ class ScanImageControlWidget(QWidget):
             return
         self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
 
+    def _clear_scanimage_state_for_new_experiment(self, old_exp_id: str, new_exp_id: str) -> None:
+        self.signals.log_message.emit(
+            f"[experiment] clearing ScanImage photostim and integration ROIs for new experiment "
+            f"old='{old_exp_id or '<none>'}' new='{new_exp_id}'"
+        )
+
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if photostim_path and photostim_path in self._runtimes:
+            photostim_runtime = self._runtimes[photostim_path]
+            photostim_runtime.prepared_photostim.reset()
+            if photostim_runtime.session is not None:
+                try:
+                    lines = photostim_runtime.session.eval(
+                        build_clear_photostim_command(photostim_runtime.path_config),
+                        timeout_s=photostim_runtime.path_config.command_timeout_s,
+                    )
+                    for line in lines:
+                        if line.strip():
+                            self.signals.log_message.emit(f"[{photostim_path}] {line}")
+                except Exception as exc:
+                    self.signals.log_message.emit(f"[{photostim_path}] clear photostim warning: {exc}")
+
+        self._clear_online_analysis_integration_rois(f"new_experiment:{new_exp_id}")
+
+    def _clear_online_analysis_integration_rois(self, reason: str) -> None:
+        self.signals.log_message.emit(f"[online analysis] clearing integration ROIs ({reason})")
+        self._stop_online_analysis_poller()
+
+        for path_name, runtime in self._runtimes.items():
+            if runtime.session is None:
+                continue
+            try:
+                with runtime.lock:
+                    if runtime.session is None:
+                        continue
+                    lines = runtime.session.eval(
+                        build_clear_integration_rois_command(runtime.path_config),
+                        timeout_s=runtime.path_config.command_timeout_s,
+                    )
+                for line in lines:
+                    if line.strip():
+                        self.signals.log_message.emit(f"[{path_name}] {line}")
+            except Exception as exc:
+                self.signals.log_message.emit(f"[{path_name}] clear integration ROI warning: {exc}")
+
+        with self._online_analysis.lock:
+            self._online_analysis.configured = False
+            self._clear_online_analysis_runtime_buffers_locked(
+                reason,
+                emit_log=False,
+            )
+            self._online_analysis.conditions = {}
+            self._online_analysis.cells_by_roi_name = {}
+            self._online_analysis.imaging_path = ""
+            self._online_analysis.exp_id = ""
+            self._online_analysis.current_condition_index = None
+            self._online_analysis.last_error = ""
+
     def _handle_update_experiment_params_request(
         self,
         request_path_name: str,
@@ -4120,6 +4305,10 @@ class ScanImageControlWidget(QWidget):
                 f"[{request_path_name}] trial_condition_indices missing; using one pass through "
                 f"{len(stimulus_conditions)} stimulus condition(s)"
             )
+
+        old_exp_id = tracking.exp_id
+        if exp_id and exp_id != old_exp_id:
+            self._clear_scanimage_state_for_new_experiment(old_exp_id, exp_id)
 
         tracking.reset()
         tracking.exp_id = exp_id
