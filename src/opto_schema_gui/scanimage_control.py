@@ -3361,6 +3361,7 @@ class ScanImageControlWidget(QWidget):
         pattern_name = str(pattern_payload.get("name", "")).strip()
         if not pattern_name:
             raise ValueError("Pattern name cannot be empty.")
+        self._clear_online_analysis_integration_rois("send_pattern_to_scanimage")
         schema_payload = {
             "version": 1,
             "project": "manual_send",
@@ -4223,7 +4224,6 @@ class ScanImageControlWidget(QWidget):
             f"[experiment] clearing ScanImage photostim and integration ROIs for new experiment "
             f"old='{old_exp_id or '<none>'}' new='{new_exp_id}'"
         )
-        self._stop_online_analysis_poller()
 
         photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
         if photostim_path and photostim_path in self._runtimes:
@@ -4241,14 +4241,23 @@ class ScanImageControlWidget(QWidget):
                 except Exception as exc:
                     self.signals.log_message.emit(f"[{photostim_path}] clear photostim warning: {exc}")
 
+        self._clear_online_analysis_integration_rois(f"new_experiment:{new_exp_id}")
+
+    def _clear_online_analysis_integration_rois(self, reason: str) -> None:
+        self.signals.log_message.emit(f"[online analysis] clearing integration ROIs ({reason})")
+        self._stop_online_analysis_poller()
+
         for path_name, runtime in self._runtimes.items():
             if runtime.session is None:
                 continue
             try:
-                lines = runtime.session.eval(
-                    build_clear_integration_rois_command(runtime.path_config),
-                    timeout_s=runtime.path_config.command_timeout_s,
-                )
+                with runtime.lock:
+                    if runtime.session is None:
+                        continue
+                    lines = runtime.session.eval(
+                        build_clear_integration_rois_command(runtime.path_config),
+                        timeout_s=runtime.path_config.command_timeout_s,
+                    )
                 for line in lines:
                     if line.strip():
                         self.signals.log_message.emit(f"[{path_name}] {line}")
@@ -4258,7 +4267,7 @@ class ScanImageControlWidget(QWidget):
         with self._online_analysis.lock:
             self._online_analysis.configured = False
             self._clear_online_analysis_runtime_buffers_locked(
-                f"new_experiment:{new_exp_id}",
+                reason,
                 emit_log=False,
             )
             self._online_analysis.conditions = {}
