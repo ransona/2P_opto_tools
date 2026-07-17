@@ -157,14 +157,16 @@ class MatlabSession:
             )
 
         if status_callback is not None:
-            status_callback(f"Checking for existing MATLAB session for config {self.config.config_name}")
+            status_callback(
+                f"Waiting for shared MATLAB engine '{self.config.engine_name}'"
+            )
         connected = self._try_connect_existing(status_callback=status_callback, cancel_event=cancel_event)
         if connected:
             self.attached = True
             self.started_with_launch = False
             try:
                 if status_callback is not None:
-                    status_callback(f"Validating existing MATLAB session for config {self.config.config_name}")
+                    status_callback("Checking that ScanImage is ready (waiting for hSI)")
                 self._validate_scanimage_started()
                 self._set_working_directory()
                 return
@@ -355,7 +357,9 @@ class MatlabSession:
         startup = self._build_startup_command(startup_command)
         matlab_cmd.extend(["-r", startup])
         if status_callback is not None:
-            status_callback(f"Launching MATLAB for config {self.config.config_name}")
+            status_callback(
+                f"MATLAB is launching; waiting for shared engine '{self.config.engine_name}'"
+            )
         try:
             self.launch_process = subprocess.Popen(
                 matlab_cmd,
@@ -398,7 +402,7 @@ class MatlabSession:
                 try:
                     if status_callback is not None:
                         status_callback(
-                            f"Connecting to MATLAB session '{self.config.engine_name}' for config {self.config.config_name}"
+                            f"MATLAB engine found; connecting and waiting for ScanImage hSI"
                         )
                     self.engine = self._connect_matlab_with_timeout(
                         self.config.engine_name,

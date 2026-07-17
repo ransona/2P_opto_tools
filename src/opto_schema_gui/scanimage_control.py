@@ -806,7 +806,7 @@ class MatlabConnectDialog(QDialog):
         self.spinner_label = QLabel(self._spinner_frames[0])
         self.spinner_label.setMinimumWidth(24)
         spinner_row.addWidget(self.spinner_label)
-        self.status_label = QLabel("Starting MATLAB session...")
+        self.status_label = QLabel("Currently waiting for MATLAB and ScanImage to become ready...")
         self.status_label.setWordWrap(True)
         spinner_row.addWidget(self.status_label, 1)
         layout.addLayout(spinner_row)
