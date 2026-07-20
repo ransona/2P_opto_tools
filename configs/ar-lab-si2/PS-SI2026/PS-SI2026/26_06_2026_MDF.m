@@ -628,4 +628,20 @@ defaultValueVolts = 0;
 periodSec = 0.1;              % ignored now, leave large
 startDelay = 0;               % this is your only timing knob
 dutyCycle = 50;
+% 
+% %% dabs.generic.WaveformGenerator (PMTBlank)
+% taskType = 'Digital';     % The type of task  e.g. 'Analog' or 'Digital'
+% hControl = '/vDAQ0/D3.6';     % Control terminal  e.g. '/vDAQ0/AO0'
+% hAIFeedback = '';     % Feedback terminal  e.g. '/vDAQ0/AI0'
+% sampleRate_Hz = 2e+06;     % Sampling rate must e.g '' or ''
+% startTriggerPort = '/vDAQ0/D3.4';     % Trigger terminal  e.g. '/vDAQ0/DO0.0'
+% startTriggerEdge = 'falling';     % The type of edges are e.g 'rising' or 'falling'
+% sampleMode = 'finite';     % The type of sampling modes e.g 'continuous' or 'finite'
+% allowRetrigger = true;     % Whether or not to allow finite tasks to be triggered multiple times (e.g. if samplesPerTrigger < bufferSize_samples, the likely intent is to allow retrigger to execute the buffer in parts)
+% wvfrmFcn = 'PMTBlank';     % Function name that generates waveform
+% amplitude = 0;     % Waveform Amplitude Parameter
+% defaultValueVolts = 0;     % Default Value Parameter
+% periodSec = 0;     % Waveform period (sec)
+% startDelay = 0;     % Waveform start delay (sec)
+% dutyCycle = 100;     % Waveform duty cycle(%)
 
