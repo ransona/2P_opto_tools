@@ -159,6 +159,8 @@ class ExperimentProject:
         for name, sequence in self.sequences.items():
             if not name.strip():
                 errors.append("Sequence name cannot be empty.")
+            if not sequence.steps:
+                errors.append(f"Sequence '{name}' must contain at least one pattern step.")
             last_end = None
             ordered_steps = sorted(sequence.steps, key=lambda step: step.start_s)
             if ordered_steps != sequence.steps:

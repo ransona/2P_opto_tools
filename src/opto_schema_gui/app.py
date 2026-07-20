@@ -3668,6 +3668,23 @@ class MainWindow(QMainWindow):
         message = " | ".join(dirty_bits + (errors[:3] if errors else [])) if (dirty_bits or errors) else "Project valid"
         self.statusBar().showMessage(message)
 
+    def _validate_schema_for_save(self) -> bool:
+        empty_patterns = [name for name, pattern in self.project.patterns.items() if not pattern.cells]
+        empty_sequences = [name for name, sequence in self.project.sequences.items() if not sequence.steps]
+        if not empty_patterns and not empty_sequences:
+            return True
+
+        sections: list[str] = [
+            "This schema cannot be saved while it contains empty items.",
+            "Fill these items or delete them before saving:",
+        ]
+        if empty_patterns:
+            sections.append("Empty patterns: " + ", ".join(empty_patterns))
+        if empty_sequences:
+            sections.append("Empty sequences: " + ", ".join(empty_sequences))
+        QMessageBox.warning(self, "Cannot save schema", "\n\n".join(sections))
+        return False
+
     def update_save_path_label(self) -> None:
         self.save_path_label.setText(str(self.schema_save_path()))
 
@@ -4097,6 +4114,8 @@ class MainWindow(QMainWindow):
                 return False
             if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
                 return False
+            if not self._validate_schema_for_save():
+                return False
             target.parent.mkdir(parents=True, exist_ok=True)
             save_schema(target, self.project)
             self.schema_file_path = str(target)
@@ -4117,6 +4136,8 @@ class MainWindow(QMainWindow):
             if self.pattern_dirty and not self.pattern_editor.save_current_pattern():
                 return False
             if self.sequence_dirty and not self.sequence_editor.save_current_sequence():
+                return False
+            if not self._validate_schema_for_save():
                 return False
             path = self.schema_save_path()
             path.parent.mkdir(parents=True, exist_ok=True)

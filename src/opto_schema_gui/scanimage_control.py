@@ -3377,10 +3377,13 @@ class ScanImageControlWidget(QWidget):
         self._import_pattern_subset(path_name, schema_path, None)
 
     def _send_single_pattern_to_scanimage(self, path_name: str, pattern_payload: dict[str, object]) -> None:
-        runtime = self._ensure_session(path_name)
         pattern_name = str(pattern_payload.get("name", "")).strip()
         if not pattern_name:
             raise ValueError("Pattern name cannot be empty.")
+        cells = pattern_payload.get("cells")
+        if not isinstance(cells, list) or not cells:
+            raise ValueError(f"Pattern '{pattern_name}' must contain at least one cell.")
+        runtime = self._ensure_session(path_name)
         self._clear_online_analysis_integration_rois("send_pattern_to_scanimage")
         schema_payload = {
             "version": 1,
@@ -3486,6 +3489,13 @@ class ScanImageControlWidget(QWidget):
         prepared_seq_num: int | None = None,
         prepared_trial_seq_nums: list[int] | None = None,
     ) -> None:
+        if prepare_sequence or start_photostim:
+            project = load_schema(schema_path)
+            required_seq_nums = []
+            if prepared_seq_num is not None:
+                required_seq_nums.append(int(prepared_seq_num))
+            required_seq_nums.extend(int(value) for value in (prepared_trial_seq_nums or []))
+            self._validate_schema_for_photostim(project, required_seq_nums)
         runtime = self._ensure_session(path_name)
         schema_json_path: Path | None = None
         if prepare_sequence or start_photostim:
@@ -3541,6 +3551,20 @@ class ScanImageControlWidget(QWidget):
                 pattern_names.add(step.pattern)
             sequence_patterns[seq_num] = pattern_names
         return sequence_patterns
+
+    def _validate_schema_for_photostim(self, project, required_seq_nums: list[int]) -> None:
+        errors = project.validate()
+        sequence_names = list(project.sequences.keys())
+        if not sequence_names:
+            errors.insert(0, "Schema does not contain any sequences.")
+        for seq_num in required_seq_nums:
+            if seq_num < 0 or seq_num >= len(sequence_names):
+                errors.append(
+                    f"Requested seq_num {seq_num} is out of range for {len(sequence_names)} sequence(s)."
+                )
+        if errors:
+            detail = "\n".join(f"- {error}" for error in errors)
+            raise ValueError(f"Schema photostim preflight failed:\n{detail}")
 
     def _build_phase_mask_batch_plan(
         self,
@@ -4380,6 +4404,22 @@ class ScanImageControlWidget(QWidget):
                 f"{len(stimulus_conditions)} stimulus condition(s)"
             )
 
+        if schema_name:
+            schema_path = self._resolve_schema_path(schema_name, exp_id)
+            project = load_schema(schema_path)
+            required_seq_nums: list[int] = []
+            for condition in stimulus_conditions:
+                seq_num, reason = self._condition_opto_seq_num(
+                    condition,
+                    len(project.sequences),
+                )
+                if seq_num is None:
+                    if not self._condition_is_non_opto(reason):
+                        raise ValueError(f"Invalid photostim condition: {reason}")
+                    continue
+                required_seq_nums.append(seq_num)
+            self._validate_schema_for_photostim(project, required_seq_nums)
+
         old_exp_id = tracking.exp_id
         if exp_id and exp_id != old_exp_id:
             self._clear_scanimage_state_for_new_experiment(old_exp_id, exp_id)
@@ -4496,6 +4536,7 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit("Pre-building all stimulus groups for experiment")
         self.signals.log_message.emit(f"Loading schema: {schema_path}")
         project = load_schema(schema_path)
+        self._validate_schema_for_photostim(project, [seq_num])
         runtime = self._runtimes[photostim_path]
         prep_state = runtime.prepared_photostim
         tracking = runtime.experiment_tracking
@@ -4638,6 +4679,7 @@ class ScanImageControlWidget(QWidget):
         schema_path = self._resolve_schema_path(schema_name, exp_id)
         self.signals.log_message.emit(f"Loading schema: {schema_path}")
         project = load_schema(schema_path)
+        self._validate_schema_for_photostim(project, [seq_num])
         runtime = self._runtimes[photostim_path]
         prep_state = runtime.prepared_photostim
         if prep_state.schema_path != schema_path or prep_state.schema_name != schema_name or prep_state.exp_id != exp_id:
