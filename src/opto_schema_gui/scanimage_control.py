@@ -5,11 +5,13 @@ import configparser
 import math
 import html
 import json
+import os
 import random
 import socket
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -864,8 +866,26 @@ class ScanImageControlWidget(QWidget):
         self.schema_path_provider = schema_path_provider
         self.project_provider = project_provider
         self.repo_root = Path(__file__).resolve().parents[2]
+        self._diagnostic_log_lock = threading.Lock()
+        self._diagnostic_log_path = self._initialize_diagnostic_log()
         self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
+        self.signals.log_message.connect(
+            self._append_diagnostic_log,
+            Qt.ConnectionType.DirectConnection,
+        )
+        self.signals.path_udp_log.connect(
+            self._append_udp_diagnostic_log,
+            Qt.ConnectionType.DirectConnection,
+        )
+        self.signals.path_status.connect(
+            self._append_status_diagnostic_log,
+            Qt.ConnectionType.DirectConnection,
+        )
+        self.signals.update_connecting_dialog.connect(
+            self._append_connection_diagnostic_log,
+            Qt.ConnectionType.DirectConnection,
+        )
         self.signals.path_status.connect(self._set_path_status)
         self.signals.path_udp_log.connect(self._append_path_udp_log)
         self.signals.waveform_test_result.connect(lambda *_: None)
@@ -3780,6 +3800,60 @@ class ScanImageControlWidget(QWidget):
             self.log_text.append(line)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _initialize_diagnostic_log(self) -> Path | None:
+        if sys.platform.startswith("win"):
+            preferred_dir = Path("C:/temp")
+        else:
+            preferred_dir = Path(tempfile.gettempdir())
+        preferred_path = preferred_dir / "2p_opto_tools_operations.log"
+        try:
+            preferred_dir.mkdir(parents=True, exist_ok=True)
+            path = preferred_path
+        except OSError:
+            fallback_dir = Path(tempfile.gettempdir()) / "2p_opto_tools"
+            try:
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                path = fallback_dir / "2p_opto_tools_operations.log"
+            except OSError:
+                return None
+        self._write_diagnostic_log(
+            path,
+            f"=== GUI diagnostic logging started pid={os.getpid()} cwd={Path.cwd()} ===",
+        )
+        return path
+
+    def _write_diagnostic_log(self, path: Path | None, message: str) -> None:
+        if path is None:
+            return
+        timestamp = datetime.now().isoformat(timespec="milliseconds")
+        thread_id = threading.get_ident()
+        try:
+            with self._diagnostic_log_lock:
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(f"{timestamp} thread={thread_id} {message}\n")
+                    handle.flush()
+        except OSError:
+            # Diagnostic logging must never interfere with GUI operation.
+            return
+
+    def _append_diagnostic_log(self, message: str) -> None:
+        self._write_diagnostic_log(self._diagnostic_log_path, message)
+
+    def _append_udp_diagnostic_log(self, path_name: str, message: str) -> None:
+        self._write_diagnostic_log(self._diagnostic_log_path, f"[{path_name}] {message}")
+
+    def _append_status_diagnostic_log(self, path_name: str, status: str) -> None:
+        self._write_diagnostic_log(
+            self._diagnostic_log_path,
+            f"[{path_name}] status={status}",
+        )
+
+    def _append_connection_diagnostic_log(self, path_name: str, message: str) -> None:
+        self._write_diagnostic_log(
+            self._diagnostic_log_path,
+            f"[{path_name}] connection-status={message}",
+        )
 
     def _categorize_debug_message(self, message: str) -> str:
         lower = message.lower()
