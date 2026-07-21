@@ -2191,8 +2191,10 @@ class ScanImageControlWidget(QWidget):
 
     def _update_config_root_label(self) -> None:
         root = configs_root(self.repo_root)
-        source = "external" if get_config_root_setting() is not None else "repository fallback"
-        self.config_root_label.setText(f"Configuration folder ({source}): {root}")
+        if root is None:
+            self.config_root_label.setText("Configuration folder: not selected")
+            return
+        self.config_root_label.setText(f"Configuration folder (external): {root}")
 
     def _ensure_config_root_selected(self) -> None:
         if get_config_root_setting() is not None:
@@ -2210,7 +2212,7 @@ class ScanImageControlWidget(QWidget):
             self._change_config_root()
         else:
             self.signals.log_message.emit(
-                "No external configuration folder selected; using repository configs as a fallback"
+                "No external configuration folder selected; configuration discovery is disabled"
             )
 
     def _change_config_root(self) -> None:
@@ -2218,7 +2220,7 @@ class ScanImageControlWidget(QWidget):
         selected = QFileDialog.getExistingDirectory(
             self,
             "Select Configuration Folder",
-            str(current_root if current_root.is_dir() else self.repo_root),
+            str(current_root if current_root is not None and current_root.is_dir() else self.repo_root),
         )
         if not selected:
             return

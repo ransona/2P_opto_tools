@@ -21,7 +21,6 @@ except ModuleNotFoundError:
     matlab_engine = None
 
 
-DEFAULT_CONFIGS_ROOT = Path("configs")
 MACHINE_CONFIG_FILENAME = "machine.ini"
 CONFIG_REGISTRY_KEY = r"Software\2POptoTools"
 CONFIG_REGISTRY_VALUE = "ConfigRoot"
@@ -737,22 +736,24 @@ def is_config_root(config_root: str | Path) -> bool:
         return False
 
 
-def configs_root(repo_root: str | Path) -> Path:
-    configured_root = get_config_root_setting()
-    if configured_root is not None:
-        return configured_root
-    return Path(repo_root).resolve() / DEFAULT_CONFIGS_ROOT
+def configs_root(repo_root: str | Path) -> Path | None:
+    """Return the registered external config root, or None until one is selected."""
+    del repo_root  # Kept in the API for callers that also use repo-relative paths.
+    return get_config_root_setting()
 
 
 def list_machine_names(repo_root: str | Path) -> list[str]:
     root = configs_root(repo_root)
-    if not root.exists():
+    if root is None or not root.exists():
         return []
     return sorted(path.name for path in root.iterdir() if path.is_dir())
 
 
 def list_config_names(repo_root: str | Path, machine_name: str) -> list[str]:
-    machine_dir = configs_root(repo_root) / machine_name
+    root = configs_root(repo_root)
+    if root is None:
+        return []
+    machine_dir = root / machine_name
     if not machine_dir.exists():
         return []
     return sorted(path.name for path in machine_dir.iterdir() if path.is_dir())
@@ -763,7 +764,10 @@ def get_machine_default_config_name(repo_root: str | Path, machine_name: str) ->
 
 
 def load_machine_ui_config(repo_root: str | Path, machine_name: str) -> MachineUiConfig:
-    machine_dir = configs_root(repo_root) / machine_name
+    root = configs_root(repo_root)
+    if root is None:
+        return MachineUiConfig(default_config=None, screen_index=None, start_maximized=True)
+    machine_dir = root / machine_name
     machine_ini = machine_dir / MACHINE_CONFIG_FILENAME
     if not machine_ini.is_file():
         return MachineUiConfig(default_config=None, screen_index=None, start_maximized=True)
@@ -802,7 +806,10 @@ def autodetect_machine_name(repo_root: str | Path) -> str | None:
 
 def load_machine_config(repo_root: str | Path, machine_name: str, config_name: str) -> MachineConfig:
     repo_root_path = Path(repo_root).resolve()
-    config_dir = configs_root(repo_root_path) / machine_name / config_name
+    root = configs_root(repo_root)
+    if root is None:
+        raise FileNotFoundError("No external configuration folder has been selected")
+    config_dir = root / machine_name / config_name
     config_ini = config_dir / "config.ini"
     if not config_ini.is_file():
         raise FileNotFoundError(f"Config file not found: {config_ini}")

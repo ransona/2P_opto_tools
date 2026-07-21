@@ -115,9 +115,10 @@ HKCU\Software\2POptoTools
 
 On first launch, or if the stored folder no longer exists, the GUI asks the user
 to select it. The `Change Config Folder` button in the ScanImage Config panel
-opens the same selector later. Until a folder is selected, the repository's
-`configs/` directory is used as a development fallback. On Linux, the equivalent
-per-user setting is stored in `~/.config/2p_opto_tools/config_root.txt`.
+opens the same selector later. Until a folder is selected, configuration
+discovery is disabled and the machine/configuration controls remain empty. On
+Linux, the equivalent per-user setting is stored in
+`~/.config/2p_opto_tools/config_root.txt`.
 
 Important:
 
