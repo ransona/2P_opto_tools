@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -86,13 +87,17 @@ from .matlab_bridge import (
     build_trial_waveform_status_command,
     build_trigger_photostim_command,
     build_arm_trial_waveform_command,
+    configs_root,
     context_to_matlab_variables,
+    get_config_root_setting,
     get_machine_default_config_name,
+    is_config_root,
     list_config_names,
     list_machine_names,
     load_machine_config,
     matlab_string,
     matlab_engine,
+    set_config_root_setting,
 )
 from .models import ExperimentProject, Pattern
 
@@ -924,6 +929,7 @@ class ScanImageControlWidget(QWidget):
         self._build_ui()
         self._load_gui_state()
         self.reload_discovery()
+        QTimer.singleShot(0, self._ensure_config_root_selected)
 
     @staticmethod
     def _sequence_position_delta(before_position: int | None, after_position: int | None) -> int:
@@ -2056,11 +2062,17 @@ class ScanImageControlWidget(QWidget):
         controls_row.addStretch(1)
         config_layout.addLayout(controls_row)
 
+        self.config_root_label = QLabel()
+        self.config_root_label.setWordWrap(True)
+        self.config_root_label.setToolTip("Folder containing the machine configuration folders.")
+        config_layout.addWidget(self.config_root_label)
+
         buttons_row = QHBoxLayout()
         self.clear_all_logs_btn = QPushButton("All")
         self.start_config_btn = QPushButton("Start Config")
         self.stop_config_btn = QPushButton("Stop Config")
         self.reload_btn = QPushButton("Reload Configs")
+        self.change_config_root_btn = QPushButton("Change Config Folder")
         self.test_prep_patterns_btn = QPushButton("Test Photostim")
         self.test_stim_waveform_btn = QPushButton("Test stim waveform")
         self.test_stim_waveform_external_btn = QPushButton("Test stim waveform ext")
@@ -2071,6 +2083,7 @@ class ScanImageControlWidget(QWidget):
             self.start_config_btn,
             self.stop_config_btn,
             self.reload_btn,
+            self.change_config_root_btn,
             self.test_prep_patterns_btn,
             self.test_stim_waveform_btn,
             self.test_stim_waveform_external_btn,
@@ -2121,6 +2134,7 @@ class ScanImageControlWidget(QWidget):
         layout.addWidget(log_box, 1)
 
         self.reload_btn.clicked.connect(self.reload_discovery)
+        self.change_config_root_btn.clicked.connect(self._change_config_root)
         self.machine_combo.currentTextChanged.connect(self._on_machine_changed)
         self.config_combo.currentTextChanged.connect(self._on_config_changed)
         self.start_config_btn.clicked.connect(self.start_config)
@@ -2161,6 +2175,7 @@ class ScanImageControlWidget(QWidget):
             dialog.deleteLater()
 
     def reload_discovery(self) -> None:
+        self._update_config_root_label()
         machine_names = list_machine_names(self.repo_root)
         self._ignore_combo_changes = True
         self.machine_combo.clear()
@@ -2173,6 +2188,63 @@ class ScanImageControlWidget(QWidget):
         self._ignore_combo_changes = False
         self._populate_configs_for_machine(self.machine_combo.currentText())
         self.signals.log_message.emit(f"Discovered machines: {', '.join(machine_names) if machine_names else 'none'}")
+
+    def _update_config_root_label(self) -> None:
+        root = configs_root(self.repo_root)
+        source = "external" if get_config_root_setting() is not None else "repository fallback"
+        self.config_root_label.setText(f"Configuration folder ({source}): {root}")
+
+    def _ensure_config_root_selected(self) -> None:
+        if get_config_root_setting() is not None:
+            return
+        answer = QMessageBox.information(
+            self,
+            "Select Configuration Folder",
+            "No machine configuration folder is registered for this computer.\n\n"
+            "Select the folder containing the machine configuration folders. "
+            "The selected location will be remembered for future launches.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok,
+        )
+        if answer == QMessageBox.StandardButton.Ok:
+            self._change_config_root()
+        else:
+            self.signals.log_message.emit(
+                "No external configuration folder selected; using repository configs as a fallback"
+            )
+
+    def _change_config_root(self) -> None:
+        current_root = configs_root(self.repo_root)
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Select Configuration Folder",
+            str(current_root if current_root.is_dir() else self.repo_root),
+        )
+        if not selected:
+            return
+
+        candidate = Path(selected).expanduser().resolve()
+        if not is_config_root(candidate):
+            QMessageBox.warning(
+                self,
+                "Invalid Configuration Folder",
+                "The selected folder does not contain usable machine configuration folders.",
+            )
+            return
+
+        if self._has_active_paths():
+            self.signals.log_message.emit("[config] Configuration folder change requested; stopping active paths first")
+            self._teardown_active_paths_for_config_change()
+        try:
+            stored_root = set_config_root_setting(candidate)
+        except Exception as exc:
+            QMessageBox.critical(self, "Configuration Folder", f"Could not store the configuration folder:\n{exc}")
+            return
+
+        self._current_machine_name = ""
+        self._current_config_name = ""
+        self.signals.log_message.emit(f"[config] Using external configuration folder: {stored_root}")
+        self.reload_discovery()
 
     def _load_path_roots(self) -> tuple[Path, Path]:
         config = configparser.ConfigParser()

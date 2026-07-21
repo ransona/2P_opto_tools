@@ -88,6 +88,37 @@ Current configs for `ar-lab-si2`:
 - `P1_P2_imaging`
 - `PS`
 
+### External configuration repository
+
+Machine and ScanImage configurations can be stored outside this code repository,
+for example in a separate configuration Git repository. The selected folder must
+contain the machine folders directly:
+
+```text
+<configuration-folder>/
+  ar-lab-si2/
+    machine.ini
+    PS-SI2026/
+      config.ini
+      PS-SI2026/
+        launch.m
+        start_script.m
+        stop_script.m
+```
+
+On Windows, the GUI stores the selected folder in:
+
+```text
+HKCU\Software\2POptoTools
+  ConfigRoot = <configuration-folder>
+```
+
+On first launch, or if the stored folder no longer exists, the GUI asks the user
+to select it. The `Change Config Folder` button in the ScanImage Config panel
+opens the same selector later. Until a folder is selected, the repository's
+`configs/` directory is used as a development fallback. On Linux, the equivalent
+per-user setting is stored in `~/.config/2p_opto_tools/config_root.txt`.
+
 Important:
 
 - `simulation_mode = auto` in each path config will automatically fall back to simulated MATLAB sessions when MATLAB is not available.

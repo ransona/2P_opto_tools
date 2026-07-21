@@ -23,6 +23,9 @@ except ModuleNotFoundError:
 
 DEFAULT_CONFIGS_ROOT = Path("configs")
 MACHINE_CONFIG_FILENAME = "machine.ini"
+CONFIG_REGISTRY_KEY = r"Software\2POptoTools"
+CONFIG_REGISTRY_VALUE = "ConfigRoot"
+CONFIG_ROOT_FILE = Path(".config") / "2p_opto_tools" / "config_root.txt"
 
 
 @dataclass
@@ -671,7 +674,73 @@ def matlab_literal(value: Any) -> str:
     raise TypeError(f"Unsupported MATLAB literal type: {type(value)!r}")
 
 
+def _portable_config_root_file() -> Path:
+    return Path.home() / CONFIG_ROOT_FILE
+
+
+def get_config_root_setting() -> Path | None:
+    """Return the configured machine config root, if it exists and is usable."""
+    raw_value = ""
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, CONFIG_REGISTRY_KEY) as key:
+                raw_value, _ = winreg.QueryValueEx(key, CONFIG_REGISTRY_VALUE)
+        except (FileNotFoundError, OSError):
+            raw_value = ""
+    else:
+        try:
+            raw_value = _portable_config_root_file().read_text(encoding="utf-8").strip()
+        except OSError:
+            raw_value = ""
+
+    if not isinstance(raw_value, str) or not raw_value.strip():
+        return None
+    candidate = Path(raw_value).expanduser().resolve()
+    return candidate if candidate.is_dir() else None
+
+
+def set_config_root_setting(config_root: str | Path) -> Path:
+    """Persist and return the selected machine config root."""
+    root = Path(config_root).expanduser().resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"Configuration folder does not exist: {root}")
+    if not is_config_root(root):
+        raise ValueError(f"Configuration folder contains no usable machine configs: {root}")
+
+    if os.name == "nt":
+        import winreg
+
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, CONFIG_REGISTRY_KEY) as key:
+            winreg.SetValueEx(key, CONFIG_REGISTRY_VALUE, 0, winreg.REG_SZ, str(root))
+    else:
+        setting_file = _portable_config_root_file()
+        setting_file.parent.mkdir(parents=True, exist_ok=True)
+        setting_file.write_text(str(root), encoding="utf-8")
+    return root
+
+
+def is_config_root(config_root: str | Path) -> bool:
+    """Return whether a folder contains at least one usable machine config folder."""
+    root = Path(config_root).expanduser()
+    if not root.is_dir():
+        return False
+    try:
+        machine_dirs = (path for path in root.iterdir() if path.is_dir())
+        return any(
+            (machine_dir / MACHINE_CONFIG_FILENAME).is_file()
+            or any((config_dir / "config.ini").is_file() for config_dir in machine_dir.iterdir() if config_dir.is_dir())
+            for machine_dir in machine_dirs
+        )
+    except OSError:
+        return False
+
+
 def configs_root(repo_root: str | Path) -> Path:
+    configured_root = get_config_root_setting()
+    if configured_root is not None:
+        return configured_root
     return Path(repo_root).resolve() / DEFAULT_CONFIGS_ROOT
 
 
