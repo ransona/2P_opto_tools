@@ -3,7 +3,7 @@ global hSI
 global hSICtl
 configDir = fileparts(mfilename('fullpath'));
 mdfPath = fullfile(configDir, '26_06_2026_MDF.m');
-scanimageRoot = 'C:\Users\ScanImage\Documents\ScanImage-Remote-Dev';
+scanimageRoot = 'C:\Users\ScanImage\AppData\Local\Vidrio\ScanImage';
 assert(exist(fullfile(scanimageRoot, 'scanimage.m'), 'file') == 2, ...
     'ScanImage root does not contain scanimage.m: %s', scanimageRoot);
 addpath(genpath(scanimageRoot), '-begin');
