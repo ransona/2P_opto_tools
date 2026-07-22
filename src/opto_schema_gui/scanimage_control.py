@@ -3176,7 +3176,7 @@ class ScanImageControlWidget(QWidget):
                     session.start(
                         startup_command=self._build_launch_startup_command(runtime.path_config),
                         status_callback=(
-                            lambda message, current_path=path_name: self.signals.update_connecting_dialog.emit(
+                            lambda message, current_path=path_name: self._report_startup_status(
                                 current_path, message
                             )
                         )
@@ -3211,6 +3211,11 @@ class ScanImageControlWidget(QWidget):
         if runtime.path_config.listener_auto_start:
             self._start_listener(path_name)
         return runtime
+
+    def _report_startup_status(self, path_name: str, message: str) -> None:
+        """Show the current MATLAB startup stage and retain it in the GUI log."""
+        self.signals.update_connecting_dialog.emit(path_name, message)
+        self.signals.log_message.emit(f"[{path_name}] startup: {message}")
 
     def _build_launch_startup_command(self, path_config: PathConfig) -> str:
         return "; ".join(

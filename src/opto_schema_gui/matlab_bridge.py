@@ -168,11 +168,17 @@ class MatlabSession:
             self.started_with_launch = False
             try:
                 if status_callback is not None:
-                    status_callback("Checking that ScanImage is ready (waiting for hSI)")
-                self._validate_scanimage_started()
-                self._set_working_directory()
+                    status_callback("Validating ScanImage hSI in the connected MATLAB session")
+                self._validate_scanimage_started(status_callback=status_callback)
+                if status_callback is not None:
+                    status_callback("ScanImage hSI validated; changing MATLAB working directory")
+                self._set_working_directory(status_callback=status_callback)
+                if status_callback is not None:
+                    status_callback("MATLAB session and ScanImage are ready")
                 return
-            except Exception:
+            except Exception as exc:
+                if status_callback is not None:
+                    status_callback(f"Existing-session startup check failed: {type(exc).__name__}: {exc}")
                 self.engine = None
                 self.attached = False
 
@@ -315,7 +321,13 @@ class MatlabSession:
                 f"MATLAB session for path '{self.config.name}' could not be shared as '{self.config.engine_name}': {exc}"
             ) from exc
 
-    def _validate_scanimage_started(self) -> None:
+    def _validate_scanimage_started(
+        self,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        if status_callback is not None:
+            status_callback("Starting MATLAB hSI readiness command")
         lines = self.eval(
             "\n".join(
                 [
@@ -327,6 +339,8 @@ class MatlabSession:
             ),
             timeout_s=self.config.command_timeout_s,
         )
+        if status_callback is not None:
+            status_callback("MATLAB hSI readiness command returned successfully")
         if not lines:
             return
 
@@ -411,11 +425,19 @@ class MatlabSession:
                         timeout_s=5.0,
                         cancel_event=cancel_event,
                     )
-                    self._validate_scanimage_started()
-                    self._set_working_directory()
+                    self._validate_scanimage_started(status_callback=status_callback)
+                    if status_callback is not None:
+                        status_callback("ScanImage hSI validated; changing MATLAB working directory")
+                    self._set_working_directory(status_callback=status_callback)
+                    if status_callback is not None:
+                        status_callback("MATLAB session and ScanImage are ready")
                     return
                 except Exception as exc:
                     last_error = exc
+                    if status_callback is not None:
+                        status_callback(
+                            f"ScanImage startup check failed; retrying: {type(exc).__name__}: {exc}"
+                        )
             elif status_callback is not None:
                 status_callback(
                     f"Waiting for MATLAB session '{self.config.engine_name}' for config {self.config.config_name}"
@@ -468,15 +490,23 @@ class MatlabSession:
             + "; catch ME; disp(getReport(ME,'extended')); end"
         )
 
-    def _set_working_directory(self) -> None:
+    def _set_working_directory(
+        self,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> None:
         if self.simulated:
             self.current_directory = str(self.config.directory)
             return
         if self.engine is None:
             return
         target_dir = str(self.config.directory)
+        if status_callback is not None:
+            status_callback(f"Changing MATLAB working directory to {target_dir}")
         self.eval(f"cd({matlab_string(target_dir)})", timeout_s=self.config.command_timeout_s)
         self.current_directory = target_dir
+        if status_callback is not None:
+            status_callback("MATLAB working directory changed")
 
     def _simulate_eval(self, command: str) -> list[str]:
         outputs: list[str] = []
