@@ -362,11 +362,20 @@ class MultiCellActivityPlotWidget(QWidget):
         y = y[order]
         if self._normalization_mode == "dff":
             if y.size >= 3:
-                kernel = np.ones(5, dtype=float) / 5.0
-                smooth = np.convolve(y, kernel, mode="same")
+                kernel = np.ones(5 if y.size >= 5 else 3, dtype=float)
+                kernel /= kernel.size
+                pad = kernel.size // 2
+                smooth = np.convolve(
+                    np.pad(y, (pad, pad), mode="edge"),
+                    kernel,
+                    mode="valid",
+                )
             else:
                 smooth = y
-            f0 = float(np.nanpercentile(smooth, 5.0))
+            baseline = smooth[x < 0]
+            if baseline.size == 0:
+                baseline = smooth
+            f0 = float(np.nanpercentile(baseline, 10.0))
             if not np.isfinite(f0) or abs(f0) < 1e-9:
                 transformed = np.zeros_like(y)
             else:
