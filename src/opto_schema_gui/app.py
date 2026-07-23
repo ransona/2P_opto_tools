@@ -1026,7 +1026,7 @@ class OnlineActivityWidget(QWidget):
             plot.set_plot_data(
                 cells,
                 normalization_mode="dff",
-                display_mode="mean",
+                display_mode="mean_error",
                 pre_s=pre_s,
                 post_s=post_s,
                 y_max_override=None,
