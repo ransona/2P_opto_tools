@@ -316,6 +316,7 @@ class MultiCellActivityPlotWidget(QWidget):
         self._post_s = 3.0
         self._y_max_override: float | None = None
         self._y_limits_override: tuple[float, float] | None = None
+        self._show_per_cell_scale = False
         self._placeholder_text = "No online activity data yet"
         self.setMinimumHeight(220)
 
@@ -330,6 +331,7 @@ class MultiCellActivityPlotWidget(QWidget):
         y_max_override: float | None,
         placeholder_text: str,
         y_limits_override: tuple[float, float] | None = None,
+        show_per_cell_scale: bool = False,
     ) -> None:
         self._cell_payloads = cell_payloads
         self._normalization_mode = normalization_mode
@@ -338,6 +340,7 @@ class MultiCellActivityPlotWidget(QWidget):
         self._post_s = max(0.1, float(post_s))
         self._y_max_override = y_max_override if y_max_override is None else float(y_max_override)
         self._y_limits_override = y_limits_override
+        self._show_per_cell_scale = show_per_cell_scale
         self._placeholder_text = placeholder_text
         self.updateGeometry()
         self.update()
@@ -494,6 +497,14 @@ class MultiCellActivityPlotWidget(QWidget):
         margin = 0.1 * (observed_max - observed_min)
         return observed_min - margin, observed_max + margin
 
+    @staticmethod
+    def round_y_limits_to_half(y_min: float, y_max: float) -> tuple[float, float]:
+        rounded_min = math.floor(float(y_min) * 2.0) / 2.0
+        rounded_max = math.ceil(float(y_max) * 2.0) / 2.0
+        if rounded_max <= rounded_min:
+            rounded_max = rounded_min + 0.5
+        return rounded_min, rounded_max
+
     def _heat_color(self, value: float, vmin: float, vmax: float) -> QColor:
         if not np.isfinite(value):
             return QColor("#0f172a")
@@ -587,7 +598,7 @@ class MultiCellActivityPlotWidget(QWidget):
         x_min = -self._pre_s
         x_max = self._post_s
         y_min, y_max = self._line_limits()
-        label_width = 180
+        label_width = 220 if self._show_per_cell_scale else 180
         time_axis_height = 26
         row_gap = 6
         summary_height = 96
@@ -636,12 +647,25 @@ class MultiCellActivityPlotWidget(QWidget):
                 else QColor("#111827")
             )
             row_mid = rows_rect.top() + row_index * (row_height + row_gap) + row_height / 2.0
+            row_top = rows_rect.top() + row_index * (row_height + row_gap)
             painter.setPen(response_color)
             painter.drawText(
                 QRect(plot_rect.left() + 6, int(row_mid - 12), label_width - 18, 24),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                 label,
             )
+            if self._show_per_cell_scale:
+                y_span = max(1e-9, y_max - y_min)
+                zero_y = row_top + row_height - ((0.0 - y_min) / y_span) * row_height
+                scale_rect = QRect(rows_rect.left() - 48, int(row_top - 8), 44, 16)
+                zero_rect = QRect(rows_rect.left() - 48, int(zero_y - 8), 44, 16)
+                painter.setPen(QPen(QColor("#94a3b8"), 1, Qt.PenStyle.DashLine))
+                painter.drawLine(rows_rect.left(), int(zero_y), rows_rect.right(), int(zero_y))
+                painter.setPen(QColor("#475569"))
+                painter.drawText(scale_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{y_max:g}")
+                painter.drawText(zero_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "0")
+                painter.drawLine(rows_rect.left() - 4, int(zero_y), rows_rect.left(), int(zero_y))
+                painter.drawLine(rows_rect.left() - 4, int(row_top), rows_rect.left(), int(row_top))
             completed_series = [
                 normalized
                 for trial in payload.get("completed_trials", [])
@@ -943,10 +967,11 @@ class OnlineActivityWidget(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.plot_widget = MultiCellActivityPlotWidget()
         self.all_conditions_widget = QWidget()
-        self.all_conditions_layout = QVBoxLayout(self.all_conditions_widget)
+        self.all_conditions_layout = QGridLayout(self.all_conditions_widget)
         self.all_conditions_layout.setContentsMargins(8, 8, 8, 8)
         self.all_conditions_layout.setSpacing(10)
         self._all_condition_panels: dict[int, tuple[QGroupBox, MultiCellActivityPlotWidget]] = {}
+        self._all_conditions_grid_columns = 0
         self.plot_stack = QStackedWidget()
         self.plot_stack.addWidget(self.plot_widget)
         self.plot_stack.addWidget(self.all_conditions_widget)
@@ -994,6 +1019,7 @@ class OnlineActivityWidget(QWidget):
             y_max_override,
             normalization_mode="dff",
         )
+        shared_y_limits = self.plot_widget.round_y_limits_to_half(*shared_y_limits)
 
         for condition in visible_conditions:
             condition_index = int(condition["index"])
@@ -1003,7 +1029,6 @@ class OnlineActivityWidget(QWidget):
                 plot = MultiCellActivityPlotWidget(box)
                 box_layout = QVBoxLayout(box)
                 box_layout.addWidget(plot)
-                self.all_conditions_layout.addWidget(box)
                 self._all_condition_panels[condition_index] = (box, plot)
             else:
                 box, plot = panel
@@ -1031,7 +1056,22 @@ class OnlineActivityWidget(QWidget):
                 post_s=post_s,
                 y_max_override=None,
                 y_limits_override=shared_y_limits,
+                show_per_cell_scale=True,
                 placeholder_text="No ROI data for this condition yet.",
+            )
+
+        grid_columns = max(1, int(math.ceil(math.sqrt(len(visible_conditions)))))
+        for column in range(max(self._all_conditions_grid_columns, grid_columns)):
+            self.all_conditions_layout.setColumnStretch(column, 1 if column < grid_columns else 0)
+        self._all_conditions_grid_columns = grid_columns
+        for panel_index, condition in enumerate(visible_conditions):
+            condition_index = int(condition["index"])
+            box, _plot = self._all_condition_panels[condition_index]
+            self.all_conditions_layout.removeWidget(box)
+            self.all_conditions_layout.addWidget(
+                box,
+                panel_index // grid_columns,
+                panel_index % grid_columns,
             )
 
         self.plot_stack.setCurrentWidget(self.all_conditions_widget)
