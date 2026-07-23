@@ -286,7 +286,10 @@ class OnlineAnalysisState:
     pre_s: float = 1.0
     post_s: float = 3.0
     history_length: int = 1024
-    poll_interval_s: float = 0.05
+    # Integration values remain in ScanImage's circular history between
+    # polls, so a modest poll rate avoids interrupting MATLAB acquisition
+    # processing without dropping samples.
+    poll_interval_s: float = 0.1
     last_error: str = ""
     conditions: dict[int, OnlineAnalysisConditionState] = field(default_factory=dict)
     cells_by_roi_name: dict[str, OnlineAnalysisCellState] = field(default_factory=dict)
