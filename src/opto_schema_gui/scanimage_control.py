@@ -1109,7 +1109,12 @@ class ScanImageControlWidget(QWidget):
         if reconfigure and self.online_analysis_enabled():
             self._configure_online_analysis_if_possible_async()
 
-    def get_online_analysis_snapshot(self, selected_condition_index: int | None = None) -> dict[str, object]:
+    def get_online_analysis_snapshot(
+        self,
+        selected_condition_index: int | None = None,
+        *,
+        include_all_conditions: bool = False,
+    ) -> dict[str, object]:
         with self._online_analysis.lock:
             state = self._online_analysis
             conditions_payload: list[dict[str, object]] = []
@@ -1180,6 +1185,57 @@ class ScanImageControlWidget(QWidget):
                         }
                     )
 
+            all_conditions_payload: list[dict[str, object]] = []
+            if include_all_conditions:
+                all_roi_names = list(state.cells_by_roi_name)
+                for condition_index in sorted(state.conditions):
+                    condition = state.conditions[condition_index]
+                    completed_trials = state.completed_trials_by_condition.get(condition_index, [])
+                    active_trial = (
+                        state.active_trial
+                        if state.active_trial is not None
+                        and state.active_trial.condition_index == condition_index
+                        and state.active_trial.start_timestamp is not None
+                        else None
+                    )
+                    associated_roi_names = set(condition.cell_roi_names)
+                    condition_cells: list[dict[str, object]] = []
+                    for roi_name in all_roi_names:
+                        cell = state.cells_by_roi_name[roi_name]
+                        completed = [
+                            self._trial_series_payload(trial, roi_name, state.pre_s, state.post_s)
+                            for trial in completed_trials
+                        ]
+                        current = (
+                            self._trial_series_payload(active_trial, roi_name, state.pre_s, state.post_s)
+                            if active_trial is not None
+                            else None
+                        )
+                        condition_cells.append(
+                            {
+                                "roi_name": roi_name,
+                                "label": cell.label,
+                                "x_um": cell.x_um,
+                                "y_um": cell.y_um,
+                                "z_um": cell.z_um,
+                                "origin": cell.origin,
+                                "patterns": condition.cell_patterns.get(roi_name, cell.pattern_names),
+                                "associated": roi_name in associated_roi_names,
+                                "completed_trials": [series for series in completed if series is not None],
+                                "current_trial": current,
+                            }
+                        )
+                    all_conditions_payload.append(
+                        {
+                            "index": condition.index,
+                            "label": condition.label,
+                            "supported": condition.supported,
+                            "active": condition.index == state.current_condition_index,
+                            "trial_count": len(completed_trials),
+                            "cells": condition_cells,
+                        }
+                    )
+
             return {
                 "enabled": state.enabled,
                 "configured": state.configured,
@@ -1197,6 +1253,7 @@ class ScanImageControlWidget(QWidget):
                 "current_trial_stimulus_id": current_trial_stimulus_id,
                 "selected_condition_index": selected_index,
                 "cells": cell_payloads,
+                "all_conditions": all_conditions_payload,
             }
 
     def _trial_series_payload(
@@ -1809,12 +1866,9 @@ class ScanImageControlWidget(QWidget):
         if trial.start_timestamp is None:
             return
         state = self._online_analysis
-        condition = state.conditions.get(trial.condition_index)
-        if condition is None:
-            return
         start_min = trial.start_timestamp - state.pre_s
         end_timestamp = trial.start_timestamp + state.post_s
-        for roi_name in condition.cell_roi_names:
+        for roi_name in state.cells_by_roi_name:
             trigger_frame = trial.trigger_frame_by_roi.get(roi_name)
             seeded = [
                 sample
@@ -1836,12 +1890,9 @@ class ScanImageControlWidget(QWidget):
         if trial is None or trial.start_timestamp is None:
             return
         state = self._online_analysis
-        condition = state.conditions.get(trial.condition_index)
-        if condition is None:
-            return
         start_min = trial.start_timestamp - state.pre_s
         end_timestamp = trial.start_timestamp + state.post_s
-        valid_roi_names = set(condition.cell_roi_names)
+        valid_roi_names = set(state.cells_by_roi_name)
         for roi_name, sample in new_samples:
             if roi_name not in valid_roi_names:
                 continue

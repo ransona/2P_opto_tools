@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -314,6 +315,7 @@ class MultiCellActivityPlotWidget(QWidget):
         self._pre_s = 1.0
         self._post_s = 3.0
         self._y_max_override: float | None = None
+        self._y_limits_override: tuple[float, float] | None = None
         self._placeholder_text = "No online activity data yet"
         self.setMinimumHeight(220)
 
@@ -327,6 +329,7 @@ class MultiCellActivityPlotWidget(QWidget):
         post_s: float,
         y_max_override: float | None,
         placeholder_text: str,
+        y_limits_override: tuple[float, float] | None = None,
     ) -> None:
         self._cell_payloads = cell_payloads
         self._normalization_mode = normalization_mode
@@ -334,6 +337,7 @@ class MultiCellActivityPlotWidget(QWidget):
         self._pre_s = max(0.0, float(pre_s))
         self._post_s = max(0.1, float(post_s))
         self._y_max_override = y_max_override if y_max_override is None else float(y_max_override)
+        self._y_limits_override = y_limits_override
         self._placeholder_text = placeholder_text
         self.updateGeometry()
         self.update()
@@ -347,6 +351,7 @@ class MultiCellActivityPlotWidget(QWidget):
         self,
         times: list[float],
         values: list[float],
+        normalization_mode: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray] | None:
         x = np.asarray(times, dtype=float)
         y = np.asarray(values, dtype=float)
@@ -360,7 +365,7 @@ class MultiCellActivityPlotWidget(QWidget):
         order = np.argsort(x)
         x = x[order]
         y = y[order]
-        if self._normalization_mode == "dff":
+        if (normalization_mode or self._normalization_mode) == "dff":
             if y.size >= 3:
                 kernel = np.ones(5 if y.size >= 5 else 3, dtype=float)
                 kernel /= kernel.size
@@ -439,13 +444,27 @@ class MultiCellActivityPlotWidget(QWidget):
         painter.drawPolygon(QPolygonF([QRectF(px, py, 0.0, 0.0).topLeft() for px, py in polygon]))
 
     def _line_limits(self) -> tuple[float, float]:
+        if self._y_limits_override is not None:
+            return self._y_limits_override
+        return self.calculate_y_limits(self._cell_payloads, self._y_max_override)
+
+    def calculate_y_limits(
+        self,
+        cell_payloads: list[dict[str, object]],
+        y_max_override: float | None = None,
+        normalization_mode: str | None = None,
+    ) -> tuple[float, float]:
         observed_min = 0.0
         observed_max = 1.0
         have_values = False
-        for payload in self._cell_payloads:
+        for payload in cell_payloads:
             completed_trials = payload.get("completed_trials", [])
             for trial in completed_trials:
-                normalized = self._normalize_series(list(trial.get("times", [])), list(trial.get("values", [])))
+                normalized = self._normalize_series(
+                    list(trial.get("times", [])),
+                    list(trial.get("values", [])),
+                    normalization_mode,
+                )
                 if normalized is None:
                     continue
                 _x, y = normalized
@@ -455,7 +474,11 @@ class MultiCellActivityPlotWidget(QWidget):
                     have_values = True
             current_trial = payload.get("current_trial")
             if isinstance(current_trial, dict):
-                normalized = self._normalize_series(list(current_trial.get("times", [])), list(current_trial.get("values", [])))
+                normalized = self._normalize_series(
+                    list(current_trial.get("times", [])),
+                    list(current_trial.get("values", [])),
+                    normalization_mode,
+                )
                 if normalized is not None:
                     _x, y = normalized
                     if y.size:
@@ -464,8 +487,8 @@ class MultiCellActivityPlotWidget(QWidget):
                         have_values = True
         if not have_values:
             return 0.0, 1.0
-        if self._y_max_override is not None:
-            return observed_min, max(self._y_max_override, observed_min + 1e-6)
+        if y_max_override is not None:
+            return observed_min, max(y_max_override, observed_min + 1e-6)
         if abs(observed_max - observed_min) < 1e-9:
             return observed_min - 0.5, observed_max + 0.5
         margin = 0.1 * (observed_max - observed_min)
@@ -604,8 +627,16 @@ class MultiCellActivityPlotWidget(QWidget):
         summary_current_rows: list[np.ndarray] = []
         for row_index, payload in enumerate(self._cell_payloads):
             label = str(payload.get("label", "")).strip() or str(payload.get("roi_name", ""))
+            associated = payload.get("associated")
+            response_color = (
+                QColor("#15803d")
+                if associated is True
+                else QColor("#2563eb")
+                if associated is False
+                else QColor("#111827")
+            )
             row_mid = rows_rect.top() + row_index * (row_height + row_gap) + row_height / 2.0
-            painter.setPen(QColor("#0f172a"))
+            painter.setPen(response_color)
             painter.drawText(
                 QRect(plot_rect.left() + 6, int(row_mid - 12), label_width - 18, 24),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
@@ -639,7 +670,7 @@ class MultiCellActivityPlotWidget(QWidget):
                 for series in completed_series:
                     x_vals, y_vals = series
                     points = [map_point(float(xv), float(yv), row_index) for xv, yv in zip(x_vals, y_vals, strict=False)]
-                    self._draw_polyline(painter, points, QPen(QColor("#cbd5e1"), 1))
+                    self._draw_polyline(painter, points, QPen(response_color.lighter(165), 1))
 
             if self._display_mode == "mean_error" and mean_trace is not None and sem_trace is not None:
                 self._draw_shaded_band(
@@ -657,7 +688,7 @@ class MultiCellActivityPlotWidget(QWidget):
                     for xv, yv in zip(grid, mean_trace, strict=False)
                     if np.isfinite(yv)
                 ]
-                self._draw_polyline(painter, points, QPen(QColor("#111827"), 2))
+                self._draw_polyline(painter, points, QPen(response_color, 2))
 
             if current_series is not None:
                 x_vals, y_vals = current_series
@@ -911,7 +942,15 @@ class OnlineActivityWidget(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.plot_widget = MultiCellActivityPlotWidget()
-        self.scroll_area.setWidget(self.plot_widget)
+        self.all_conditions_widget = QWidget()
+        self.all_conditions_layout = QVBoxLayout(self.all_conditions_widget)
+        self.all_conditions_layout.setContentsMargins(8, 8, 8, 8)
+        self.all_conditions_layout.setSpacing(10)
+        self._all_condition_panels: dict[int, tuple[QGroupBox, MultiCellActivityPlotWidget]] = {}
+        self.plot_stack = QStackedWidget()
+        self.plot_stack.addWidget(self.plot_widget)
+        self.plot_stack.addWidget(self.all_conditions_widget)
+        self.scroll_area.setWidget(self.plot_stack)
         layout.addWidget(self.scroll_area, 1)
 
         self.condition_combo.currentIndexChanged.connect(self.refresh)
@@ -928,6 +967,75 @@ class OnlineActivityWidget(QWidget):
         data = self.condition_combo.currentData()
         return int(data) if data is not None else None
 
+    def _set_all_conditions_plot_data(
+        self,
+        conditions: list[dict[str, object]],
+        *,
+        pre_s: float,
+        post_s: float,
+        y_max_override: float | None,
+    ) -> None:
+        visible_conditions = [condition for condition in conditions if bool(condition.get("supported"))]
+        wanted_indices = {int(condition["index"]) for condition in visible_conditions}
+        for condition_index, (box, _plot) in list(self._all_condition_panels.items()):
+            if condition_index not in wanted_indices:
+                self.all_conditions_layout.removeWidget(box)
+                box.deleteLater()
+                del self._all_condition_panels[condition_index]
+
+        all_cells = [
+            cell
+            for condition in visible_conditions
+            for cell in condition.get("cells", [])
+            if isinstance(cell, dict)
+        ]
+        shared_y_limits = self.plot_widget.calculate_y_limits(
+            all_cells,
+            y_max_override,
+            normalization_mode="dff",
+        )
+
+        for condition in visible_conditions:
+            condition_index = int(condition["index"])
+            panel = self._all_condition_panels.get(condition_index)
+            if panel is None:
+                box = QGroupBox(self.all_conditions_widget)
+                plot = MultiCellActivityPlotWidget(box)
+                box_layout = QVBoxLayout(box)
+                box_layout.addWidget(plot)
+                self.all_conditions_layout.addWidget(box)
+                self._all_condition_panels[condition_index] = (box, plot)
+            else:
+                box, plot = panel
+
+            active = bool(condition.get("active"))
+            label = str(condition.get("label", f"Condition {condition_index}"))
+            trial_count = int(condition.get("trial_count", 0))
+            box.setTitle(f"{label} ({trial_count} trial{'s' if trial_count != 1 else ''})")
+            if active:
+                box.setStyleSheet(
+                    "QGroupBox { border: 3px solid #16a34a; border-radius: 5px; margin-top: 12px; } "
+                    "QGroupBox::title { color: #15803d; font-weight: 700; left: 10px; padding: 0 4px; }"
+                )
+            else:
+                box.setStyleSheet(
+                    "QGroupBox { border: 1px solid #94a3b8; border-radius: 5px; margin-top: 12px; } "
+                    "QGroupBox::title { color: #334155; left: 10px; padding: 0 4px; }"
+                )
+            cells = [cell for cell in condition.get("cells", []) if isinstance(cell, dict)]
+            plot.set_plot_data(
+                cells,
+                normalization_mode="dff",
+                display_mode="mean",
+                pre_s=pre_s,
+                post_s=post_s,
+                y_max_override=None,
+                y_limits_override=shared_y_limits,
+                placeholder_text="No ROI data for this condition yet.",
+            )
+
+        self.plot_stack.setCurrentWidget(self.all_conditions_widget)
+
     def _push_settings(self) -> None:
         if self._suppress_refresh:
             return
@@ -942,7 +1050,10 @@ class OnlineActivityWidget(QWidget):
 
     def refresh(self) -> None:
         selected_condition = self._selected_condition_index()
-        snapshot = self.scanimage_control.get_online_analysis_snapshot(selected_condition)
+        snapshot = self.scanimage_control.get_online_analysis_snapshot(
+            selected_condition,
+            include_all_conditions=selected_condition == -1,
+        )
 
         self._suppress_refresh = True
         try:
@@ -952,7 +1063,9 @@ class OnlineActivityWidget(QWidget):
             requested_path = str(snapshot.get("requested_imaging_path", "")).strip()
             active_path = str(snapshot.get("imaging_path", "")).strip()
             desired_index = selected_condition
-            if self.auto_jump_checkbox.isChecked() and current_condition_index is not None:
+            if selected_condition == -1:
+                desired_index = -1
+            elif self.auto_jump_checkbox.isChecked() and current_condition_index is not None:
                 desired_index = int(current_condition_index)
             elif selected_condition is None:
                 snap_selected = snapshot.get("selected_condition_index")
@@ -960,6 +1073,8 @@ class OnlineActivityWidget(QWidget):
 
             self.condition_combo.blockSignals(True)
             self.condition_combo.clear()
+            if conditions:
+                self.condition_combo.addItem("All conditions", -1)
             for condition in conditions:
                 label = str(condition.get("label", f"Condition {condition.get('index', '?')}"))
                 supported = bool(condition.get("supported"))
@@ -1016,10 +1131,13 @@ class OnlineActivityWidget(QWidget):
         last_error = str(snapshot.get("last_error", "")).strip()
         if last_error:
             status_bits.append(f"error: {last_error}")
+        if self._selected_condition_index() == -1:
+            status_bits.append("all conditions: green=associated, blue=other, shared dF/F scale")
         self.status_label.setText(" | ".join(status_bits))
 
         cells = list(snapshot.get("cells", []))
-        normalization_mode = str(self.mode_combo.currentData() or "scaled")
+        all_conditions_mode = self._selected_condition_index() == -1
+        normalization_mode = "dff" if all_conditions_mode else str(self.mode_combo.currentData() or "scaled")
         display_mode = str(self.display_combo.currentData() or "all")
         pre_s = float(snapshot.get("pre_s", 1.0))
         post_s = float(snapshot.get("post_s", 3.0))
@@ -1031,6 +1149,7 @@ class OnlineActivityWidget(QWidget):
             except ValueError:
                 y_max_override = None
         if not enabled:
+            self.plot_stack.setCurrentWidget(self.plot_widget)
             self.plot_widget.set_plot_data(
                 [],
                 normalization_mode=normalization_mode,
@@ -1041,6 +1160,15 @@ class OnlineActivityWidget(QWidget):
                 placeholder_text="Enable Online Analysis next to Save Schema to activate live ROI plotting.",
             )
             return
+        if all_conditions_mode:
+            self._set_all_conditions_plot_data(
+                list(snapshot.get("all_conditions", [])),
+                pre_s=pre_s,
+                post_s=post_s,
+                y_max_override=y_max_override,
+            )
+            return
+        self.plot_stack.setCurrentWidget(self.plot_widget)
         self.plot_widget.set_plot_data(
             cells,
             normalization_mode=normalization_mode,
