@@ -1769,6 +1769,13 @@ def build_prepare_trial_waveform_command(
     trigger_times_s: list[float],
     external_start: bool,
 ) -> str:
+    # The raw vDAQ task is clocked at MHz rates. A callback per sample would
+    # monopolize MATLAB as soon as the external trial edge arrives.
+    onset_callback_rate_hz = 200.0
+    onset_callback_samples = max(
+        1,
+        int(round(path_config.trial_waveform_sample_rate_hz / onset_callback_rate_hz)),
+    )
     trigger_times_expr = "[]" if not trigger_times_s else "[" + " ".join(repr(float(v)) for v in trigger_times_s) + "]"
     total_duration_s = (
         (max(trigger_times_s) if trigger_times_s else 0.0)
@@ -1829,8 +1836,10 @@ def build_prepare_trial_waveform_command(
             + f"'startTriggerEdge', {matlab_string(path_config.trial_waveform_start_trigger_edge)}, "
             + "'autoStart', false);",
             "do_task.sampleCallbackAutoRead = false;",
-            "do_task.sampleCallbackN = 1;",
+            f"do_task.sampleCallbackN = {onset_callback_samples};",
             f"do_task.sampleCallback = @(varargin) evalin('base', {matlab_string(callback_body)});",
+            "disp('TRIAL_WAVEFORM_CALLBACK_INTERVAL_S');",
+            f"disp({onset_callback_samples / path_config.trial_waveform_sample_rate_hz:.9g});",
             "disp('TRIAL_WAVEFORM_READY');",
         ]
     )
