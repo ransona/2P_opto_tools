@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections import deque
 import configparser
+import hashlib
 import math
 import html
 import json
 import os
 import random
+import shutil
 import socket
 import subprocess
 import sys
@@ -4184,6 +4186,59 @@ class ScanImageControlWidget(QWidget):
         candidate_text = ", ".join(str(candidate) for candidate in candidates)
         raise FileNotFoundError(f"Could not find params_path '{raw_path}' (checked: {candidate_text})")
 
+    def _snapshot_schema_for_experiment(
+        self,
+        runtime: PathRuntime,
+        exp_id: str,
+        schema_path: Path,
+        params_path: object,
+    ) -> Path:
+        """Store one immutable schema snapshot in the NAS experiment root."""
+        params_file = Path(str(params_path)).expanduser() if params_path else None
+        if params_file is not None and params_file.is_file():
+            experiment_root = params_file.resolve().parent
+        else:
+            animal_id = exp_id[14:] if len(exp_id) >= 15 else ""
+            if not animal_id or not runtime.path_config.remote_data_root:
+                raise FileNotFoundError(
+                    "Cannot determine NAS experiment root for schema snapshot: "
+                    "update_experiment_params must provide params_path."
+                )
+            raw_root = runtime.path_config.remote_data_root.replace("\\", "/")
+            if sys.platform.startswith("linux") and raw_root.lower().startswith("//ar-lab-nas1/dataserver/"):
+                raw_root = str(Path("/mnt/nas2") / raw_root[len("//ar-lab-nas1/dataserver/"):])
+            experiment_root = Path(raw_root) / animal_id / exp_id
+
+        if not experiment_root.is_dir():
+            raise FileNotFoundError(f"NAS experiment root does not exist: {experiment_root}")
+
+        destination = experiment_root / "schema.yaml"
+        source_digest = hashlib.sha256(schema_path.read_bytes()).digest()
+        if destination.exists():
+            destination_digest = hashlib.sha256(destination.read_bytes()).digest()
+            if destination_digest != source_digest:
+                raise RuntimeError(
+                    f"Experiment schema snapshot already exists and differs from requested schema: {destination}"
+                )
+            self.signals.log_message.emit(f"[experiment] existing schema snapshot verified: {destination}")
+            return destination
+
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=".schema-",
+            suffix=".tmp",
+            dir=experiment_root,
+        )
+        os.close(temporary_fd)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copyfile(schema_path, temporary)
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        self.signals.log_message.emit(f"[experiment] saved schema snapshot: {destination}")
+        return destination
+
     def _load_update_experiment_params_message(self, message: dict[str, object]) -> dict[str, object]:
         params_path_raw = message.get("params_path")
         if params_path_raw is None:
@@ -4552,6 +4607,14 @@ class ScanImageControlWidget(QWidget):
                     continue
                 required_seq_nums.append(seq_num)
             self._validate_schema_for_photostim(project, required_seq_nums)
+            schema_snapshot_path = self._snapshot_schema_for_experiment(
+                runtime,
+                exp_id,
+                schema_path,
+                message.get("params_path"),
+            )
+        else:
+            schema_snapshot_path = None
 
         old_exp_id = tracking.exp_id
         if exp_id and exp_id != old_exp_id:
@@ -4574,6 +4637,7 @@ class ScanImageControlWidget(QWidget):
                 "status": "ready",
                 "expID": exp_id,
                 "schema_name": schema_name,
+                "schema_snapshot_path": str(schema_snapshot_path) if schema_snapshot_path is not None else "",
                 "stimulus_condition_count": len(stimulus_conditions),
                 "trial_count": len(trial_condition_indices),
             },
