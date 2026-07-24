@@ -1103,7 +1103,7 @@ class OnlineActivityWidget(QWidget):
             requested_path = str(snapshot.get("requested_imaging_path", "")).strip()
             active_path = str(snapshot.get("imaging_path", "")).strip()
             desired_index = selected_condition
-            if selected_condition == -1:
+            if selected_condition is None or selected_condition == -1:
                 desired_index = -1
             elif self.auto_jump_checkbox.isChecked() and current_condition_index is not None:
                 desired_index = int(current_condition_index)
