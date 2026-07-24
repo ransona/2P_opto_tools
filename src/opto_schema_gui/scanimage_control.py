@@ -4209,8 +4209,9 @@ class ScanImageControlWidget(QWidget):
                 raw_root = str(Path("/mnt/nas2") / raw_root[len("//ar-lab-nas1/dataserver/"):])
             experiment_root = Path(raw_root) / animal_id / exp_id
 
+        experiment_root.mkdir(parents=True, exist_ok=True)
         if not experiment_root.is_dir():
-            raise FileNotFoundError(f"NAS experiment root does not exist: {experiment_root}")
+            raise FileNotFoundError(f"Could not create NAS experiment root: {experiment_root}")
 
         destination = experiment_root / "schema.yaml"
         source_digest = hashlib.sha256(schema_path.read_bytes()).digest()
