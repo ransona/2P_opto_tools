@@ -1,0 +1,471 @@
+# 2P_opto_tools Development Logic
+
+This file records non-obvious design constraints, confirmed failure modes, and
+deliberate trade-offs in this repository. Read it before changing ScanImage,
+photostimulation, timing, online analysis, experiment metadata, or the update
+workflow. Several implementations below are intentionally less "obvious" than
+a fresh implementation might be.
+
+This is a maintenance guide, not a protocol specification. When it conflicts
+with current hardware or ScanImage source, investigate the current rig and
+update this file in the same change.
+
+## Source Of Truth
+
+- The Python GUI/control layer is in `src/opto_schema_gui/`.
+- MATLAB commands are generated in `src/opto_schema_gui/matlab_bridge.py`.
+  Do not assume a Python method maps one-to-one to a MATLAB function; many are
+  generated MATLAB command strings.
+- ScanImage behaviour must be checked against the source tree used by the rig,
+  especially `Photostim.m`, `StimulusField.m`, and `RoiGroupEditor.m`. Do not
+  infer SLM behaviour only from legacy helper scripts.
+- `scanimage_bridge.ini` in this repository is not the machine configuration
+  source of truth. Runtime ScanImage configurations are external to this repo.
+
+## External Machine Configuration
+
+Machine-specific configurations intentionally live outside this Git repository.
+The GUI reads their root from a per-user Windows registry setting (or a portable
+setting file off Windows). There is deliberately no repository `configs/`
+fallback. A missing configuration selection must prompt the user rather than
+silently select an old or developer-specific configuration.
+
+Reasons:
+
+- MDF paths, network paths, DAQ terminals, machine launch scripts, and local
+  data roots are rig-specific and must not be overwritten by application
+  updates.
+- Putting them in this repo previously created conflicts and made update/restart
+  capable of losing or reverting machine changes.
+
+Do not reintroduce a checked-in config fallback as a convenience feature.
+
+### Update And Restart
+
+The update workflow treats configuration edits differently from application
+code. The safe order for "Sync And Push" is:
+
+1. Commit local configuration changes.
+2. Pull/rebase remote application changes.
+3. Push the rebased configuration commit.
+4. Restart the application.
+
+Pushing before pulling fails whenever the remote is ahead. Do not change this
+back to push-then-pull. Untracked files are intentionally not part of this
+workflow, so important configuration must be in the registered external config
+repository and tracked there.
+
+## MATLAB Engine And ScanImage Lifecycle
+
+Each ScanImage path is a separately launched MATLAB process. MATLAB calls
+`matlab.engine.shareEngine(engine_name)` and Python attaches to that shared
+engine. Python must not own MATLAB through `start_matlab()` for normal rig use.
+
+Why:
+
+- The MATLAB/ScanImage process must survive a GUI restart or GUI disconnect.
+- Reattaching to an existing engine must not rerun the path `launch.m`, because
+  that can reset ScanImage state while it is already operating.
+- Stopping a path normally disconnects the GUI; it does not necessarily kill
+  MATLAB.
+
+The successful readiness condition is a usable nonempty `hSI`, not merely a
+successful launcher process. Launch scripts can report an error even after
+ScanImage itself starts successfully. Startup diagnostics intentionally expose
+each wait stage for this reason.
+
+There is no short fixed ScanImage-launch timeout by design. The user can cancel
+the wait; automatic timeout was unreliable on slow ScanImage/MATLAB starts.
+
+## UDP Contracts And Experiment Metadata
+
+There are two inbound control forms:
+
+- Legacy MATLAB-serialized `COM/GOGO/STOP` messages, replied to with `READY`.
+- JSON commands, including `update_experiment_params`, `prep_patterns`,
+  `trigger_photo_stim`, and `check_idle`.
+
+UDP parsing, state tracking, and replies stay in Python. MATLAB should receive
+only the required actions/context. Moving protocol parsing into MATLAB would
+make ordering, error reporting, and controller replies harder to make safe.
+
+### Large Experiment Descriptions
+
+Full experiment/trial descriptions can exceed a UDP datagram. The supported
+workflow is for the controller to write the JSON to the NAS experiment folder
+and send a small JSON notification containing `params_path`. The GUI resolves
+the Windows UNC path to the Linux NAS mount when required, reads the file, and
+checks that its `expID` agrees with the UDP notification.
+
+Do not put the complete trial list back into a UDP payload. The nominal maximum
+UDP datagram size is not a safe application payload limit, and truncation or
+network fragmentation produces opaque failures.
+
+### Schema Name And Trial List
+
+`schema_name` is carried in the `opto_2p` feature parameters of stimulus
+conditions. There is intentionally no top-level schema definition to fall back
+to. On experiment update the code requires every opto condition to use the same
+schema name. The first opto condition provides the selected name; disagreement
+is an error.
+
+This is necessary because the full trial order is used for phase-mask batching
+and the active ScanImage sequence. A mixed-schema trial list cannot safely be
+prepared as one continuous photostim run.
+
+### Experiment Schema Snapshot
+
+When a validated opto experiment is received, the resolved shared schema is
+copied atomically to `<NAS experiment root>/schema.yaml`. The experiment root
+is created if it does not yet exist.
+
+- An identical existing snapshot is accepted.
+- A different existing snapshot is an error, not an overwrite.
+
+This is intentionally strict: the shared schema library can later change, but
+the experiment must retain an immutable provenance record. Do not replace this
+with a symbolic reference to the shared schema path.
+
+## New Experiment State Reset
+
+Starting a new `expID` clears existing ScanImage photostim groups and online
+analysis/integration ROIs. This avoids accidental reuse of patterns, phase
+masks, or ROI traces from a prior experiment.
+
+This reset happens only when the experiment ID changes. Do not clear state on
+ordinary trial updates within the same experiment: that would destroy the
+prebuilt active photostim sequence and its phase-mask state.
+
+## Schema Validation Before ScanImage Mutation
+
+Schema preflight validation intentionally happens in Python before clearing,
+creating, or starting anything in ScanImage. Empty sequences, patterns without
+cells, missing pattern references, bad sequence indices, and invalid timing
+must fail before ScanImage is mutated.
+
+The GUI also prevents saving schemas with empty patterns or sequences. Do not
+relax this merely to allow draft schema files: an invalid schema after existing
+groups have been cleared leaves a live rig in an ambiguous state.
+
+## Coordinate And Depth Conventions
+
+### SLM XY Coordinates
+
+Schema/manual target coordinates are in microns. ScanImage `StimulusField`
+stores `centerXY` in reference coordinates, so XY microns are divided by
+`hSI.objectiveResolution` before assignment.
+
+`slmPattern` XY is *relative* to `centerXY`, not absolute. For a target in
+reference coordinates `targetXY`:
+
+```
+slmPattern(:, 1:2) = targetXY - centerXY
+```
+
+The stored row is `[x_offset, y_offset, z, weight]`; point weights must be in
+`[0, 1]`. A common but wrong simplification is to place absolute XY directly in
+`slmPattern`, which shifts points by `centerXY` again.
+
+The authoritative implementation is ScanImage's RoiGroupEditor conversion,
+not an old test script. `recenterGalvoOntoSlmPattern()` may be required when
+matching ScanImage's own normalization/recentering behaviour.
+
+### Pattern Power
+
+The schema's pattern power is **power per cell**, not total group power. Before
+creating a ScanImage stimulus field, the code scales it by the number of cells
+in that pattern. Import uses the same meaning. Do not rename/reinterpret this
+as a global group power without changing both schema import and MATLAB pattern
+generation.
+
+### Two Distinct Z Values
+
+For imaging-derived cells:
+
+- `cell.z` is the true photostimulation target Z.
+- `cell.origin_z_um` is the nominal ScanImage imaging-plane Z.
+
+Integration ROI placement must use `origin_z_um`; photostimulation targets use
+`cell.z`. They are equal for a stepped slow stack but can differ for fast-Z
+continuous acquisition. Collapsing them breaks either stimulation targeting or
+imaging-plane ROI ownership.
+
+For fast-Z, true Z is inferred from acquisition order and the pixel Y position
+within the continuous volume sweep. It is deliberately not treated as a flat
+per-plane Z value.
+
+## ScanImage Photostim Groups, SLM Masks, And Sequences
+
+### Do Not Mutate A Live Active Sequence
+
+Earlier implementations appended or edited `hPs.sequenceSelectedStimuli` while
+ScanImage was active. That eventually produced a failure where the sequence
+advanced but later groups lost their SLM phase-mask behaviour and appeared as a
+central spiral/point. The exact ScanImage internal failure is not fully
+observable, but it is repeatable enough to be a hard constraint.
+
+The current design precomposes the needed sequence before starting photostim.
+At trial time, `build_trigger_photostim_command()` only verifies that the next
+tail is already present at the current sequence position (or one position
+ahead). It does not append or replace a live tail.
+
+Do not "simplify" this by appending the next trial on demand, even if it looks
+more memory efficient.
+
+### Full Trial Order Is Required
+
+The controller must provide the complete `trial_condition_indices` list before
+photostim preparation. This permits all required sequence groups to be
+precomposed and avoids editing the active ScanImage sequence later.
+
+Non-opto trials remain in the planned list as `None` for the photostim sequence
+mapping. They are not errors and must not cause mask generation or online ROI
+trial plotting.
+
+### Reserved Groups
+
+Groups 1 and 2 are reserved as `BLANK` and `PARK`, respectively. Prepared
+schema sequence groups start at 3. Do not renumber these casually: Python's
+sequence/group mapping and generated MATLAB commands rely on this convention.
+
+The standard prepared trial tail ends with `PARK` (group 2) so ScanImage reaches
+a known terminal idle state. It should not have redundant leading/trailing
+parks. The waveform pulse count must exactly match the group sequence it is
+advancing; changing one without the other causes timing drift or a stuck
+sequence.
+
+### SLM Epoch Limitation In This ScanImage Build
+
+On the rig's customised ScanImage build, a single stimulus group containing
+multiple distinct SLM epochs can fail inside ScanImage AO generation when
+`hPs.start()` is called. The core code assumes a scalar SLM mask efficiency,
+but multiple epochs yield a struct array.
+
+Therefore sequences are split into fixed-duration stimulus groups rather than
+one giant "whole sequence" group. Do not merge all sequence steps into a single
+group merely to reduce trigger count.
+
+### Block Duration
+
+`sequence_block_duration_s` defines how schema playback is partitioned into
+ScanImage groups. Timing and waveform trigger positions are derived from the
+same partition. It is a rig/config parameter, not a cosmetic GUI setting.
+
+Any alteration must update all of these consistently:
+
+- MATLAB sequence-window construction.
+- Python mapping from schema sequence to stimulus groups.
+- Generated waveform pulse times.
+- Controller expectations for an idle terminal park.
+
+### Photostim Monitoring Is Optional
+
+`hSI.hPhotostim.monitoring` (ScanImage "Show") and `.logging` ("Log") are
+specific to photostim galvo/beam monitoring, not TIFF logging or integration
+ROI analysis. They start extra analog acquisition, logging, and display work.
+
+The application deliberately does **not** force them on during normal schema
+preparation. Users may enable them in ScanImage when needed for diagnosis.
+Do not restore unconditional enabling: it added acquisition load and is not
+needed for stimulation, phase masks, or online plotting.
+
+## Phase-Mask Batch Limit
+
+The SLM cannot safely precompute unlimited unique phase masks. The "Phase mask
+batch size" control is a maximum number of unique **schema pattern names**, not
+a number of stimulus groups or trials. A repeated pattern used by multiple
+groups counts once.
+
+The batch planner walks the complete planned trial order and includes as many
+consecutive trials as fit under that unique-pattern limit. It deliberately
+prepares batches by pattern identity, not by group count.
+
+At the boundary the controller must continue to see the system as non-idle:
+`check_idle` starts preparation of the next batch and reports an appropriate
+non-idle/preparing state. This is how the upstream controller waits without
+starting a next trial while phase masks are regenerated.
+
+Do not acknowledge the end of the last prepared trial as idle before the next
+batch is ready. Do not restart the raw trial waveform for a mask batch; it is a
+per-trial trigger task and must remain tied to trial execution, not mask setup.
+
+## Trial Timing And Digital Waveform
+
+Time zero for online analysis is the external input that starts the digital
+waveform task, not controller arm time and not the first later photostim pulse.
+The waveform task drives the configured output line, which advances ScanImage's
+photostim sequence through the prepared groups.
+
+The external trial edge is detected by a callback on that vDAQ task. On that
+callback, the code captures the current integration ROI cursors, frame numbers,
+and timestamps so trial alignment is based on ScanImage's own data clock.
+
+### Callback Rate Is Deliberately Bounded
+
+The waveform sample rate may be MHz. `sampleCallbackN` must never be 1: that
+creates a MATLAB callback for every digital sample (up to millions per second),
+starves ScanImage acquisition processing, and can freeze/stutter imaging at
+trial onset.
+
+The current callback interval is approximately 5 ms (200 Hz), independent of
+the raw waveform sample rate. It is sufficient for onset detection and avoids
+the runaway MATLAB event load. Do not change this to one callback per sample.
+
+### vDAQ Terminal Direction Matters
+
+On this rig, `D3.x` is output-only, `D2.x` input-only, and `D0.x`/`D1.x` can
+be configured either way but not simultaneously. A digital output does not
+magically become a valid ScanImage trigger input; physical/internal routing and
+terminal direction must match the configured waveform output, external-start
+input, and `hPs.stimTriggerTerm`.
+
+If photostim does not advance, verify wiring/routing and terminal direction
+before changing sequence code.
+
+## Online Analysis And Integration ROIs
+
+### ScanImage Produces The Values
+
+The GUI does not calculate fluorescence from TIFF frames. ScanImage's
+`hIntegrationRoiManager` calculates values on its MATLAB acquisition thread and
+stores values, timestamps, frame numbers, and per-ROI circular cursors.
+
+The generated online-analysis ROIs are single-plane `IntegrationField`s,
+therefore normally yield one value per acquired imaging frame for their owning
+imaging plane. A multi-plane integration ROI would intentionally yield one
+value only when its final slice/volume is complete.
+
+### Missing Points Are Not Necessarily A GUI Bug
+
+ScanImage performs integration, motion estimation, and related processing in
+the MATLAB acquisition path. If this work does not complete before a subsequent
+frame arrives, ScanImage can drop integration processing for a frame while
+still writing imaging data to disk. A jump in integration frame numbers is
+therefore real upstream information, not something the GUI can interpolate
+truthfully.
+
+The GUI polls the circular history using cursors. It receives every new value
+created since the previous poll; it does not only read the latest value. The
+10 Hz poll rate is intentional: it lowers MATLAB Engine contention while cursor
+deltas preserve all generated samples. Do not increase polling frequency to
+"fix" gaps without proving the acquisition thread can tolerate the extra
+MATLAB work.
+
+The MATLAB delta command snapshots each history matrix once per poll before
+extracting every ROI's cursor range. Do not revert to repeated property reads
+inside the per-ROI loop; that scales badly with ROI count.
+
+### Online ROI Scope
+
+Integration ROIs are built for the union of unique cells across all opto
+conditions. ScanImage collects those ROI values continuously while imaging.
+For a non-opto trial, no photostim mask is generated and no online-analysis
+trial response is opened/plotted, even though the underlying integration stream
+may still exist.
+
+### Trial Alignment
+
+The online plot uses ScanImage timestamps and frame numbers plus the snapshot
+taken when the external waveform starts. It must not use controller receive
+time, photostim arm time, or an inferred first artifact as time zero.
+
+Each ROI may have a slightly different latest cursor/timestamp at time zero.
+That is expected; the code records them per ROI. Do not replace this with one
+global cursor unless ScanImage changes its integration manager semantics.
+
+### dF/F And Plot Gaps
+
+For dF/F, the GUI smooths the available trace and uses its 10th percentile over
+the pre-stimulus interval as F0 (falling back to all available data if there is
+no pre-stimulus section). This is intentionally robust against elevated
+pre-stim activity.
+
+Non-finite samples are removed before raw plotting. This means a NaN inside a
+trace is visually connected across by the current polyline. Averaging first
+interpolates each available series onto a common grid; regions outside a
+series' observed time span remain NaN and are excluded by `nanmean`.
+
+This behaviour is a display decision, not data repair. Do not infer that a
+visually continuous line proves every frame was integrated.
+
+### All-Conditions View
+
+The Online Activity selector defaults to "All conditions." That view tiles
+supported condition panels into a near-square grid, shows all tracked cells in
+each panel, and uses dF/F regardless of the single-view normalization selector.
+
+- Green cells are associated with that condition; blue cells are other tracked
+  cells.
+- The active condition has a green border and includes the live trace.
+- All panels share one scale, rounded outward to 0.5 increments.
+- Each cell row marks and labels zero and the shared upper scale.
+- Mean traces have shaded SEM bands.
+
+The single-condition view is intentionally different: it includes only cells
+associated with that condition and only trials of that condition. "All traces"
+means all repeats of the selected condition, not all conditions.
+
+## ScanImage Integration Performance
+
+The scanner hardware remains timed even when the display appears to stutter.
+ScanImage's MATLAB frame path performs display/data-manager work, motion
+estimation, photostim motion compensation, integration ROI calculation, and
+user-function notification. Load in any of these can make display or
+integration updates irregular.
+
+Before changing integration logic to chase missing points, distinguish:
+
+- continuous TIFF frame sequence with jumps in integration frame numbers:
+  MATLAB integration processing is behind;
+- gaps in TIFFs too: investigate hardware, vDAQ/PCIe, logging, acquisition
+  settings, or disk throughput.
+
+The prior trial-waveform callback bug was one cause of severe load. Photostim
+monitoring/logging and overly frequent Engine requests are other avoidable
+loads. Keep this pipeline lightweight during high-rate imaging.
+
+## Pattern Test And Diagnostics Operations
+
+"Send pattern to ScanImage" is a destructive testing operation: it clears
+existing photostim groups **and** online-analysis/integration ROIs before
+constructing the test pattern. This prevents stale state from appearing to be
+part of the test. It is not an experiment-start action and should not be used
+while relying on existing online analysis.
+
+The manual test pattern differs from normal experiment playback: it is a
+single group with the test pattern rather than normal fixed block splitting.
+Its blank/pause and park semantics are deliberately constructed for manual
+inspection. Do not use it as a reference for runtime experiment sequence
+construction.
+
+SLM PSF diagnostics save and restore a broad set of ScanImage state (motor,
+stack, imaging/logging, motion, and photostim settings). Diagnostic stack Z
+must be configured by first moving the stage motor to the desired centre, then
+using a centered uniform stack. Do not calculate arbitrary stage positions from
+an assumed global Z origin.
+
+## Repository Hygiene
+
+- Do not commit `__pycache__` or `.pyc` files.
+- Keep application code ASCII unless the relevant existing file requires
+  otherwise.
+- Do not change or discard unrecognized dirty files while working; they may be
+  user changes or generated rig state.
+- Commit and push completed changes so remote testing runs the tested code.
+
+## Suggested Investigation Order
+
+For a photostim or SLM regression:
+
+1. Confirm the active external machine configuration and hardware terminal
+   routing.
+2. Inspect current `hSI.hPhotostim` state and the prepared
+   `sequenceSelectedStimuli` without mutating it.
+3. Verify the complete trial order, schema name consistency, and phase-mask
+   batch plan.
+4. Check the actual ScanImage source version before changing group/SLM logic.
+5. Use generated debug markers and the persistent operation log rather than
+   adding broad unconditional `disp` output.
+6. Preserve the existing sequence/mask lifecycle unless a controlled test
+   proves a different ScanImage version has changed the constraint.
+
