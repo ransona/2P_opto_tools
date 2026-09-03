@@ -40,6 +40,12 @@ Reasons:
 
 Do not reintroduce a checked-in config fallback as a convenience feature.
 
+Each configuration can contain multiple named ScanImage paths. The configured
+`photostim_path` is authoritative for photostim actions and photostim-coordinate
+conversion; it is not safe to assume `P1`, `P2`, or `PS` from a path name.
+Coordinate import must load the active photostim configuration because its
+objective resolution and transforms define the final target coordinates.
+
 ### Update And Restart
 
 The update workflow treats configuration edits differently from application
@@ -54,6 +60,12 @@ Pushing before pulling fails whenever the remote is ahead. Do not change this
 back to push-then-pull. Untracked files are intentionally not part of this
 workflow, so important configuration must be in the registered external config
 repository and tracked there.
+
+Tracked non-config application edits are discarded by Update And Restart before
+pulling. This is deliberate for a rig-facing one-button updater, but it means
+the button is not a development workflow. Developers must commit code changes
+before using it; do not broaden the automatic config exception to arbitrary
+source files.
 
 ## MATLAB Engine And ScanImage Lifecycle
 
@@ -76,6 +88,24 @@ each wait stage for this reason.
 
 There is no short fixed ScanImage-launch timeout by design. The user can cancel
 the wait; automatic timeout was unreliable on slow ScanImage/MATLAB starts.
+
+Simulation is never inferred from a failed or slow hardware launch. It must be
+an explicit configured mode. Treating a failed real launch as simulation hid
+hardware/configuration errors and made later state appear valid when it was not.
+
+### Persistent GUI Operation Log
+
+The GUI also writes a best-effort diagnostic operation log outside the repository
+at the system temporary location (normally
+`C:/Temp/2p_opto_tools_operations.log` on the rig, with a temp-directory fallback).
+It records thread identity as well as timestamp because GUI actions, UDP handling,
+and MATLAB requests can interleave. This log is intentionally independent of the
+on-screen debug pane: use it after an interrupted/frozen GUI session to establish
+the last completed operation.
+
+Logging failures must never interrupt control of the microscope. Do not make
+ordinary operation depend on the log file being writable, and do not move this
+log into the source or external configuration repository.
 
 ## UDP Contracts And Experiment Metadata
 
@@ -147,6 +177,18 @@ The GUI also prevents saving schemas with empty patterns or sequences. Do not
 relax this merely to allow draft schema files: an invalid schema after existing
 groups have been cleared leaves a live rig in an ambiguous state.
 
+### Normalize Controller Data At The Boundary
+
+The upstream controller may serialise a single stimulus condition differently
+from a list of conditions. Python normalises these JSON shape variations when
+the experiment parameters are received, before schema validation, online-analysis
+configuration, or photostim preparation. Downstream code must operate on the
+normalised trial-condition list rather than assuming a field is always a list.
+
+This is particularly important for one-condition experiments: treating a scalar
+condition object as an iterable has previously produced a misleading preparation
+or online-analysis failure only in that otherwise valid case.
+
 ## Coordinate And Depth Conventions
 
 ### SLM XY Coordinates
@@ -155,20 +197,20 @@ Schema/manual target coordinates are in microns. ScanImage `StimulusField`
 stores `centerXY` in reference coordinates, so XY microns are divided by
 `hSI.objectiveResolution` before assignment.
 
-`slmPattern` XY is *relative* to `centerXY`, not absolute. For a target in
-reference coordinates `targetXY`:
+This repository targets the SI_2026 ScanImage coordinate model. In this version
+`slmPattern` XY is in **absolute reference coordinates**; `centerXY` controls
+the galvo/log-spiral position independently. The stored row is
+`[x_ref, y_ref, z, weight]`, and point weights must be in `[0, 1]`.
 
-```
-slmPattern(:, 1:2) = targetXY - centerXY
-```
+Do not apply the older ScanImage rule that subtracts `centerXY` from SLM XY.
+That rule existed in older RoiGroupEditor implementations but would double-shift
+points on SI_2026. The MATLAB builder has an explicit comment beside the
+absolute assignment in `prepareSchemaPhotostim.m`; preserve that convention
+unless the installed ScanImage source proves it has changed again.
 
-The stored row is `[x_offset, y_offset, z, weight]`; point weights must be in
-`[0, 1]`. A common but wrong simplification is to place absolute XY directly in
-`slmPattern`, which shifts points by `centerXY` again.
-
-The authoritative implementation is ScanImage's RoiGroupEditor conversion,
-not an old test script. `recenterGalvoOntoSlmPattern()` may be required when
-matching ScanImage's own normalization/recentering behaviour.
+The authoritative implementation is the actual ScanImage version installed on
+the rig, not an old test script or another SI checkout. Inspect its
+RoiGroupEditor/StimulusField implementation before changing this logic.
 
 ### Pattern Power
 
@@ -177,6 +219,12 @@ creating a ScanImage stimulus field, the code scales it by the number of cells
 in that pattern. Import uses the same meaning. Do not rename/reinterpret this
 as a global group power without changing both schema import and MATLAB pattern
 generation.
+
+`power_scale` remains per cell. It becomes the SLM point weight; if all supplied
+weights are zero, the MATLAB builder deliberately replaces them with one so an
+otherwise valid target pattern is not converted into a pathological zero-weight
+SLM mask. Laser power is separately forced to zero for intentional off/gap
+epochs.
 
 ### Two Distinct Z Values
 
@@ -193,6 +241,29 @@ imaging-plane ROI ownership.
 For fast-Z, true Z is inferred from acquisition order and the pixel Y position
 within the continuous volume sweep. It is deliberately not treated as a flat
 per-plane Z value.
+
+### Processed-Cell Import Metadata Is Deliberately Strict
+
+Importing cells from processed Suite2p data requires a
+`*_selectedScanfield.roi` file. TIFF-header metadata is intentionally not used
+as a fallback: it was too ambiguous for reliable mapping from processed cells
+to the selected ScanImage scanfield. If that ROI file is missing, import must
+fail visibly rather than make a plausible-looking but potentially wrong target.
+
+On Windows the processed-data root is
+`F:/Local_Repository_Processed/<animalID>/<expID>`. On Linux, an explicit
+source user resolves through `/home/<user>/data/Repository/...`. Do not add
+`tif_meso`, arbitrary local repositories, or a broad TIFF-header fallback to
+"make imports work"; selecting the wrong experiment's geometry is worse than a
+clear import error.
+
+### MATLAB YAML Field Names
+
+YAML pattern and sequence names are user-facing names and may not be valid
+MATLAB struct field names. MATLAB loading applies `matlab.lang.makeValidName`,
+but the schema loaders retain/use the original `name` field when enumerating or
+resolving items. Do not access YAML-derived MATLAB structs solely by a raw
+human-readable name; use the supplied original-name lookup helpers.
 
 ## ScanImage Photostim Groups, SLM Masks, And Sequences
 
@@ -234,6 +305,31 @@ parks. The waveform pulse count must exactly match the group sequence it is
 advancing; changing one without the other causes timing drift or a stuck
 sequence.
 
+### Completion Means Reaching The Tracked Terminal PARK
+
+`check_idle` does not treat a generic ScanImage `active`/`running` flag as proof
+that a trial has completed. When a trial sequence is inserted, Python records
+both its insert position and its final idle-PARK position. A trial is complete
+only when the sequence cursor has reached that recorded terminal PARK (or a
+batch regeneration state explicitly reports that it is still busy).
+
+This distinction prevents the upstream controller from starting the next trial
+while ScanImage has merely changed state between groups. Preserve the marker
+output and position bookkeeping if sequence construction changes; replacing it
+with a fixed sleep or a bare `hPs.active` test reintroduces the intermittent
+retrigger and mask-loading races that led to this design.
+
+### Explicit Off Epochs Must Keep A Real Pattern Shape
+
+Gaps are not represented by an empty or NaN-only ScanImage stimulus ROI. Those
+forms have produced invalid AO/SLM state in ScanImage. Instead, a gap uses the
+next applicable schema pattern's geometry with all beam powers forced to zero.
+
+This can look wasteful because the SLM/galvo pattern still exists during a gap,
+but it ensures ScanImage receives a valid stimulus field and only the beam is
+off. Do not replace it with an empty group, NaN coordinates, or a different
+unrelated point pattern without retesting `hPs.start()`.
+
 ### SLM Epoch Limitation In This ScanImage Build
 
 On the rig's customised ScanImage build, a single stimulus group containing
@@ -258,6 +354,19 @@ Any alteration must update all of these consistently:
 - Generated waveform pulse times.
 - Controller expectations for an idle terminal park.
 
+### Spiral Centre Is Intentionally Offset
+
+Normal schema stimulation uses `logspiral`, not a static point function. The
+spiral centre is chosen by `chooseSpiralCenter()` with the configured
+`min_center_distance_um` constraint, rather than always being `[0, 0]` or the
+mean of target points. This protects targets from the central/zero-order region
+while the SLM points remain at their requested locations.
+
+Therefore a nonzero `StimulusField.centerXY` is not evidence that target
+coordinates were transformed incorrectly. `point` is reserved for zero-power
+park/test cases; changing normal schema patterns to `point` removes intended
+spiral stimulation.
+
 ### Photostim Monitoring Is Optional
 
 `hSI.hPhotostim.monitoring` (ScanImage "Show") and `.logging` ("Log") are
@@ -279,6 +388,11 @@ groups counts once.
 The batch planner walks the complete planned trial order and includes as many
 consecutive trials as fit under that unique-pattern limit. It deliberately
 prepares batches by pattern identity, not by group count.
+
+The full order must therefore arrive before preparation begins. A request to
+prepare an individual sequence without the experiment parameters is rejected:
+guessing a batch from the currently selected trial makes phase-mask reuse and
+the later batch boundary unknowable.
 
 At the boundary the controller must continue to see the system as non-idle:
 `check_idle` starts preparation of the next batch and reports an appropriate
@@ -468,4 +582,3 @@ For a photostim or SLM regression:
    adding broad unconditional `disp` output.
 6. Preserve the existing sequence/mask lifecycle unless a controlled test
    proves a different ScanImage version has changed the constraint.
-
