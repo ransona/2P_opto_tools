@@ -151,10 +151,10 @@ It can:
 
 The persistent diagnostic log is line-buffered, so it remains useful after a
 freeze or forced GUI exit. It contains GUI actions, UDP messages, MATLAB status
-messages, connection state, periodic Python-side state snapshots, and an
-immediate state snapshot when an action errors. Snapshot logging does not query
-MATLAB and therefore does not add acquisition-time engine traffic. The log is
-not cleared by `Clear Debug Output`.
+messages, connection state, and an immediate Python-side state snapshot when an
+action errors. It has no periodic background activity and does not query MATLAB,
+so it adds no acquisition-time engine traffic. The log is not cleared by `Clear
+Debug Output`.
 
 UDP trigger messages currently supported:
 

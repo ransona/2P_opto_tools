@@ -879,9 +879,6 @@ class ScanImageControlWidget(QWidget):
         self.repo_root = Path(__file__).resolve().parents[2]
         self._diagnostic_log_lock = threading.Lock()
         self._diagnostic_log_path = self._initialize_diagnostic_log()
-        self._state_snapshot_timer = QTimer(self)
-        self._state_snapshot_timer.setInterval(5_000)
-        self._state_snapshot_timer.timeout.connect(self._record_periodic_state_snapshot)
         self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
         self.signals.log_message.connect(
@@ -938,8 +935,6 @@ class ScanImageControlWidget(QWidget):
         self._build_ui()
         self._load_gui_state()
         self.reload_discovery()
-        self._state_snapshot_timer.start()
-        self._record_diagnostic_state_snapshot("startup")
         QTimer.singleShot(0, self._ensure_config_root_selected)
 
     @staticmethod
@@ -4098,9 +4093,6 @@ class ScanImageControlWidget(QWidget):
         self._append_diagnostic_log(
             f"STATE_SNAPSHOT reason={reason} payload={json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
         )
-
-    def _record_periodic_state_snapshot(self) -> None:
-        self._record_diagnostic_state_snapshot("periodic")
 
     def _record_diagnostic_incident(self, path_name: str, label: str, error: Exception) -> None:
         incident = {
