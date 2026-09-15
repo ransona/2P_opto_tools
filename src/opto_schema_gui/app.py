@@ -316,6 +316,7 @@ class MultiCellActivityPlotWidget(QWidget):
         self._post_s = 3.0
         self._y_max_override: float | None = None
         self._y_limits_override: tuple[float, float] | None = None
+        self._heat_limits_override: tuple[float, float] | None = None
         self._show_per_cell_scale = False
         self._placeholder_text = "No online activity data yet"
         self.setMinimumHeight(220)
@@ -331,6 +332,7 @@ class MultiCellActivityPlotWidget(QWidget):
         y_max_override: float | None,
         placeholder_text: str,
         y_limits_override: tuple[float, float] | None = None,
+        heat_limits_override: tuple[float, float] | None = None,
         show_per_cell_scale: bool = False,
     ) -> None:
         self._cell_payloads = cell_payloads
@@ -340,6 +342,7 @@ class MultiCellActivityPlotWidget(QWidget):
         self._post_s = max(0.1, float(post_s))
         self._y_max_override = y_max_override if y_max_override is None else float(y_max_override)
         self._y_limits_override = y_limits_override
+        self._heat_limits_override = heat_limits_override
         self._show_per_cell_scale = show_per_cell_scale
         self._placeholder_text = placeholder_text
         self.updateGeometry()
@@ -505,13 +508,82 @@ class MultiCellActivityPlotWidget(QWidget):
             rounded_max = rounded_min + 0.5
         return rounded_min, rounded_max
 
+    @staticmethod
+    def _blend_color(start: QColor, end: QColor, fraction: float) -> QColor:
+        fraction = min(1.0, max(0.0, fraction))
+        return QColor(
+            int(start.red() + (end.red() - start.red()) * fraction),
+            int(start.green() + (end.green() - start.green()) * fraction),
+            int(start.blue() + (end.blue() - start.blue()) * fraction),
+        )
+
     def _heat_color(self, value: float, vmin: float, vmax: float) -> QColor:
         if not np.isfinite(value):
-            return QColor("#0f172a")
-        span = max(1e-9, vmax - vmin)
+            return QColor("#e2e8f0")
         clipped = min(vmax, max(vmin, value))
-        t = (clipped - vmin) / span
-        return QColor(int(20 + 235 * t), int(24 + 180 * t), int(40 + 40 * (1.0 - t)))
+        neutral = QColor("#f8fafc")
+        if clipped < 0.0:
+            return self._blend_color(
+                QColor("#1d4ed8"),
+                neutral,
+                1.0 - (clipped / min(-1e-9, vmin)),
+            )
+        return self._blend_color(neutral, QColor("#dc2626"), clipped / max(1e-9, vmax))
+
+    def _heat_limits(self, observed_min: float, observed_max: float) -> tuple[float, float]:
+        if self._heat_limits_override is not None:
+            return self._heat_limits_override
+        if self._y_max_override is not None:
+            limit = abs(self._y_max_override)
+        else:
+            limit = max(abs(observed_min), abs(observed_max))
+        limit = max(0.5, limit)
+        return -limit, limit
+
+    def calculate_heat_limits(
+        self,
+        cell_payloads: list[dict[str, object]],
+        *,
+        pre_s: float,
+        post_s: float,
+        normalization_mode: str,
+        color_limit_override: float | None = None,
+    ) -> tuple[float, float]:
+        """Find a shared symmetric range from the accumulated mean, not raw trials."""
+        grid = np.linspace(-max(0.0, pre_s), max(0.1, post_s), 240)
+        observed_limit = 0.0
+        for payload in cell_payloads:
+            series = [
+                normalized
+                for trial in payload.get("completed_trials", [])
+                if (
+                    normalized := self._normalize_series(
+                        list(trial.get("times", [])),
+                        list(trial.get("values", [])),
+                        normalization_mode,
+                    )
+                ) is not None
+            ]
+            current_trial = payload.get("current_trial")
+            if isinstance(current_trial, dict):
+                normalized = self._normalize_series(
+                    list(current_trial.get("times", [])),
+                    list(current_trial.get("values", [])),
+                    normalization_mode,
+                )
+                if normalized is not None:
+                    series.append(normalized)
+            matrix = self._series_matrix(series, grid)
+            if matrix is None:
+                continue
+            with np.errstate(invalid="ignore"):
+                mean_trace = np.nanmean(matrix, axis=0)
+            finite = np.abs(mean_trace[np.isfinite(mean_trace)])
+            if finite.size:
+                observed_limit = max(observed_limit, float(np.nanmax(finite)))
+        limit = abs(color_limit_override) if color_limit_override is not None else observed_limit
+        limit = max(0.5, math.ceil(limit * 2.0) / 2.0)
+        return -limit, limit
 
     def _draw_y_axis_labels(
         self,
@@ -818,13 +890,14 @@ class MultiCellActivityPlotWidget(QWidget):
                 observed_min = min(observed_min, float(np.nanmin(valid)))
                 observed_max = max(observed_max, float(np.nanmax(valid)))
 
-        heat_min = min(0.0, observed_min)
-        heat_max = self._y_max_override if self._y_max_override is not None else observed_max
+        heat_min, heat_max = self._heat_limits(observed_min, observed_max)
         cell_width = max(1.0, heat_rect.width() / max(1, grid.size))
         for row_index, (payload, mean_trace) in enumerate(zip(self._cell_payloads, mean_rows, strict=False)):
             label = str(payload.get("label", "")).strip() or str(payload.get("roi_name", ""))
             row_top = heat_rect.top() + row_index * row_height
-            painter.setPen(QColor("#0f172a"))
+            associated = payload.get("associated")
+            label_color = QColor("#15803d") if associated is True else QColor("#2563eb") if associated is False else QColor("#0f172a")
+            painter.setPen(label_color)
             painter.drawText(
                 QRect(plot_rect.left() + 6, int(row_top), label_width - 18, int(row_height)),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
@@ -955,7 +1028,8 @@ class OnlineActivityWidget(QWidget):
         controls_row.addWidget(self.mode_combo)
         controls_row.addWidget(QLabel("Display"))
         controls_row.addWidget(self.display_combo)
-        controls_row.addWidget(QLabel("Y max"))
+        self.y_limit_label = QLabel("Y max")
+        controls_row.addWidget(self.y_limit_label)
         controls_row.addWidget(self.y_max_edit)
         layout.addLayout(controls_row)
 
@@ -985,8 +1059,19 @@ class OnlineActivityWidget(QWidget):
         self.pre_spin.valueChanged.connect(self._push_settings)
         self.post_spin.valueChanged.connect(self._push_settings)
         self.mode_combo.currentIndexChanged.connect(self.refresh)
-        self.display_combo.currentIndexChanged.connect(self.refresh)
+        self.display_combo.currentIndexChanged.connect(self._on_display_mode_changed)
         self.y_max_edit.textChanged.connect(self.refresh)
+        self._on_display_mode_changed()
+
+    def _on_display_mode_changed(self) -> None:
+        heat_mode = str(self.display_combo.currentData() or "") == "heat"
+        self.y_limit_label.setText("Color limit" if heat_mode else "Y max")
+        self.y_max_edit.setToolTip(
+            "Symmetric dF/F color limit. Leave empty for automatic scaling."
+            if heat_mode
+            else "Upper trace limit. Leave empty for automatic scaling."
+        )
+        self.refresh()
 
     def _selected_condition_index(self) -> int | None:
         data = self.condition_combo.currentData()
@@ -999,6 +1084,7 @@ class OnlineActivityWidget(QWidget):
         pre_s: float,
         post_s: float,
         y_max_override: float | None,
+        display_mode: str,
     ) -> None:
         visible_conditions = [condition for condition in conditions if bool(condition.get("supported"))]
         wanted_indices = {int(condition["index"]) for condition in visible_conditions}
@@ -1014,12 +1100,23 @@ class OnlineActivityWidget(QWidget):
             for cell in condition.get("cells", [])
             if isinstance(cell, dict)
         ]
-        shared_y_limits = self.plot_widget.calculate_y_limits(
+        observed_y_limits = self.plot_widget.calculate_y_limits(
             all_cells,
-            y_max_override,
+            None,
             normalization_mode="dff",
         )
-        shared_y_limits = self.plot_widget.round_y_limits_to_half(*shared_y_limits)
+        shared_y_limits = self.plot_widget.round_y_limits_to_half(*observed_y_limits)
+        shared_heat_limits = (
+            self.plot_widget.calculate_heat_limits(
+                all_cells,
+                pre_s=pre_s,
+                post_s=post_s,
+                normalization_mode="dff",
+                color_limit_override=y_max_override,
+            )
+            if display_mode == "heat"
+            else None
+        )
 
         for condition in visible_conditions:
             condition_index = int(condition["index"])
@@ -1051,11 +1148,12 @@ class OnlineActivityWidget(QWidget):
             plot.set_plot_data(
                 cells,
                 normalization_mode="dff",
-                display_mode="mean_error",
+                display_mode="heat" if display_mode == "heat" else "mean_error",
                 pre_s=pre_s,
                 post_s=post_s,
                 y_max_override=None,
                 y_limits_override=shared_y_limits,
+                heat_limits_override=shared_heat_limits,
                 show_per_cell_scale=True,
                 placeholder_text="No ROI data for this condition yet.",
             )
@@ -1172,7 +1270,10 @@ class OnlineActivityWidget(QWidget):
         if last_error:
             status_bits.append(f"error: {last_error}")
         if self._selected_condition_index() == -1:
-            status_bits.append("all conditions: green=associated, blue=other, shared dF/F scale")
+            if str(self.display_combo.currentData() or "") == "heat":
+                status_bits.append("all-condition heat maps: mean dF/F, shared blue-negative/red-positive scale")
+            else:
+                status_bits.append("all conditions: green=associated, blue=other, shared dF/F scale")
         self.status_label.setText(" | ".join(status_bits))
 
         cells = list(snapshot.get("cells", []))
@@ -1206,6 +1307,7 @@ class OnlineActivityWidget(QWidget):
                 pre_s=pre_s,
                 post_s=post_s,
                 y_max_override=y_max_override,
+                display_mode=display_mode,
             )
             return
         self.plot_stack.setCurrentWidget(self.plot_widget)
