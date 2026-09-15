@@ -15,6 +15,7 @@ import sys
 import threading
 import tempfile
 import time
+import traceback
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -878,6 +879,9 @@ class ScanImageControlWidget(QWidget):
         self.repo_root = Path(__file__).resolve().parents[2]
         self._diagnostic_log_lock = threading.Lock()
         self._diagnostic_log_path = self._initialize_diagnostic_log()
+        self._state_snapshot_timer = QTimer(self)
+        self._state_snapshot_timer.setInterval(5_000)
+        self._state_snapshot_timer.timeout.connect(self._record_periodic_state_snapshot)
         self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
         self.signals.log_message.connect(
@@ -934,6 +938,8 @@ class ScanImageControlWidget(QWidget):
         self._build_ui()
         self._load_gui_state()
         self.reload_discovery()
+        self._state_snapshot_timer.start()
+        self._record_diagnostic_state_snapshot("startup")
         QTimer.singleShot(0, self._ensure_config_root_selected)
 
     @staticmethod
@@ -2168,6 +2174,7 @@ class ScanImageControlWidget(QWidget):
         self.show_stimuli_debug_checkbox = QCheckBox("Stimuli")
         self.show_phase_mask_batch_debug_checkbox = QCheckBox("Phase mask batches")
         self.clear_log_btn = QPushButton("Clear Debug Output")
+        self.export_diagnostic_log_btn = QPushButton("Export Diagnostic Log")
         for checkbox in (
             self.show_general_debug_checkbox,
             self.show_udp_debug_checkbox,
@@ -2182,6 +2189,7 @@ class ScanImageControlWidget(QWidget):
             checkbox.toggled.connect(self._save_gui_state)
             filter_layout.addWidget(checkbox)
         filter_layout.addWidget(self.clear_log_btn)
+        filter_layout.addWidget(self.export_diagnostic_log_btn)
         filter_layout.addStretch(1)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -2200,6 +2208,7 @@ class ScanImageControlWidget(QWidget):
         self.test_stim_waveform_external_btn.clicked.connect(self._run_test_stim_waveform_external)
         self.clear_log_btn.clicked.connect(self._clear_all_logs)
         self.clear_all_logs_btn.clicked.connect(self._clear_all_logs)
+        self.export_diagnostic_log_btn.clicked.connect(self._export_diagnostic_log)
         self.force_simulated_checkbox.toggled.connect(self._on_force_simulated_toggled)
 
     def _clear_all_logs(self) -> None:
@@ -2207,6 +2216,31 @@ class ScanImageControlWidget(QWidget):
         self.log_text.clear()
         for widgets in self._path_tabs.values():
             widgets.udp_text.clear()
+
+    def _export_diagnostic_log(self) -> None:
+        source = self._diagnostic_log_path
+        if source is None or not source.is_file():
+            QMessageBox.warning(self, "Diagnostic log unavailable", "No diagnostic log file is available to export.")
+            return
+        self._record_diagnostic_state_snapshot("manual_export")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"2p_opto_tools_diagnostic_{timestamp}.log"
+        destination_text, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Diagnostic Log",
+            str(Path.home() / default_name),
+            "Log files (*.log);;All files (*)",
+        )
+        if not destination_text:
+            return
+        destination = Path(destination_text)
+        try:
+            shutil.copyfile(source, destination)
+        except OSError as exc:
+            QMessageBox.warning(self, "Diagnostic log export failed", str(exc))
+            self._append_diagnostic_log(f"DIAGNOSTIC_LOG_EXPORT_ERROR destination={destination} error={exc}")
+            return
+        self.signals.log_message.emit(f"[diagnostic] exported operation log to {destination}")
 
     def _show_connecting_dialog(self, path_name: str, config_name: str, cancel_event: object) -> None:
         self._hide_connecting_dialog(path_name)
@@ -3118,9 +3152,11 @@ class ScanImageControlWidget(QWidget):
             fn(path_name)
         except MatlabSessionCancelled as exc:
             self.signals.log_message.emit(f"[{path_name}] {exc}")
+            self._record_diagnostic_incident(path_name, label, exc)
             return False
         except Exception as exc:
             self.signals.log_message.emit(f"[{path_name}] ERROR: {exc}")
+            self._record_diagnostic_incident(path_name, label, exc)
             return False
         return True
 
@@ -3995,6 +4031,89 @@ class ScanImageControlWidget(QWidget):
         except OSError:
             # Diagnostic logging must never interfere with GUI operation.
             return
+
+    def _diagnostic_state_payload(self) -> dict[str, object]:
+        """Capture Python-side state only; never poll MATLAB from diagnostic logging."""
+        paths: dict[str, object] = {}
+        for path_name, runtime in self._runtimes.items():
+            tracking = runtime.experiment_tracking
+            prepared = runtime.prepared_photostim
+            paths[path_name] = {
+                "status": runtime.status,
+                "launched": runtime.launched,
+                "listener_on": runtime.udp_listener is not None,
+                "experiment": {
+                    "exp_id": tracking.exp_id,
+                    "schema_name": tracking.schema_name,
+                    "current_trial_order_index": tracking.current_trial_order_index,
+                    "current_condition_index": tracking.current_trial_index,
+                    "planned_trial_count": len(tracking.trial_condition_indices),
+                    "stimulus_condition_count": len(tracking.stimulus_conditions),
+                },
+                "photostim": {
+                    "prepared": bool(prepared.schema_path),
+                    "phase_mask_batch_status": prepared.phase_mask_batch_status,
+                    "phase_mask_batch_index": prepared.phase_mask_batch_index,
+                    "prepared_trial_start_index": prepared.prepared_trial_start_index,
+                    "prepared_trial_stop_index": prepared.prepared_trial_stop_index,
+                    "phase_mask_pattern_count": len(prepared.phase_mask_batch_pattern_names),
+                    "triggered_seq_num": prepared.triggered_seq_num,
+                    "triggered_sequence_name": prepared.triggered_sequence_name,
+                    "triggered_insert_position": prepared.triggered_insert_position,
+                    "triggered_idle_position": prepared.triggered_idle_position,
+                    "triggered_stimulus_group_count": len(prepared.triggered_stimulus_groups),
+                },
+            }
+
+        with self._online_analysis.lock:
+            online = {
+                "enabled": self._online_analysis.enabled,
+                "configured": self._online_analysis.configured,
+                "exp_id": self._online_analysis.exp_id,
+                "current_condition_index": self._online_analysis.current_condition_index,
+                "active_trial_condition_index": (
+                    self._online_analysis.active_trial.condition_index
+                    if self._online_analysis.active_trial is not None
+                    else None
+                ),
+                "active_trial_ordinal": (
+                    self._online_analysis.active_trial.ordinal
+                    if self._online_analysis.active_trial is not None
+                    else None
+                ),
+                "roi_count": len(self._online_analysis.cells_by_roi_name),
+                "last_error": self._online_analysis.last_error,
+            }
+
+        return {
+            "machine": self._current_machine_name,
+            "config": self._current_config_name,
+            "photostim_path": self.machine_config.photostim_path if self.machine_config is not None else "",
+            "paths": paths,
+            "online_analysis": online,
+        }
+
+    def _record_diagnostic_state_snapshot(self, reason: str) -> None:
+        payload = self._diagnostic_state_payload()
+        self._append_diagnostic_log(
+            f"STATE_SNAPSHOT reason={reason} payload={json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
+        )
+
+    def _record_periodic_state_snapshot(self) -> None:
+        self._record_diagnostic_state_snapshot("periodic")
+
+    def _record_diagnostic_incident(self, path_name: str, label: str, error: Exception) -> None:
+        incident = {
+            "path": path_name,
+            "action": label,
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "traceback": traceback.format_exc(),
+        }
+        self._append_diagnostic_log(
+            f"INCIDENT payload={json.dumps(incident, sort_keys=True, separators=(',', ':'))}"
+        )
+        self._record_diagnostic_state_snapshot("action_error")
 
     def _append_diagnostic_log(self, message: str) -> None:
         self._write_diagnostic_log(self._diagnostic_log_path, message)

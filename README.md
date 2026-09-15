@@ -144,8 +144,17 @@ It can:
 - stop the current ScanImage acquisition
 - listen for UDP messages and map them to ScanImage actions
 - show a live debug log of GUI actions, UDP packets, and MATLAB responses
+- continuously write the same diagnostic history to `C:\\temp\\2p_opto_tools_operations.log` on Windows
+- export that diagnostic log from the `Export Diagnostic Log` button in the Debug Log panel
 - run one UDP listener per configured path
 - launch all paths in a config in the configured launch order with an inter-path delay
+
+The persistent diagnostic log is line-buffered, so it remains useful after a
+freeze or forced GUI exit. It contains GUI actions, UDP messages, MATLAB status
+messages, connection state, periodic Python-side state snapshots, and an
+immediate state snapshot when an action errors. Snapshot logging does not query
+MATLAB and therefore does not add acquisition-time engine traffic. The log is
+not cleared by `Clear Debug Output`.
 
 UDP trigger messages currently supported:
 
