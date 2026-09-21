@@ -237,8 +237,17 @@ class OnlineAnalysisCellState:
     x_um: float
     y_um: float
     z_um: float
+    stim_z_um: float | None
     origin: str
     imaging_path: str
+    origin_exp_id: str = ""
+    origin_user_id: str = ""
+    origin_processed_cell_id: int | None = None
+    origin_suite2p_roi_id: int | None = None
+    origin_plane_index: int | None = None
+    origin_channel: int | None = None
+    origin_roi_folder_name: str = ""
+    origin_z_um: float | None = None
     pattern_names: list[str] = field(default_factory=list)
 
 
@@ -301,10 +310,16 @@ class OnlineAnalysisState:
     last_frame_by_roi: dict[str, int] = field(default_factory=dict)
     recent_samples_by_roi: dict[str, deque[OnlineAnalysisSample]] = field(default_factory=dict)
     completed_trials_by_condition: dict[int, list[OnlineAnalysisTrial]] = field(default_factory=dict)
+    trial_ordinal_by_condition: dict[int, int] = field(default_factory=dict)
     active_trial: OnlineAnalysisTrial | None = None
     current_condition_index: int | None = None
     poll_stop: threading.Event | None = None
     poll_thread: threading.Thread | None = None
+    export_root: Path | None = None
+    export_staging_path: Path | None = None
+    export_output_path: Path | None = None
+    export_exp_id: str = ""
+    export_finalized: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def clear_runtime_buffers(self) -> None:
@@ -312,8 +327,16 @@ class OnlineAnalysisState:
         self.last_frame_by_roi = {}
         self.recent_samples_by_roi = {}
         self.completed_trials_by_condition = {}
+        self.trial_ordinal_by_condition = {}
         self.active_trial = None
         self.roi_names_in_order = []
+
+    def reset_export(self) -> None:
+        self.export_root = None
+        self.export_staging_path = None
+        self.export_output_path = None
+        self.export_exp_id = ""
+        self.export_finalized = False
 
 
 @dataclass
@@ -1521,8 +1544,17 @@ class ScanImageControlWidget(QWidget):
                             x_um=float(cell.x),
                             y_um=float(cell.y),
                             z_um=float(cell.origin_z_um if cell.origin_z_um is not None else cell.z),
+                            stim_z_um=float(cell.z),
                             origin=cell.origin or f"x={cell.x:g} y={cell.y:g} z={cell.z:g}",
                             imaging_path=imaging_path,
+                            origin_exp_id=cell.origin_exp_id,
+                            origin_user_id=cell.origin_user_id,
+                            origin_processed_cell_id=cell.origin_processed_cell_id,
+                            origin_suite2p_roi_id=cell.origin_suite2p_roi_id,
+                            origin_plane_index=cell.origin_plane_index,
+                            origin_channel=cell.origin_channel,
+                            origin_roi_folder_name=cell.origin_roi_folder_name,
+                            origin_z_um=cell.origin_z_um,
                             pattern_names=[],
                         )
                         cell_key_to_roi_name[key] = roi_name
@@ -1639,6 +1671,10 @@ class ScanImageControlWidget(QWidget):
                 f"configure:{tracking.exp_id}:{imaging_path}",
                 emit_log=False,
             )
+        try:
+            self._initialize_online_analysis_export(tracking)
+        except Exception as exc:
+            self.signals.log_message.emit(f"[online analysis] export setup warning: {exc}")
         self._start_online_analysis_poller()
 
     def _online_analysis_project(self, tracking: ExperimentTrackingState) -> ExperimentProject:
@@ -1651,6 +1687,36 @@ class ScanImageControlWidget(QWidget):
         raise RuntimeError(
             "Online analysis requires a prepared running schema on the active photostim path. "
             "Run prep_patterns for the current experiment before enabling Online Analysis."
+        )
+
+    def _initialize_online_analysis_export(self, tracking: ExperimentTrackingState) -> None:
+        tracking_runtime_name = self._online_analysis_tracking_runtime_name()
+        runtime = self._runtimes.get(tracking_runtime_name) if tracking_runtime_name else None
+        if runtime is None or not tracking.exp_id:
+            return
+        experiment_root = self._resolve_experiment_root(
+            runtime,
+            tracking.exp_id,
+            tracking.params.get("params_path"),
+        )
+        export_root = experiment_root / "online_analysis"
+        export_root.mkdir(parents=True, exist_ok=True)
+        with self._online_analysis.lock:
+            state = self._online_analysis
+            if (
+                state.export_exp_id == tracking.exp_id
+                and state.export_staging_path is not None
+                and not state.export_finalized
+            ):
+                return
+            state.reset_export()
+            state.export_root = export_root
+            state.export_staging_path = export_root / f".online_analysis_responses_{os.getpid()}.jsonl"
+            state.export_output_path = export_root / "online_analysis_responses.json"
+            state.export_exp_id = tracking.exp_id
+            state.export_staging_path.write_text("", encoding="utf-8")
+        self.signals.log_message.emit(
+            f"[online analysis] trial export initialized: {export_root}"
         )
 
     def _restore_online_analysis(self, clear_runtime: bool) -> None:
@@ -1940,18 +2006,237 @@ class ScanImageControlWidget(QWidget):
             return None
         return latest_sample.timestamp + host_delta
 
-    def _finalize_active_trial_locked(self) -> None:
+    @staticmethod
+    def _json_number(value: float | int | None) -> float | int | None:
+        if value is None:
+            return None
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        return int(numeric) if isinstance(value, int) else numeric
+
+    def _online_analysis_trial_export_payload_locked(
+        self,
+        trial: OnlineAnalysisTrial,
+        *,
+        complete: bool,
+        end_reason: str,
+    ) -> dict[str, object]:
+        state = self._online_analysis
+        condition = state.conditions.get(trial.condition_index)
+        cells: dict[str, object] = {}
+        for roi_name in state.cells_by_roi_name:
+            samples = trial.samples_by_roi.get(roi_name, [])
+            cells[roi_name] = {
+                "time_s": [
+                    self._json_number(sample.timestamp - trial.start_timestamp)
+                    if trial.start_timestamp is not None
+                    else None
+                    for sample in samples
+                ],
+                "value": [self._json_number(sample.value) for sample in samples],
+                "scanimage_timestamp_s": [self._json_number(sample.timestamp) for sample in samples],
+                "frame_number": [self._json_number(sample.frame_number) for sample in samples],
+            }
+        return {
+            "condition_index": trial.condition_index,
+            "condition_label": condition.label if condition is not None else "",
+            "stimulus_id": condition.stimulus_id if condition is not None else None,
+            "sequence_name": condition.sequence_name if condition is not None else "",
+            "sequence_number": condition.seq_num if condition is not None else None,
+            "ordinal": trial.ordinal,
+            "complete": complete,
+            "end_reason": end_reason,
+            "time_zero": {
+                "integration_timestamp_s": self._json_number(trial.start_timestamp),
+                "host_waveform_trigger_time_s": self._json_number(trial.trigger_host_wall_time),
+                "host_waveform_trigger_monotonic_s": self._json_number(trial.trigger_host_monotonic),
+                "integration_timestamp_by_roi_s": {
+                    roi_name: self._json_number(timestamp)
+                    for roi_name, timestamp in trial.trigger_timestamp_by_roi.items()
+                },
+                "integration_frame_by_roi": {
+                    roi_name: self._json_number(frame_number)
+                    for roi_name, frame_number in trial.trigger_frame_by_roi.items()
+                },
+            },
+            "cells": cells,
+        }
+
+    def _append_online_analysis_trial_export_locked(
+        self,
+        trial: OnlineAnalysisTrial,
+        *,
+        complete: bool,
+        end_reason: str,
+    ) -> None:
+        staging_path = self._online_analysis.export_staging_path
+        if staging_path is None:
+            return
+        payload = self._online_analysis_trial_export_payload_locked(
+            trial,
+            complete=complete,
+            end_reason=end_reason,
+        )
+        try:
+            with staging_path.open("a", encoding="utf-8") as handle:
+                json.dump(payload, handle, allow_nan=False, separators=(",", ":"), default=str)
+                handle.write("\n")
+                handle.flush()
+        except OSError as exc:
+            self._online_analysis.last_error = f"Online analysis export write failed: {exc}"
+            self.signals.log_message.emit(f"[online analysis] export write warning: {exc}")
+
+    def _finalize_active_trial_locked(
+        self,
+        *,
+        complete: bool = True,
+        end_reason: str = "post_window_complete",
+    ) -> None:
         state = self._online_analysis
         trial = state.active_trial
         if trial is None:
             return
         if trial.start_timestamp is not None:
             self._seed_active_trial_from_recent_locked(trial)
+        self._append_online_analysis_trial_export_locked(
+            trial,
+            complete=complete,
+            end_reason=end_reason,
+        )
         state.completed_trials_by_condition.setdefault(trial.condition_index, []).append(trial)
         state.completed_trials_by_condition[trial.condition_index] = state.completed_trials_by_condition[
             trial.condition_index
         ][-50:]
         state.active_trial = None
+
+    def _online_analysis_export_metadata_locked(self) -> dict[str, object]:
+        state = self._online_analysis
+        cells = []
+        for roi_name, cell in state.cells_by_roi_name.items():
+            cells.append(
+                {
+                    "online_roi_name": roi_name,
+                    "label": cell.label,
+                    "stimulation_coordinates_um": {
+                        "x": self._json_number(cell.x_um),
+                        "y": self._json_number(cell.y_um),
+                        "z": self._json_number(cell.stim_z_um),
+                    },
+                    "integration_coordinates_um": {
+                        "x": self._json_number(cell.x_um),
+                        "y": self._json_number(cell.y_um),
+                        "z": self._json_number(cell.z_um),
+                    },
+                    "origin": {
+                        "exp_id": cell.origin_exp_id,
+                        "user_id": cell.origin_user_id,
+                        "plane": cell.origin_plane_index,
+                        "source_channel": cell.origin_channel,
+                        "suite2p_roi_id": cell.origin_suite2p_roi_id,
+                        "pipeline_cell_id": cell.origin_processed_cell_id,
+                        "imaging_path": cell.imaging_path,
+                        "roi_folder_name": cell.origin_roi_folder_name,
+                        "plane_z_um": self._json_number(cell.origin_z_um),
+                        "description": cell.origin,
+                    },
+                    "online_analysis_channel": state.channel,
+                    "pattern_names": list(cell.pattern_names),
+                }
+            )
+        conditions = []
+        for condition_index in sorted(state.conditions):
+            condition = state.conditions[condition_index]
+            conditions.append(
+                {
+                    "condition_index": condition.index,
+                    "label": condition.label,
+                    "stimulus_id": condition.stimulus_id,
+                    "sequence_name": condition.sequence_name,
+                    "sequence_number": condition.seq_num,
+                    "supported": condition.supported,
+                    "reason": condition.reason,
+                    "targeted_online_roi_names": list(condition.cell_roi_names),
+                    "cell_patterns": dict(condition.cell_patterns),
+                }
+            )
+        return {
+            "format_version": 1,
+            "exp_id": state.exp_id,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "online_analysis": {
+                "imaging_path": state.imaging_path,
+                "channel": state.channel,
+                "roi_diameter_px": state.roi_diameter_px,
+                "pre_s": state.pre_s,
+                "post_s": state.post_s,
+            },
+            "cells": cells,
+            "conditions": conditions,
+        }
+
+    def _finalize_online_analysis_export(self, reason: str) -> None:
+        with self._online_analysis.lock:
+            state = self._online_analysis
+            if state.export_finalized:
+                return
+            if state.active_trial is not None:
+                self._finalize_active_trial_locked(
+                    complete=False,
+                    end_reason=reason,
+                )
+            staging_path = state.export_staging_path
+            output_path = state.export_output_path
+            metadata = self._online_analysis_export_metadata_locked()
+
+        if staging_path is None or output_path is None:
+            return
+        try:
+            trials: list[dict[str, object]] = []
+            with staging_path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        raise ValueError(f"Trial record {line_number} is not a JSON object.")
+                    trials.append(record)
+            payload = {
+                **metadata,
+                "export_reason": reason,
+                "trial_count": len(trials),
+                "trials": trials,
+            }
+            temporary_fd, temporary_name = tempfile.mkstemp(
+                prefix=".online_analysis_responses_",
+                suffix=".tmp",
+                dir=output_path.parent,
+            )
+            temporary_path = Path(temporary_name)
+            try:
+                with os.fdopen(temporary_fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, allow_nan=False, indent=2, default=str)
+                    handle.write("\n")
+                os.replace(temporary_path, output_path)
+            finally:
+                if temporary_path.exists():
+                    temporary_path.unlink()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            with self._online_analysis.lock:
+                self._online_analysis.last_error = f"Online analysis export finalization failed: {exc}"
+            self.signals.log_message.emit(f"[online analysis] export finalization warning: {exc}")
+            return
+
+        with self._online_analysis.lock:
+            if self._online_analysis.export_staging_path == staging_path:
+                self._online_analysis.export_finalized = True
+        try:
+            staging_path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.signals.log_message.emit(f"[online analysis] export cleanup warning: {exc}")
+        self.signals.log_message.emit(
+            f"[online analysis] exported {len(trials)} trial(s) to {output_path} ({reason})"
+        )
 
     def _clear_online_analysis_runtime_buffers_locked(self, reason: str, emit_log: bool = True) -> None:
         state = self._online_analysis
@@ -2000,8 +2285,12 @@ class ScanImageControlWidget(QWidget):
             if condition is None or not condition.supported:
                 return
             if state.active_trial is not None:
-                self._finalize_active_trial_locked()
-            ordinal = len(state.completed_trials_by_condition.get(condition_index, [])) + 1
+                self._finalize_active_trial_locked(
+                    complete=False,
+                    end_reason="next_trial_started",
+                )
+            ordinal = state.trial_ordinal_by_condition.get(condition_index, 0) + 1
+            state.trial_ordinal_by_condition[condition_index] = ordinal
             trigger_host_monotonic = time.monotonic()
             if trigger_host_wall_time is None:
                 trigger_host_wall_time = time.time()
@@ -3327,6 +3616,7 @@ class ScanImageControlWidget(QWidget):
         self._stop_listener(path_name)
         try:
             if path_name == self._online_analysis.imaging_path:
+                self._finalize_online_analysis_export("imaging_path_shutdown")
                 self._restore_online_analysis(clear_runtime=False)
         except Exception as exc:
             self.signals.log_message.emit(f"[online analysis] stop hook warning: {exc}")
@@ -3387,15 +3677,19 @@ class ScanImageControlWidget(QWidget):
             if runtime.last_context is not None
             else None
         )
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                build_run_script_command(runtime.path_config, "stop_script.m", context_vars),
-                timeout_s=runtime.path_config.command_timeout_s,
-            )
-            runtime.status = "ready"
-            self.signals.path_status.emit(path_name, runtime.status)
-            self._emit_lines(path_name, lines)
+        try:
+            with runtime.lock:
+                assert runtime.session is not None
+                lines = runtime.session.eval(
+                    build_run_script_command(runtime.path_config, "stop_script.m", context_vars),
+                    timeout_s=runtime.path_config.command_timeout_s,
+                )
+                runtime.status = "ready"
+                self.signals.path_status.emit(path_name, runtime.status)
+                self._emit_lines(path_name, lines)
+        finally:
+            if path_name == self._online_analysis.imaging_path:
+                self._finalize_online_analysis_export("acquisition_stopped")
 
     def _open_test_slm_dialog(self, path_name: str) -> None:
         dialog = TestSlmDialog(
@@ -4297,14 +4591,13 @@ class ScanImageControlWidget(QWidget):
         candidate_text = ", ".join(str(candidate) for candidate in candidates)
         raise FileNotFoundError(f"Could not find params_path '{raw_path}' (checked: {candidate_text})")
 
-    def _snapshot_schema_for_experiment(
+    def _resolve_experiment_root(
         self,
         runtime: PathRuntime,
         exp_id: str,
-        schema_path: Path,
         params_path: object,
     ) -> Path:
-        """Store one immutable schema snapshot in the NAS experiment root."""
+        """Resolve the NAS experiment root from the authoritative controller payload."""
         params_file = Path(str(params_path)).expanduser() if params_path else None
         if params_file is not None and params_file.is_file():
             experiment_root = params_file.resolve().parent
@@ -4323,6 +4616,17 @@ class ScanImageControlWidget(QWidget):
         experiment_root.mkdir(parents=True, exist_ok=True)
         if not experiment_root.is_dir():
             raise FileNotFoundError(f"Could not create NAS experiment root: {experiment_root}")
+        return experiment_root
+
+    def _snapshot_schema_for_experiment(
+        self,
+        runtime: PathRuntime,
+        exp_id: str,
+        schema_path: Path,
+        params_path: object,
+    ) -> Path:
+        """Store one immutable schema snapshot in the NAS experiment root."""
+        experiment_root = self._resolve_experiment_root(runtime, exp_id, params_path)
 
         destination = experiment_root / "schema.yaml"
         source_digest = hashlib.sha256(schema_path.read_bytes()).digest()
@@ -4643,6 +4947,7 @@ class ScanImageControlWidget(QWidget):
 
     def _clear_online_analysis_integration_rois(self, reason: str) -> None:
         self.signals.log_message.emit(f"[online analysis] clearing integration ROIs ({reason})")
+        self._finalize_online_analysis_export(reason)
         self._stop_online_analysis_poller()
 
         for path_name, runtime in self._runtimes.items():
@@ -4674,6 +4979,7 @@ class ScanImageControlWidget(QWidget):
             self._online_analysis.exp_id = ""
             self._online_analysis.current_condition_index = None
             self._online_analysis.last_error = ""
+            self._online_analysis.reset_export()
 
     def _handle_update_experiment_params_request(
         self,
@@ -6063,6 +6369,7 @@ class ScanImageControlWidget(QWidget):
                 self.signals.log_message.emit(f"[{path_name}] handling legacy STOP")
                 ok = self._run_action(path_name, "legacy STOP", self._stop_acquisition)
                 if ok:
+                    self._finalize_online_analysis_export("legacy_stop")
                     send_ready()
                 else:
                     self.signals.log_message.emit(f"[{path_name}] legacy STOP failed before READY")

@@ -27,6 +27,8 @@ def load_schema(path: str | Path) -> ExperimentProject:
                 origin_exp_id=str(cell.get("origin_exp_id", "") or ""),
                 origin_user_id=str(cell.get("origin_user_id", "") or ""),
                 origin_processed_cell_id=cell.get("origin_processed_cell_id"),
+                origin_channel=cell.get("origin_channel"),
+                origin_suite2p_roi_id=cell.get("origin_suite2p_roi_id"),
                 origin_imaging_path=str(cell.get("origin_imaging_path", "") or ""),
                 origin_roi_folder_name=str(cell.get("origin_roi_folder_name", "") or ""),
                 origin_plane_index=cell.get("origin_plane_index"),

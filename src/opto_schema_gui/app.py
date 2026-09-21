@@ -198,6 +198,8 @@ def _cell_origin_metadata(cell: CellSpec) -> dict[str, object]:
         "origin_exp_id": cell.origin_exp_id,
         "origin_user_id": cell.origin_user_id,
         "origin_processed_cell_id": cell.origin_processed_cell_id,
+        "origin_channel": cell.origin_channel,
+        "origin_suite2p_roi_id": cell.origin_suite2p_roi_id,
         "origin_imaging_path": cell.origin_imaging_path,
         "origin_roi_folder_name": cell.origin_roi_folder_name,
         "origin_plane_index": cell.origin_plane_index,
@@ -1568,6 +1570,8 @@ def _resolve_import_cell(
         origin_exp_id=source["exp_id"],
         origin_user_id=source["user_id"],
         origin_processed_cell_id=processed_cell_id,
+        origin_channel=int(source["channel"]),
+        origin_suite2p_roi_id=resolved.local_cell_index,
         origin_imaging_path=resolved.imaging_path,
         origin_roi_folder_name=resolved.roi_folder_name,
         origin_plane_index=resolved.plane_index,
@@ -1866,6 +1870,7 @@ class ImagingPixelImportDialog(QDialog):
         self._resolved_cell_note = ""
         self._resolved_origin = ""
         self._resolved_processed_cell_id: int | None = None
+        self._resolved_suite2p_roi_id: int | None = None
         self._resolved_imaging_path = ""
         self._resolved_roi_folder_name = ""
         self._resolved_plane_index: int | None = None
@@ -1925,6 +1930,7 @@ class ImagingPixelImportDialog(QDialog):
         self._resolved_cell_note = ""
         self._resolved_origin = ""
         self._resolved_processed_cell_id = None
+        self._resolved_suite2p_roi_id = None
         self._resolved_imaging_path = ""
         self._resolved_roi_folder_name = ""
         self._resolved_plane_index = None
@@ -1993,6 +1999,7 @@ class ImagingPixelImportDialog(QDialog):
             self._resolved_cell_note = resolved.note
             self._resolved_origin = resolved.origin
             self._resolved_processed_cell_id = resolved.processed_cell_id
+            self._resolved_suite2p_roi_id = resolved.local_cell_index
             self._resolved_imaging_path = resolved.imaging_path
             self._resolved_roi_folder_name = resolved.roi_folder_name
             self._resolved_plane_index = resolved.plane_index
@@ -2007,6 +2014,7 @@ class ImagingPixelImportDialog(QDialog):
             self._resolved_cell_note = ""
             self._resolved_origin = ""
             self._resolved_processed_cell_id = None
+            self._resolved_suite2p_roi_id = None
             self._resolved_imaging_path = ""
             self._resolved_roi_folder_name = ""
             self._resolved_plane_index = None
@@ -2051,6 +2059,8 @@ class ImagingPixelImportDialog(QDialog):
             origin_exp_id=exp_id,
             origin_user_id=self.parent().project.origin_user_id if hasattr(self.parent(), "project") and self._resolved_processed_cell_id is not None else "",
             origin_processed_cell_id=self._resolved_processed_cell_id,
+            origin_channel=0 if self._resolved_processed_cell_id is not None else None,
+            origin_suite2p_roi_id=self._resolved_suite2p_roi_id,
             origin_imaging_path=self._resolved_imaging_path or imaging_path,
             origin_roi_folder_name=self._resolved_roi_folder_name or matched_scanfield.roi_folder_name,
             origin_plane_index=self._resolved_plane_index if self._resolved_plane_index is not None else plane_index,
@@ -2160,6 +2170,8 @@ class ProcessedCellGroupImportDialog(QDialog):
                         origin_exp_id=exp_id,
                         origin_user_id=self.default_user_id or "",
                         origin_processed_cell_id=processed_cell_id,
+                        origin_channel=0,
+                        origin_suite2p_roi_id=resolved.local_cell_index,
                         origin_imaging_path=resolved.imaging_path,
                         origin_roi_folder_name=resolved.roi_folder_name,
                         origin_plane_index=resolved.plane_index,
@@ -2453,6 +2465,8 @@ class AddCellsFromFovDialog(QDialog):
                 origin_exp_id=group.exp_id,
                 origin_user_id=group.user_id,
                 origin_processed_cell_id=processed_cell_id,
+                origin_channel=group.channel,
+                origin_suite2p_roi_id=resolved.local_cell_index,
                 origin_imaging_path=resolved.imaging_path,
                 origin_roi_folder_name=resolved.roi_folder_name,
                 origin_plane_index=resolved.plane_index,
@@ -3014,6 +3028,8 @@ class PatternEditor(QWidget):
                     origin_exp_id=str(origin_meta.get("origin_exp_id", "")),
                     origin_user_id=str(origin_meta.get("origin_user_id", "")),
                     origin_processed_cell_id=origin_meta.get("origin_processed_cell_id"),
+                    origin_channel=origin_meta.get("origin_channel"),
+                    origin_suite2p_roi_id=origin_meta.get("origin_suite2p_roi_id"),
                     origin_imaging_path=str(origin_meta.get("origin_imaging_path", "")),
                     origin_roi_folder_name=str(origin_meta.get("origin_roi_folder_name", "")),
                     origin_plane_index=origin_meta.get("origin_plane_index"),

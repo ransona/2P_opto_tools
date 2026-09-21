@@ -172,6 +172,27 @@ Plain-text start commands can optionally include an experiment ID:
 - `acquire 2026-01-01_01_TEST`
 - `gogo:2026-01-01_01_TEST`
 
+### Online response export
+
+When Online Analysis is configured for an experiment, every completed trial is
+recorded to a temporary JSON stream. On normal acquisition stop, ScanImage path
+shutdown, or replacement by a new experiment, the GUI writes:
+
+```text
+<NAS experiment root>/online_analysis/online_analysis_responses.json
+```
+
+This final JSON contains source/pipeline identity, SLM stimulation coordinates,
+integration-field coordinates, condition definitions, and raw irregular samples
+for every trial and cell. An interrupted final trial is retained with
+`complete: false`. The source mapping includes the original Suite2p ROI ID,
+post-pipeline cell ID, source plane, and source channel when the cell came from
+processed data.
+
+Use `examples/load_online_response_traces.py` to load a specific pipeline cell
+ID and condition into a common time base plus a trial-by-time NumPy array, or
+to load all cells into a nested condition/cell structure.
+
 Each path listener also supports the legacy MATLAB-serialized command subset used by the old listeners in `legacy/`:
 
 - `COM/GOGO` with `meta{1} = expID`

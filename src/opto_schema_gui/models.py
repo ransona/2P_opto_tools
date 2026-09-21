@@ -30,6 +30,8 @@ class CellSpec:
     origin_exp_id: str = ""
     origin_user_id: str = ""
     origin_processed_cell_id: int | None = None
+    origin_channel: int | None = None
+    origin_suite2p_roi_id: int | None = None
     origin_imaging_path: str = ""
     origin_roi_folder_name: str = ""
     origin_plane_index: int | None = None
@@ -50,6 +52,10 @@ class CellSpec:
             data["origin_user_id"] = self.origin_user_id
         if self.origin_processed_cell_id is not None:
             data["origin_processed_cell_id"] = int(self.origin_processed_cell_id)
+        if self.origin_channel is not None:
+            data["origin_channel"] = int(self.origin_channel)
+        if self.origin_suite2p_roi_id is not None:
+            data["origin_suite2p_roi_id"] = int(self.origin_suite2p_roi_id)
         if self.origin_imaging_path:
             data["origin_imaging_path"] = self.origin_imaging_path
         if self.origin_roi_folder_name:

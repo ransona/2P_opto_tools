@@ -487,6 +487,26 @@ Each ROI may have a slightly different latest cursor/timestamp at time zero.
 That is expected; the code records them per ROI. Do not replace this with one
 global cursor unless ScanImage changes its integration manager semantics.
 
+### Exported Raw Responses
+
+The live plotting cache intentionally retains only a bounded number of trials,
+but response export must retain the entire experiment. Each completed trial is
+therefore appended immediately to a JSONL staging file in the experiment's
+`online_analysis` directory. On experiment stop, path shutdown, or replacement
+by a new experiment, that staging file is atomically assembled into
+`online_analysis_responses.json`. Do not use the display cache as the export
+source.
+
+The exported samples retain their original ScanImage timestamps, frame numbers,
+and values. Trial lengths may differ, so analysis code must use the supplied
+time base and leave bins outside a trial's observed range as NaN rather than
+padding or extrapolating values.
+
+`CellSpec.z` is the SLM stimulation Z. `origin_z_um` is the source imaging
+plane Z, which can differ. Export metadata deliberately labels these as
+`stimulation_coordinates_um` and `integration_coordinates_um`; do not merge
+them into a single ambiguous coordinate field.
+
 ### dF/F And Plot Gaps
 
 For dF/F, the GUI smooths the available trace and uses its 10th percentile over
