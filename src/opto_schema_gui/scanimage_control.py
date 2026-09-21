@@ -106,6 +106,7 @@ from .models import ExperimentProject, Pattern
 
 
 MAX_UDP_DATAGRAM_BYTES = 65535
+DIAGNOSTIC_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 
 class ScanImageSignals(QObject):
@@ -4312,10 +4313,23 @@ class ScanImageControlWidget(QWidget):
             return
         timestamp = datetime.now().isoformat(timespec="milliseconds")
         thread_id = threading.get_ident()
+        line = f"{timestamp} thread={thread_id} {message}\n"
         try:
             with self._diagnostic_log_lock:
+                if path.exists() and path.stat().st_size + len(line.encode("utf-8")) >= DIAGNOSTIC_LOG_MAX_BYTES:
+                    rotation_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    archived_path = path.with_name(
+                        f"{path.stem}_{rotation_stamp}{path.suffix}"
+                    )
+                    path.replace(archived_path)
+                    rotation_line = (
+                        f"{timestamp} thread={thread_id} "
+                        f"=== diagnostic log rotated from {archived_path.name} at 10 MB ===\n"
+                    )
+                    with path.open("w", encoding="utf-8") as handle:
+                        handle.write(rotation_line)
                 with path.open("a", encoding="utf-8") as handle:
-                    handle.write(f"{timestamp} thread={thread_id} {message}\n")
+                    handle.write(line)
                     handle.flush()
         except OSError:
             # Diagnostic logging must never interfere with GUI operation.
