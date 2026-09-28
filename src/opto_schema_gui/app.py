@@ -422,6 +422,25 @@ class MultiCellActivityPlotWidget(QWidget):
             return None
         return matrix
 
+    @staticmethod
+    def _column_mean_and_sem(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Average sparse trial traces without warning for uncovered time bins."""
+        finite = np.isfinite(matrix)
+        counts = np.sum(finite, axis=0)
+        mean = np.full(matrix.shape[1], np.nan, dtype=float)
+        populated = counts > 0
+        if not np.any(populated):
+            return mean, np.full(matrix.shape[1], np.nan, dtype=float)
+
+        totals = np.sum(np.where(finite, matrix, 0.0), axis=0)
+        mean[populated] = totals[populated] / counts[populated]
+        centered = np.where(finite, matrix - mean, 0.0)
+        sem = np.full(matrix.shape[1], np.nan, dtype=float)
+        sem[populated] = np.sqrt(np.sum(centered[:, populated] ** 2, axis=0) / counts[populated]) / np.sqrt(
+            counts[populated]
+        )
+        return mean, sem
+
     def _draw_polyline(self, painter: QPainter, points: list[tuple[float, float]], pen: QPen) -> None:
         if len(points) < 2:
             return
@@ -578,8 +597,7 @@ class MultiCellActivityPlotWidget(QWidget):
             matrix = self._series_matrix(series, grid)
             if matrix is None:
                 continue
-            with np.errstate(invalid="ignore"):
-                mean_trace = np.nanmean(matrix, axis=0)
+            mean_trace, _ = self._column_mean_and_sem(matrix)
             finite = np.abs(mean_trace[np.isfinite(mean_trace)])
             if finite.size:
                 observed_limit = max(observed_limit, float(np.nanmax(finite)))
@@ -754,10 +772,7 @@ class MultiCellActivityPlotWidget(QWidget):
             mean_trace = None
             sem_trace = None
             if matrix is not None:
-                with np.errstate(invalid="ignore", divide="ignore"):
-                    mean_trace = np.nanmean(matrix, axis=0)
-                    counts = np.sum(np.isfinite(matrix), axis=0)
-                    sem_trace = np.nanstd(matrix, axis=0) / np.sqrt(np.maximum(counts, 1))
+                mean_trace, sem_trace = self._column_mean_and_sem(matrix)
                 if np.any(np.isfinite(mean_trace)):
                     summary_mean_rows.append(mean_trace)
                 else:
@@ -798,9 +813,7 @@ class MultiCellActivityPlotWidget(QWidget):
 
         if summary_mean_rows:
             summary_matrix = np.vstack(summary_mean_rows)
-            with np.errstate(invalid="ignore", divide="ignore"):
-                summary_mean = np.nanmean(summary_matrix, axis=0)
-                summary_sem = np.nanstd(summary_matrix, axis=0) / np.sqrt(np.maximum(np.sum(np.isfinite(summary_matrix), axis=0), 1))
+            summary_mean, summary_sem = self._column_mean_and_sem(summary_matrix)
             if not np.any(np.isfinite(summary_mean)):
                 summary_mean = None
                 summary_sem = None
@@ -837,8 +850,7 @@ class MultiCellActivityPlotWidget(QWidget):
             if summary_current_rows:
                 current_summary_matrix = np.vstack(summary_current_rows)
                 if np.any(np.isfinite(current_summary_matrix)):
-                    with np.errstate(invalid="ignore", divide="ignore"):
-                        current_summary = np.nanmean(current_summary_matrix, axis=0)
+                    current_summary, _ = self._column_mean_and_sem(current_summary_matrix)
                     if np.any(np.isfinite(current_summary)):
                         points = [
                             map_summary_point(float(xv), float(yv))
@@ -882,8 +894,7 @@ class MultiCellActivityPlotWidget(QWidget):
             if matrix is None:
                 mean_trace = np.full(grid.shape, np.nan, dtype=float)
             else:
-                with np.errstate(invalid="ignore", divide="ignore"):
-                    mean_trace = np.nanmean(matrix, axis=0)
+                mean_trace, _ = self._column_mean_and_sem(matrix)
                 if not np.any(np.isfinite(mean_trace)):
                     mean_trace = np.full(grid.shape, np.nan, dtype=float)
             mean_rows.append(mean_trace)
