@@ -63,6 +63,8 @@ from .matlab_bridge import (
     autodetect_machine_name,
     build_abort_photostim_command,
     build_begin_slm_psf_diagnostic_command,
+    build_begin_flatness_calibration_command,
+    build_check_flatness_calibration_status_command,
     build_check_slm_psf_volume_status_command,
     build_clear_integration_rois_command,
     build_clear_photostim_command,
@@ -78,6 +80,10 @@ from .matlab_bridge import (
     build_raw_vdaq_do_test_status_command,
     build_restore_online_analysis_command,
     build_restore_slm_psf_diagnostic_command,
+    build_restore_flatness_calibration_command,
+    build_run_flatness_calibration_command,
+    build_start_flatness_focus_command,
+    build_stop_flatness_focus_command,
     build_run_script_command,
     build_run_slm_psf_volume_command,
     build_schema_payload_load_command,
@@ -1099,6 +1105,104 @@ class ScanImageControlWidget(QWidget):
                 )
             except Exception as exc:
                 self.signals.log_message.emit(f"[{path_name}] SLM PSF restore warning: {exc}")
+
+    def start_flatness_focus(self, path_name: str) -> None:
+        """Start focus for the user to centre the surface transition."""
+        if path_name not in self._runtimes:
+            raise ValueError(f"Unknown path '{path_name}'")
+        runtime = self._runtimes[path_name]
+        self.eval_matlab_command(
+            path_name,
+            build_start_flatness_focus_command(runtime.path_config),
+            prepend_preamble=False,
+            timeout_s=60.0,
+        )
+
+    def stop_flatness_focus(self, path_name: str) -> None:
+        if path_name not in self._runtimes:
+            raise ValueError(f"Unknown path '{path_name}'")
+        runtime = self._runtimes[path_name]
+        self.eval_matlab_command(
+            path_name,
+            build_stop_flatness_focus_command(runtime.path_config),
+            prepend_preamble=False,
+            timeout_s=60.0,
+        )
+
+    def run_flatness_calibration(
+        self,
+        path_name: str,
+        *,
+        output_dir: str,
+        num_slices: int,
+        frames_per_slice: int,
+        z_step_um: float,
+        log_average_factor: int,
+        display_average_factor: int,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[list[float]]:
+        """Acquire one centered motor stack and return its live ScanImage FOV in um."""
+        if path_name not in self._runtimes:
+            raise ValueError(f"Unknown path '{path_name}'")
+        runtime = self._runtimes[path_name]
+        begin_lines = self.eval_matlab_command(
+            path_name,
+            build_begin_flatness_calibration_command(
+                runtime.path_config,
+                num_slices=int(num_slices),
+                frames_per_slice=int(frames_per_slice),
+                z_step_um=float(z_step_um),
+                log_average_factor=int(log_average_factor),
+                display_average_factor=int(display_average_factor),
+            ),
+            prepend_preamble=False,
+            timeout_s=300.0,
+        )
+        try:
+            fov_um = self._extract_marker_json(begin_lines, "FLATNESS_FOV_UM_JSON")
+            if not isinstance(fov_um, list):
+                raise RuntimeError("ScanImage did not return its imaging FOV for flatness calibration.")
+            try:
+                fov_um = [[float(value) for value in row] for row in fov_um]
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("ScanImage returned an invalid imaging FOV for flatness calibration.") from exc
+            if progress_callback is not None:
+                progress_callback(0, 1, "Starting centered motor Z stack")
+            self.eval_matlab_command(
+                path_name,
+                build_run_flatness_calibration_command(runtime.path_config, output_dir=output_dir),
+                prepend_preamble=False,
+                timeout_s=300.0,
+            )
+            deadline = time.monotonic() + 7200.0
+            while True:
+                if cancel_check is not None and cancel_check():
+                    raise RuntimeError("Flatness calibration aborted.")
+                lines = self.eval_matlab_command(
+                    path_name,
+                    build_check_flatness_calibration_status_command(runtime.path_config),
+                    prepend_preamble=False,
+                    timeout_s=30.0,
+                )
+                if not bool(self._extract_marker_int(lines, "FLATNESS_STATUS_ACTIVE")):
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for the flatness calibration stack to finish.")
+                time.sleep(0.1)
+            if progress_callback is not None:
+                progress_callback(1, 1, "Stack acquisition complete; processing tiles")
+            return fov_um
+        finally:
+            try:
+                self.eval_matlab_command(
+                    path_name,
+                    build_restore_flatness_calibration_command(runtime.path_config),
+                    prepend_preamble=False,
+                    timeout_s=300.0,
+                )
+            except Exception as exc:
+                self.signals.log_message.emit(f"[{path_name}] flatness calibration restore warning: {exc}")
 
     def set_online_analysis_enabled(self, enabled: bool) -> None:
         with self._online_analysis.lock:
@@ -5545,6 +5649,18 @@ class ScanImageControlWidget(QWidget):
                 try:
                     return int(float(line))
                 except ValueError:
+                    return None
+        return None
+
+    @staticmethod
+    def _extract_marker_json(lines: list[str], marker_name: str) -> object | None:
+        prefix = f"{marker_name}:"
+        for raw_line in lines:
+            line = raw_line.strip()
+            if line.startswith(prefix):
+                try:
+                    return json.loads(line[len(prefix) :])
+                except json.JSONDecodeError:
                     return None
         return None
 

@@ -1363,6 +1363,155 @@ def build_restore_slm_psf_diagnostic_command(path_config: PathConfig) -> str:
     return "\n".join(lines)
 
 
+def build_start_flatness_focus_command(path_config: PathConfig) -> str:
+    """Enter ScanImage focus mode for manual surface positioning."""
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"hSI = {path_config.hsi_variable};",
+            "assert(~isempty(hSI), 'ScanImage handle is not available.');",
+            "assert(~hSI.active, 'Stop the active ScanImage acquisition before flatness calibration.');",
+            path_config.focus_command,
+            "disp('FLATNESS_FOCUS_STARTED');",
+        ]
+    )
+
+
+def build_stop_flatness_focus_command(path_config: PathConfig) -> str:
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"hSI = {path_config.hsi_variable};",
+            "if hSI.active; hSI.abort(); pause(0.1); end",
+            "disp('FLATNESS_FOCUS_STOPPED');",
+        ]
+    )
+
+
+def build_begin_flatness_calibration_command(
+    path_config: PathConfig,
+    *,
+    num_slices: int,
+    frames_per_slice: int,
+    z_step_um: float,
+    log_average_factor: int,
+    display_average_factor: int,
+) -> str:
+    """Back up live state and configure a centered, motor-driven stack.
+
+    This deliberately does not alter the current ROI group, imaging frame, or zoom:
+    the user sets those while focus is active immediately before acquisition.
+    """
+    hsi = path_config.hsi_variable
+    lines = [
+        build_global_preamble(path_config),
+        f"hSI = {hsi};",
+        "assert(~isempty(hSI), 'ScanImage handle is not available.');",
+        "assert(~hSI.active, 'Stop focus before starting flatness calibration.');",
+        "backup = struct('valid', true);",
+        "backup.motorZ = NaN;",
+        "try; backup.motorZ = double(hSI.hMotors.samplePosition(3)); catch; end",
+        "backup.logFilePath = ''; try; backup.logFilePath = hSI.hScan2D.logFilePath; catch; end",
+        "backup.logFileStem = ''; try; backup.logFileStem = hSI.hScan2D.logFileStem; catch; end",
+        "backup.logFramesPerFile = []; try; backup.logFramesPerFile = hSI.hScan2D.logFramesPerFile; catch; end",
+        "backup.logAverageFactor = []; try; backup.logAverageFactor = hSI.hScan2D.logAverageFactor; catch; end",
+        "backup.displayRollingAverageFactor = []; try; backup.displayRollingAverageFactor = hSI.hDisplay.displayRollingAverageFactor; catch; end",
+        "backup.displayRollingAverageFactorLock = []; try; backup.displayRollingAverageFactorLock = hSI.hDisplay.displayRollingAverageFactorLock; catch; end",
+        "backup.loggingEnable = []; try; backup.loggingEnable = hSI.hChannels.loggingEnable; catch; end",
+        "backup.motionManagerEnable = []; try; backup.motionManagerEnable = logical(hSI.hMotionManager.enable); catch; end",
+        "backup.stackEnable = []; try; backup.stackEnable = hSI.hStackManager.enable; catch; end",
+        "backup.stackMode = ''; try; backup.stackMode = char(string(hSI.hStackManager.stackMode)); catch; end",
+        "backup.stackDefinition = ''; try; backup.stackDefinition = char(string(hSI.hStackManager.stackDefinition)); catch; end",
+        "backup.stackActuator = ''; try; backup.stackActuator = char(string(hSI.hStackManager.stackActuator)); catch; end",
+        "backup.centeredStack = []; try; backup.centeredStack = logical(hSI.hStackManager.centeredStack); catch; end",
+        "backup.stackZStepSize = []; try; backup.stackZStepSize = double(hSI.hStackManager.stackZStepSize); catch; end",
+        "backup.numSlices = []; try; backup.numSlices = hSI.hStackManager.numSlices; catch; end",
+        "backup.framesPerSlice = []; try; backup.framesPerSlice = hSI.hStackManager.framesPerSlice; catch; end",
+        "assignin('base', 'optoFlatnessCalibrationBackup', backup);",
+        "hSI.hStackManager.enable = true;",
+        "hSI.hStackManager.stackMode = 'slow';",
+        "hSI.hStackManager.stackActuator = 'motor';",
+        "hSI.hStackManager.stackDefinition = 'uniform';",
+        "hSI.hStackManager.centeredStack = true;",
+        f"hSI.hStackManager.stackZStepSize = {float(z_step_um)!r};",
+        f"hSI.hStackManager.numSlices = {int(num_slices)};",
+        f"hSI.hStackManager.framesPerSlice = {int(frames_per_slice)};",
+        f"hSI.hScan2D.logAverageFactor = {int(log_average_factor)};",
+        f"hSI.hDisplay.displayRollingAverageFactor = {int(display_average_factor)};",
+        "hSI.hDisplay.displayRollingAverageFactorLock = true;",
+        "hSI.hChannels.loggingEnable = true;",
+        "try; hSI.hMotionManager.enable = false; catch; end",
+        f"hSI.hScan2D.logFramesPerFile = max(1, {int(num_slices)});",
+        "resXY = double(hSI.objectiveResolution); if isscalar(resXY); resXY = [resXY resXY]; end",
+        "fovUm = double(hSI.hRoiManager.imagingFovDeg) .* reshape(resXY(1:2), 1, []);",
+        "fprintf('FLATNESS_FOV_UM_JSON:%s\\n', jsonencode(fovUm));",
+        "disp('FLATNESS_BEGIN_READY');",
+    ]
+    return "\n".join(lines)
+
+
+def build_run_flatness_calibration_command(path_config: PathConfig, *, output_dir: str) -> str:
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"hSI = {hsi};",
+            "backup = evalin('base', 'optoFlatnessCalibrationBackup');",
+            "assert(isstruct(backup) && isfield(backup, 'valid') && backup.valid, 'Flatness calibration was not initialized.');",
+            "assert(~hSI.active, 'ScanImage imaging is already active.');",
+            f"outputDir = {matlab_string(output_dir)};",
+            "if exist(outputDir, 'dir') ~= 7; mkdir(outputDir); end",
+            "hSI.hScan2D.logFilePath = outputDir;",
+            "hSI.hScan2D.logFileStem = 'flatness';",
+            "hSI.startGrab();",
+            "disp('FLATNESS_STACK_STARTED');",
+        ]
+    )
+
+
+def build_check_flatness_calibration_status_command(path_config: PathConfig) -> str:
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"hSI = {path_config.hsi_variable};",
+            "acqActive = false; try; acqActive = logical(hSI.active); catch; end",
+            "disp('FLATNESS_STATUS_ACTIVE');",
+            "disp(double(acqActive));",
+        ]
+    )
+
+
+def build_restore_flatness_calibration_command(path_config: PathConfig) -> str:
+    hsi = path_config.hsi_variable
+    lines = [
+        build_global_preamble(path_config),
+        f"hSI = {hsi};",
+        "if evalin('base', \"exist('optoFlatnessCalibrationBackup', 'var')\"); backup = evalin('base', 'optoFlatnessCalibrationBackup'); else; backup = struct('valid', false); end",
+        "if ~isstruct(backup) || ~isfield(backup, 'valid') || ~backup.valid; disp('FLATNESS_RESTORE_DONE'); return; end",
+        "try; if hSI.active; hSI.abort(); pause(0.1); end; catch; end",
+        "try; if ischar(backup.logFilePath) || isstring(backup.logFilePath); hSI.hScan2D.logFilePath = char(backup.logFilePath); end; catch; end",
+        "try; if ischar(backup.logFileStem) || isstring(backup.logFileStem); hSI.hScan2D.logFileStem = char(backup.logFileStem); end; catch; end",
+        "try; if ~isempty(backup.logFramesPerFile); hSI.hScan2D.logFramesPerFile = backup.logFramesPerFile; end; catch; end",
+        "try; if ~isempty(backup.logAverageFactor); hSI.hScan2D.logAverageFactor = backup.logAverageFactor; end; catch; end",
+        "try; if ~isempty(backup.displayRollingAverageFactorLock); hSI.hDisplay.displayRollingAverageFactorLock = logical(backup.displayRollingAverageFactorLock); end; catch; end",
+        "try; if ~isempty(backup.displayRollingAverageFactor); hSI.hDisplay.displayRollingAverageFactor = backup.displayRollingAverageFactor; end; catch; end",
+        "try; if ~isempty(backup.loggingEnable); hSI.hChannels.loggingEnable = logical(backup.loggingEnable); end; catch; end",
+        "try; if ~isempty(backup.motionManagerEnable); hSI.hMotionManager.enable = logical(backup.motionManagerEnable); end; catch; end",
+        "try; if ~isempty(backup.stackEnable); hSI.hStackManager.enable = logical(backup.stackEnable); end; catch; end",
+        "try; if strlength(string(backup.stackMode)) > 0; hSI.hStackManager.stackMode = char(string(backup.stackMode)); end; catch; end",
+        "try; if strlength(string(backup.stackDefinition)) > 0; hSI.hStackManager.stackDefinition = char(string(backup.stackDefinition)); end; catch; end",
+        "try; if strlength(string(backup.stackActuator)) > 0; hSI.hStackManager.stackActuator = char(string(backup.stackActuator)); end; catch; end",
+        "try; if ~isempty(backup.centeredStack); hSI.hStackManager.centeredStack = logical(backup.centeredStack); end; catch; end",
+        "try; if ~isempty(backup.stackZStepSize); hSI.hStackManager.stackZStepSize = backup.stackZStepSize; end; catch; end",
+        "try; if ~isempty(backup.numSlices); hSI.hStackManager.numSlices = backup.numSlices; end; catch; end",
+        "try; if ~isempty(backup.framesPerSlice); hSI.hStackManager.framesPerSlice = backup.framesPerSlice; end; catch; end",
+        "try; if ~isempty(backup.motorZ) && isfinite(backup.motorZ); hSI.hMotors.moveSample([NaN NaN backup.motorZ]); end; catch; end",
+        "evalin('base', 'clear optoFlatnessCalibrationBackup');",
+        "disp('FLATNESS_RESTORE_DONE');",
+    ]
+    return "\n".join(lines)
+
+
 def build_global_preamble(path_config: PathConfig) -> str:
     names = [path_config.hsi_variable, path_config.hsictl_variable]
     if path_config.motor_data_variable:

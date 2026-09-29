@@ -40,6 +40,7 @@ from .scanimage_control import ScanImageControlWidget
 
 SUMMARY_FILENAME = "slm_psf_summary.json"
 RESULT_FILENAME = "slm_psf_result.json"
+FLATNESS_SUMMARY_FILENAME = "flatness_calibration_summary.json"
 
 
 def _format_coord(value: float) -> str:
@@ -101,6 +102,11 @@ def _safe_json_dump(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _default_flatness_output_root(animal_id: str) -> str:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"F:\\flatness calibration\\{animal_id.strip()}\\{stamp}"
+
+
 def _gaussian_with_offset(x: np.ndarray, amplitude: float, center: float, sigma: float, offset: float) -> np.ndarray:
     return amplitude * np.exp(-((x - center) ** 2) / (2.0 * sigma**2)) + offset
 
@@ -154,6 +160,126 @@ def _compute_slice_intensity(
     raise ValueError(
         f"Frame count {frame_means.size} does not match the expected slice structure for {len(z_positions_um)} slices."
     )
+
+
+def _slice_average_images(frames: np.ndarray, num_slices: int) -> np.ndarray:
+    if frames.shape[0] < num_slices or frames.shape[0] % num_slices:
+        raise ValueError(
+            f"Frame count {frames.shape[0]} cannot be divided into {num_slices} flatness-calibration slices."
+        )
+    return frames.reshape(num_slices, frames.shape[0] // num_slices, *frames.shape[1:]).mean(axis=1)
+
+
+def _sigmoid_with_offset(z: np.ndarray, amplitude: float, midpoint: float, width: float, offset: float) -> np.ndarray:
+    exponent = np.clip(-(z - midpoint) / max(abs(width), 1e-9), -700.0, 700.0)
+    return offset + amplitude / (1.0 + np.exp(exponent))
+
+
+def _fit_surface_transition(z_um: np.ndarray, values: np.ndarray) -> dict[str, object]:
+    offset0 = float(np.nanmin(values))
+    amplitude0 = float(np.nanmax(values) - offset0)
+    gradient = np.gradient(values, z_um)
+    midpoint0 = float(z_um[int(np.nanargmax(np.abs(gradient)))])
+    step = float(np.median(np.abs(np.diff(z_um)))) if z_um.size > 1 else 1.0
+    try:
+        params, _ = curve_fit(
+            _sigmoid_with_offset,
+            z_um,
+            values,
+            p0=[amplitude0 if amplitude0 else 1.0, midpoint0, max(step, 0.1), offset0],
+            bounds=([-np.inf, float(z_um.min()), 1e-6, -np.inf], [np.inf, float(z_um.max()), np.inf, np.inf]),
+            maxfev=20000,
+        )
+        amplitude, midpoint, width, offset = [float(value) for value in params]
+        return {
+            "ok": True,
+            "amplitude": amplitude,
+            "midpoint_um": midpoint,
+            "width_um": width,
+            "offset": offset,
+            "fitted_intensity": _sigmoid_with_offset(z_um, amplitude, midpoint, width, offset).astype(float).tolist(),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "midpoint_um": None, "fitted_intensity": []}
+
+
+def _tile_center_coordinates(
+    image_shape: tuple[int, int],
+    row_indices: np.ndarray,
+    col_indices: np.ndarray,
+    fov_corners_um: np.ndarray,
+) -> tuple[float, float]:
+    """Map tile centres to physical image X/Y using the FOV bounding rectangle."""
+    height, width = image_shape
+    x_min, y_min = np.min(fov_corners_um, axis=0)
+    x_max, y_max = np.max(fov_corners_um, axis=0)
+    x_fraction = (float(np.mean(col_indices)) + 0.5) / max(width, 1)
+    y_fraction = (float(np.mean(row_indices)) + 0.5) / max(height, 1)
+    return float(x_min + x_fraction * (x_max - x_min)), float(y_min + y_fraction * (y_max - y_min))
+
+
+def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
+    summary_path = root_dir / FLATNESS_SUMMARY_FILENAME
+    if not summary_path.is_file():
+        raise FileNotFoundError(f"Could not find {FLATNESS_SUMMARY_FILENAME} in {root_dir}")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    acquisition = summary["acquisition"]
+    frames = _load_volume_frame_stack(root_dir)
+    num_slices = int(acquisition["num_slices"])
+    z_step_um = float(acquisition["z_step_um"])
+    z_positions_um = (np.arange(num_slices, dtype=float) - (num_slices - 1) / 2.0) * z_step_um
+    slice_images = _slice_average_images(frames, num_slices)
+    fov_corners_um = np.asarray(summary["fov_corners_um"], dtype=float)
+    if fov_corners_um.ndim != 2 or fov_corners_um.shape[1] != 2:
+        raise ValueError("Flatness calibration has no valid ScanImage FOV coordinates.")
+    rows = max(1, int(acquisition["tile_rows"]))
+    cols = max(1, int(acquisition["tile_columns"]))
+    height, width = slice_images.shape[1:]
+    row_chunks = [chunk for chunk in np.array_split(np.arange(height), rows) if chunk.size]
+    col_chunks = [chunk for chunk in np.array_split(np.arange(width), cols) if chunk.size]
+    tiles: list[dict[str, object]] = []
+    for row_index, row_pixels in enumerate(row_chunks):
+        for col_index, col_pixels in enumerate(col_chunks):
+            profile = slice_images[:, row_pixels[:, None], col_pixels].mean(axis=(1, 2))
+            fit = _fit_surface_transition(z_positions_um, profile)
+            x_um, y_um = _tile_center_coordinates((height, width), row_pixels, col_pixels, fov_corners_um)
+            tiles.append(
+                {
+                    "row": row_index,
+                    "column": col_index,
+                    "x_um": x_um,
+                    "y_um": y_um,
+                    "z_positions_um": z_positions_um.astype(float).tolist(),
+                    "raw_intensity": profile.astype(float).tolist(),
+                    "fit": fit,
+                }
+            )
+    valid_tiles = [tile for tile in tiles if tile["fit"].get("midpoint_um") is not None]
+    if len(valid_tiles) < 3:
+        raise RuntimeError("Fewer than three tiles had usable surface-transition fits; cannot fit a plane.")
+    design = np.asarray([[tile["x_um"], tile["y_um"], 1.0] for tile in valid_tiles], dtype=float)
+    depths = np.asarray([tile["fit"]["midpoint_um"] for tile in valid_tiles], dtype=float)
+    slope_x, slope_y, intercept = np.linalg.lstsq(design, depths, rcond=None)[0]
+    prediction = design @ np.asarray([slope_x, slope_y, intercept])
+    residual_rms_um = float(np.sqrt(np.mean((depths - prediction) ** 2)))
+    plane = {
+        "equation": "z_um = slope_dz_dx * x_um + slope_dz_dy * y_um + intercept_um",
+        "slope_dz_dx": float(slope_x),
+        "slope_dz_dy": float(slope_y),
+        "intercept_um": float(intercept),
+        "tilt_about_y_deg": float(math.degrees(math.atan(slope_x))),
+        "tilt_about_x_deg": float(math.degrees(math.atan(slope_y))),
+        "correction_about_y_deg": float(-math.degrees(math.atan(slope_x))),
+        "correction_about_x_deg": float(-math.degrees(math.atan(slope_y))),
+        "residual_rms_um": residual_rms_um,
+    }
+    summary["processed_at"] = datetime.now().isoformat(timespec="seconds")
+    summary["z_positions_um"] = z_positions_um.astype(float).tolist()
+    summary["slice_image_shape"] = [int(height), int(width)]
+    summary["tiles"] = tiles
+    summary["plane"] = plane
+    _safe_json_dump(summary_path, summary)
+    return summary
 
 
 def analyze_slm_psf_volume(
@@ -317,6 +443,134 @@ class PhotostimGridParams:
                 for x_um in self.x_values_um:
                     rows.append([float(x_um), float(y_um), float(z_um), 1.0])
         return rows
+
+
+@dataclass
+class FlatnessCalibrationParams:
+    path_name: str
+    animal_id: str
+    output_root: str
+    z_step_um: float = 5.0
+    z_range_um: float = 50.0
+    frames_per_slice: int = 10
+    display_average_factor: int = 5
+    tile_rows: int = 10
+    tile_columns: int = 10
+
+    @property
+    def num_slices(self) -> int:
+        return int(round((2.0 * self.z_range_um) / self.z_step_um)) + 1
+
+
+class FlatnessCalibrationConfigDialog(QDialog):
+    def __init__(self, path_names: list[str], default_path_name: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Acquire Surface Flatness Calibration")
+        self.resize(600, 420)
+        layout = QVBoxLayout(self)
+        info = QLabel(
+            "The next step enters focus mode so you can place the surface transition near the middle of the current "
+            "field of view. The calibration then preserves the current FOV and zoom, acquires a motor-centred stack, "
+            "and calculates the sample tilt from tiled surface-transition fits."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        form_box = QGroupBox("Acquisition Parameters")
+        form = QFormLayout(form_box)
+        self.path_combo = QComboBox()
+        self.path_combo.addItems(path_names)
+        index = self.path_combo.findText(default_path_name)
+        if index >= 0:
+            self.path_combo.setCurrentIndex(index)
+        self.animal_id_edit = QLineEdit()
+        self.output_root_edit = QLineEdit()
+        self.animal_id_edit.textChanged.connect(self._update_output_root)
+        browse_button = QPushButton("Browse…")
+        browse_button.clicked.connect(self._browse_output_root)
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_root_edit, 1)
+        output_row.addWidget(browse_button)
+        output_widget = QWidget()
+        output_widget.setLayout(output_row)
+        self.z_step_spin = QDoubleSpinBox()
+        self.z_step_spin.setRange(0.1, 100.0)
+        self.z_step_spin.setDecimals(3)
+        self.z_step_spin.setValue(5.0)
+        self.z_range_spin = QDoubleSpinBox()
+        self.z_range_spin.setRange(1.0, 500.0)
+        self.z_range_spin.setDecimals(3)
+        self.z_range_spin.setValue(50.0)
+        self.frames_per_slice_spin = QSpinBox()
+        self.frames_per_slice_spin.setRange(1, 1000)
+        self.frames_per_slice_spin.setValue(10)
+        self.display_average_spin = QSpinBox()
+        self.display_average_spin.setRange(1, 1000)
+        self.display_average_spin.setValue(5)
+        self.tile_rows_spin = QSpinBox()
+        self.tile_rows_spin.setRange(1, 100)
+        self.tile_rows_spin.setValue(10)
+        self.tile_columns_spin = QSpinBox()
+        self.tile_columns_spin.setRange(1, 100)
+        self.tile_columns_spin.setValue(10)
+        form.addRow("ScanImage path", self.path_combo)
+        form.addRow("Animal ID", self.animal_id_edit)
+        form.addRow("Output folder", output_widget)
+        form.addRow("Z step (um)", self.z_step_spin)
+        form.addRow("Range above/below focus (um)", self.z_range_spin)
+        form.addRow("Frames per slice", self.frames_per_slice_spin)
+        form.addRow("Saved-frame average", QLabel("Equal to frames per slice"))
+        form.addRow("Display average", self.display_average_spin)
+        form.addRow("Tile rows", self.tile_rows_spin)
+        form.addRow("Tile columns", self.tile_columns_spin)
+        layout.addWidget(form_box)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _update_output_root(self, animal_id: str) -> None:
+        if animal_id.strip():
+            self.output_root_edit.setText(_default_flatness_output_root(animal_id))
+
+    def _browse_output_root(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "Select flatness calibration output folder", self.output_root_edit.text())
+        if selected:
+            self.output_root_edit.setText(selected)
+
+    def _accept_if_valid(self) -> None:
+        try:
+            self.gather_params()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Flatness Calibration Settings", str(exc))
+            return
+        self.accept()
+
+    def gather_params(self) -> FlatnessCalibrationParams:
+        animal_id = self.animal_id_edit.text().strip()
+        if not animal_id:
+            raise ValueError("Animal ID is required.")
+        output_root = self.output_root_edit.text().strip()
+        if not output_root:
+            raise ValueError("Output folder is required.")
+        path_name = self.path_combo.currentText().strip()
+        if not path_name:
+            raise ValueError("A ScanImage path must be selected.")
+        z_step_um = self.z_step_spin.value()
+        z_range_um = self.z_range_spin.value()
+        ratio = (2.0 * z_range_um) / z_step_um
+        if abs(ratio - round(ratio)) > 1e-6:
+            raise ValueError("Twice the Z range must be divisible by the Z step so the stack is centred on focus.")
+        return FlatnessCalibrationParams(
+            path_name=path_name,
+            animal_id=animal_id,
+            output_root=output_root,
+            z_step_um=z_step_um,
+            z_range_um=z_range_um,
+            frames_per_slice=self.frames_per_slice_spin.value(),
+            display_average_factor=self.display_average_spin.value(),
+            tile_rows=self.tile_rows_spin.value(),
+            tile_columns=self.tile_columns_spin.value(),
+        )
 
 
 class _DiagnosticsSignals(QObject):
@@ -621,7 +875,8 @@ class DiagnosticsWidget(QWidget):
         intro_label = QLabel(
             "Use this tab to run diagnostic procedures on the live ScanImage system. "
             "The SLM PSF acquisition drives ScanImage directly, saves one volume per SLM XYZ position, "
-            "then computes an axial FWHM estimate for each stimulated coordinate."
+            "then computes an axial FWHM estimate for each stimulated coordinate. Surface Flatness Calibration "
+            "uses the current imaging FOV to measure and report the sample's two tilt corrections."
         )
         intro_label.setWordWrap(True)
         intro_layout.addWidget(intro_label)
@@ -629,10 +884,12 @@ class DiagnosticsWidget(QWidget):
 
         button_row = QHBoxLayout()
         self.acquire_button = QPushButton("Acquire SLM volume for PSF")
+        self.acquire_flatness_button = QPushButton("Acquire Surface Flatness Calibration")
         self.generate_grid_button = QPushButton("Generate Photostim Grid")
         self.abort_button = QPushButton("Abort")
         self.open_existing_button = QPushButton("Open Existing Result")
         button_row.addWidget(self.acquire_button)
+        button_row.addWidget(self.acquire_flatness_button)
         button_row.addWidget(self.generate_grid_button)
         button_row.addWidget(self.abort_button)
         button_row.addWidget(self.open_existing_button)
@@ -680,6 +937,7 @@ class DiagnosticsWidget(QWidget):
         layout.addWidget(viz_box)
 
         self.acquire_button.clicked.connect(self._show_acquisition_dialog)
+        self.acquire_flatness_button.clicked.connect(self._show_flatness_calibration_dialog)
         self.generate_grid_button.clicked.connect(self._show_photostim_grid_dialog)
         self.abort_button.clicked.connect(self._request_abort)
         self.open_existing_button.clicked.connect(self._open_existing_result)
@@ -695,6 +953,7 @@ class DiagnosticsWidget(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self.acquire_button.setEnabled(not running)
+        self.acquire_flatness_button.setEnabled(not running)
         self.generate_grid_button.setEnabled(not running)
         self.abort_button.setEnabled(running)
         self.open_existing_button.setEnabled(not running)
@@ -715,6 +974,43 @@ class DiagnosticsWidget(QWidget):
             return
         params = dialog.gather_params()
         self._start_acquisition(params)
+
+    def _show_flatness_calibration_dialog(self) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            QMessageBox.warning(self, "Diagnostics Busy", "A diagnostic run is already in progress.")
+            return
+        dialog = FlatnessCalibrationConfigDialog(
+            self.scanimage_control.available_path_names(),
+            self.scanimage_control.preferred_photostim_path_name(),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        params = dialog.gather_params()
+        try:
+            self.scanimage_control.start_flatness_focus(params.path_name)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could Not Start Focus", str(exc))
+            return
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Position Surface Transition")
+        confirm.setText(
+            "Focus mode is now active. Adjust the current frame/zoom and sample position until the surface transition "
+            "is approximately centred in the image.\n\nClick Acquire when ready."
+        )
+        confirm.setInformativeText("The current FOV and zoom will be used unchanged for the centred +/- range Z stack.")
+        acquire_button = confirm.addButton("Acquire", QMessageBox.ButtonRole.AcceptRole)
+        confirm.addButton(QMessageBox.StandardButton.Cancel)
+        confirm.exec()
+        try:
+            self.scanimage_control.stop_flatness_focus(params.path_name)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could Not Stop Focus", str(exc))
+            return
+        if confirm.clickedButton() is not acquire_button:
+            self._append_status("Surface flatness calibration cancelled before stack acquisition.")
+            return
+        self._start_flatness_calibration(params)
 
     def _show_photostim_grid_dialog(self) -> None:
         dialog = PhotostimGridConfigDialog(
@@ -796,6 +1092,65 @@ class DiagnosticsWidget(QWidget):
         self._worker_thread = threading.Thread(target=worker, daemon=True)
         self._worker_thread.start()
 
+    def _start_flatness_calibration(self, params: FlatnessCalibrationParams) -> None:
+        root_dir = Path(params.output_root)
+        root_dir.mkdir(parents=True, exist_ok=True)
+        if any(root_dir.iterdir()):
+            QMessageBox.warning(
+                self,
+                "Output Folder Not Empty",
+                f"Choose a new empty run folder for this calibration:\n{root_dir}",
+            )
+            return
+        summary = {
+            "tool": "surface_flatness_calibration",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "animal_id": params.animal_id,
+            "acquisition": {
+                **asdict(params),
+                "num_slices": params.num_slices,
+                "log_average_factor": params.frames_per_slice,
+                "output_root": str(root_dir),
+            },
+        }
+        self._current_root_dir = root_dir
+        self._cancel_event.clear()
+        self._set_running(True)
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self._append_status(f"Starting surface flatness calibration in {root_dir}")
+
+        def progress_callback(done: int, total: int, message: str) -> None:
+            self._signals.progress.emit(done, total, message)
+
+        def cancel_check() -> bool:
+            return self._cancel_event.is_set()
+
+        def worker() -> None:
+            try:
+                fov_corners_um = self.scanimage_control.run_flatness_calibration(
+                    params.path_name,
+                    output_dir=str(root_dir),
+                    num_slices=params.num_slices,
+                    frames_per_slice=params.frames_per_slice,
+                    z_step_um=params.z_step_um,
+                    log_average_factor=params.frames_per_slice,
+                    display_average_factor=params.display_average_factor,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                )
+                if cancel_check():
+                    raise RuntimeError("Flatness calibration aborted.")
+                summary["fov_corners_um"] = fov_corners_um
+                _safe_json_dump(root_dir / FLATNESS_SUMMARY_FILENAME, summary)
+                processed = analyze_flatness_calibration_root(root_dir)
+                self._signals.finished.emit(True, ("flatness", processed))
+            except Exception as exc:
+                self._signals.finished.emit(False, ("flatness", str(exc)))
+
+        self._worker_thread = threading.Thread(target=worker, daemon=True)
+        self._worker_thread.start()
+
     def _handle_progress(self, done: int, total: int, message: str) -> None:
         self.progress_bar.setRange(0, max(1, total))
         self.progress_bar.setValue(done)
@@ -803,23 +1158,44 @@ class DiagnosticsWidget(QWidget):
 
     def _handle_finished(self, ok: bool, payload: object) -> None:
         self._set_running(False)
+        run_type, result = payload if isinstance(payload, tuple) else ("slm_psf", payload)
         if not ok:
-            if str(payload) == "SLM PSF diagnostic aborted.":
-                self._append_status("SLM PSF acquisition aborted.")
+            if str(result) in {"SLM PSF diagnostic aborted.", "Flatness calibration aborted."}:
+                self._append_status(f"{run_type.replace('_', ' ').title()} acquisition aborted.")
                 self._prompt_delete_aborted_data()
                 return
-            self._append_status(f"SLM PSF run failed: {payload}")
-            QMessageBox.critical(self, "SLM PSF Run Failed", str(payload))
+            self._append_status(f"{run_type.replace('_', ' ').title()} run failed: {result}")
+            QMessageBox.critical(self, "Diagnostic Run Failed", str(result))
             return
-        assert isinstance(payload, dict)
+        assert isinstance(result, dict)
+        if run_type == "flatness":
+            self._append_status("Surface flatness acquisition and processing completed.")
+            plane = result["plane"]
+            self.summary_label.setText(
+                "Surface flatness result: "
+                f"correct about X by {plane['correction_about_x_deg']:.3f} deg; "
+                f"about Y by {plane['correction_about_y_deg']:.3f} deg "
+                f"(plane residual RMS {plane['residual_rms_um']:.2f} um)."
+            )
+            QMessageBox.information(
+                self,
+                "Surface Flatness Correction",
+                "Measured sample tilt:\n"
+                f"  about X: {plane['tilt_about_x_deg']:.3f} deg\n"
+                f"  about Y: {plane['tilt_about_y_deg']:.3f} deg\n\n"
+                "Apply the opposite correction (subject to your stage's axis/sign convention):\n"
+                f"  about X: {plane['correction_about_x_deg']:.3f} deg\n"
+                f"  about Y: {plane['correction_about_y_deg']:.3f} deg",
+            )
+            return
         self._append_status("SLM PSF acquisition and processing completed.")
-        self._set_summary(payload)
+        self._set_summary(result)
 
     def _request_abort(self) -> None:
         if self._worker_thread is None or not self._worker_thread.is_alive():
             return
         self._cancel_event.set()
-        self._append_status("Aborting SLM PSF acquisition...")
+        self._append_status("Aborting diagnostic acquisition...")
 
     def _prompt_delete_aborted_data(self) -> None:
         root_dir = self._current_root_dir

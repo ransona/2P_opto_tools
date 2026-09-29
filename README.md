@@ -305,6 +305,23 @@ Visualisation tools in the `Diagnostics` tab:
 - `Cross Section`
 - `Open Existing Result`
 
+### Acquire Surface Flatness Calibration
+
+`Acquire Surface Flatness Calibration` measures the inclination of a fluorescent sample surface relative to the current imaging plane.
+
+1. Enter the animal ID and optional acquisition settings. The default is a centered motor stack from `-50` to `+50 um`, with `5 um` spacing and `10` frames averaged per slice.
+2. The tool starts ScanImage focus mode. Adjust the sample position, frame, and zoom until the surface transition is approximately in the centre of the live image, then click `Acquire`.
+3. Focus is stopped. The current frame and zoom are retained while ScanImage acquires a uniform, motor-actuated, centred Z stack. ScanImage logging averages each saved frame over all `frames per slice`, avoiding raw-frame output.
+4. The run is saved under:
+   - `F:\flatness calibration\<animalID>\<timestamp>`
+5. The saved images are divided into a configurable grid (default `10 x 10`). A four-parameter sigmoid is fitted to each tile's mean intensity versus Z. Tile midpoint depths are fitted with:
+   - `z = a*x + b*y + c`
+6. The GUI reports the measured tilt and its opposite correction in degrees:
+   - slope `a = dz/dx` gives rotation about the physical Y axis: `atan(a)`
+   - slope `b = dz/dy` gives rotation about the physical X axis: `atan(b)`
+
+The reported correction has the opposite sign to the fitted tilt. Confirm the physical stage/controller axis and sign convention with a small test adjustment before relying on the sign. The complete acquisition settings, FOV coordinates, slice-average tile profiles, sigmoid fits, plane coefficients, and correction angles are saved in `flatness_calibration_summary.json` in the run folder. Re-run the procedure after adjustment to verify that both corrections are near zero.
+
 ### File format
 
 The app writes one YAML file:
