@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -41,6 +43,7 @@ from .scanimage_control import ScanImageControlWidget
 SUMMARY_FILENAME = "slm_psf_summary.json"
 RESULT_FILENAME = "slm_psf_result.json"
 FLATNESS_SUMMARY_FILENAME = "flatness_calibration_summary.json"
+FLATNESS_AVERAGE_STACK_FILENAME = "flatness_slice_averages.tif"
 
 
 def _format_coord(value: float) -> str:
@@ -123,15 +126,14 @@ def _normalize_frame_stack(array: np.ndarray) -> np.ndarray:
     return data.reshape((-1,) + frame_shape)
 
 
-def _load_volume_frame_stack(volume_dir: Path) -> np.ndarray:
-    tiff_paths = sorted(
-        [
-            *volume_dir.glob("*.tif"),
-            *volume_dir.glob("*.tiff"),
-            *volume_dir.glob("*.TIF"),
-            *volume_dir.glob("*.TIFF"),
-        ]
-    )
+def _load_volume_frame_stack(volume_dir: Path, *, exclude_filenames: set[str] | None = None) -> np.ndarray:
+    excluded = {name.casefold() for name in (exclude_filenames or set())}
+    paths_by_name: dict[str, Path] = {}
+    for pattern in ("*.tif", "*.tiff", "*.TIF", "*.TIFF"):
+        for path in volume_dir.glob(pattern):
+            if path.name.casefold() not in excluded:
+                paths_by_name.setdefault(path.name.casefold(), path)
+    tiff_paths = [paths_by_name[name] for name in sorted(paths_by_name)]
     if not tiff_paths:
         raise FileNotFoundError(f"No TIFF files were found in {volume_dir}")
     frame_blocks: list[np.ndarray] = []
@@ -224,11 +226,12 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
         raise FileNotFoundError(f"Could not find {FLATNESS_SUMMARY_FILENAME} in {root_dir}")
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     acquisition = summary["acquisition"]
-    frames = _load_volume_frame_stack(root_dir)
+    frames = _load_volume_frame_stack(root_dir, exclude_filenames={FLATNESS_AVERAGE_STACK_FILENAME})
     num_slices = int(acquisition["num_slices"])
     z_step_um = float(acquisition["z_step_um"])
     z_positions_um = (np.arange(num_slices, dtype=float) - (num_slices - 1) / 2.0) * z_step_um
     slice_images = _slice_average_images(frames, num_slices)
+    tifffile.imwrite(root_dir / FLATNESS_AVERAGE_STACK_FILENAME, slice_images.astype(np.float32))
     fov_corners_um = np.asarray(summary["fov_corners_um"], dtype=float)
     if fov_corners_um.ndim != 2 or fov_corners_um.shape[1] != 2:
         raise ValueError("Flatness calibration has no valid ScanImage FOV coordinates.")
@@ -242,6 +245,10 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
         for col_index, col_pixels in enumerate(col_chunks):
             profile = slice_images[:, row_pixels[:, None], col_pixels].mean(axis=(1, 2))
             fit = _fit_surface_transition(z_positions_um, profile)
+            midpoint = fit.get("midpoint_um")
+            transition_slice_index = (
+                int(np.argmin(np.abs(z_positions_um - float(midpoint)))) if midpoint is not None else None
+            )
             x_um, y_um = _tile_center_coordinates((height, width), row_pixels, col_pixels, fov_corners_um)
             tiles.append(
                 {
@@ -252,6 +259,7 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
                     "z_positions_um": z_positions_um.astype(float).tolist(),
                     "raw_intensity": profile.astype(float).tolist(),
                     "fit": fit,
+                    "transition_slice_index": transition_slice_index,
                 }
             )
     valid_tiles = [tile for tile in tiles if tile["fit"].get("midpoint_um") is not None]
@@ -276,6 +284,7 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
     summary["processed_at"] = datetime.now().isoformat(timespec="seconds")
     summary["z_positions_um"] = z_positions_um.astype(float).tolist()
     summary["slice_image_shape"] = [int(height), int(width)]
+    summary["slice_average_stack_file"] = FLATNESS_AVERAGE_STACK_FILENAME
     summary["tiles"] = tiles
     summary["plane"] = plane
     _safe_json_dump(summary_path, summary)
@@ -875,8 +884,7 @@ class DiagnosticsWidget(QWidget):
         intro_label = QLabel(
             "Use this tab to run diagnostic procedures on the live ScanImage system. "
             "The SLM PSF acquisition drives ScanImage directly, saves one volume per SLM XYZ position, "
-            "then computes an axial FWHM estimate for each stimulated coordinate. Surface Flatness Calibration "
-            "uses the current imaging FOV to measure and report the sample's two tilt corrections."
+            "then computes an axial FWHM estimate for each stimulated coordinate."
         )
         intro_label.setWordWrap(True)
         intro_layout.addWidget(intro_label)
@@ -884,12 +892,10 @@ class DiagnosticsWidget(QWidget):
 
         button_row = QHBoxLayout()
         self.acquire_button = QPushButton("Acquire SLM volume for PSF")
-        self.acquire_flatness_button = QPushButton("Acquire Surface Flatness Calibration")
         self.generate_grid_button = QPushButton("Generate Photostim Grid")
         self.abort_button = QPushButton("Abort")
         self.open_existing_button = QPushButton("Open Existing Result")
         button_row.addWidget(self.acquire_button)
-        button_row.addWidget(self.acquire_flatness_button)
         button_row.addWidget(self.generate_grid_button)
         button_row.addWidget(self.abort_button)
         button_row.addWidget(self.open_existing_button)
@@ -937,7 +943,6 @@ class DiagnosticsWidget(QWidget):
         layout.addWidget(viz_box)
 
         self.acquire_button.clicked.connect(self._show_acquisition_dialog)
-        self.acquire_flatness_button.clicked.connect(self._show_flatness_calibration_dialog)
         self.generate_grid_button.clicked.connect(self._show_photostim_grid_dialog)
         self.abort_button.clicked.connect(self._request_abort)
         self.open_existing_button.clicked.connect(self._open_existing_result)
@@ -953,7 +958,6 @@ class DiagnosticsWidget(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self.acquire_button.setEnabled(not running)
-        self.acquire_flatness_button.setEnabled(not running)
         self.generate_grid_button.setEnabled(not running)
         self.abort_button.setEnabled(running)
         self.open_existing_button.setEnabled(not running)
@@ -1350,5 +1354,263 @@ class DiagnosticsWidget(QWidget):
         )
         ax.set_title(f"Cross section along {axis.upper()}" + (f" | {fixed_desc}" if fixed_desc else ""))
         ax.grid(True, alpha=0.3)
+        dialog.canvas.draw()
+        dialog.exec()
+
+
+class FlattenWindow(DiagnosticsWidget):
+    """Dedicated acquisition and review window for sample-surface flatness."""
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        intro = QGroupBox("Surface Flatness Correction")
+        intro_layout = QVBoxLayout(intro)
+        description = QLabel(
+            "Position the surface transition in focus mode, acquire a centred motor Z stack, then fit a sigmoid "
+            "to each image tile. Tile transition depths form the measured surface; a plane fit reports the required "
+            "two-axis tilt correction."
+        )
+        description.setWordWrap(True)
+        intro_layout.addWidget(description)
+        layout.addWidget(intro)
+
+        action_row = QHBoxLayout()
+        self.acquire_flatness_button = QPushButton("Acquire Flatness Calibration")
+        self.abort_button = QPushButton("Abort")
+        action_row.addWidget(self.acquire_flatness_button)
+        action_row.addWidget(self.abort_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+
+        load_box = QGroupBox("Load Calibration")
+        load_layout = QHBoxLayout(load_box)
+        self.calibration_id_edit = QLineEdit()
+        self.calibration_id_edit.setPlaceholderText("Animal ID")
+        self.load_calibration_button = QPushButton("Load")
+        load_layout.addWidget(QLabel("Animal ID"))
+        load_layout.addWidget(self.calibration_id_edit, 1)
+        load_layout.addWidget(self.load_calibration_button)
+        layout.addWidget(load_box)
+
+        result_box = QGroupBox("Current Result")
+        result_layout = QVBoxLayout(result_box)
+        self.summary_label = QLabel("No flatness calibration loaded.")
+        self.summary_label.setWordWrap(True)
+        self.correction_label = QLabel("")
+        self.correction_label.setWordWrap(True)
+        result_layout.addWidget(self.summary_label)
+        result_layout.addWidget(self.correction_label)
+        layout.addWidget(result_box)
+
+        view_row = QHBoxLayout()
+        self.tile_frames_button = QPushButton("Tile Transition Frames")
+        self.plane_views_button = QPushButton("Surface and Plane Views")
+        view_row.addWidget(self.tile_frames_button)
+        view_row.addWidget(self.plane_views_button)
+        view_row.addStretch(1)
+        layout.addLayout(view_row)
+
+        status_box = QGroupBox("Run Status")
+        status_layout = QVBoxLayout(status_box)
+        self.status_label = QLabel("Idle")
+        self.status_label.setWordWrap(True)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.log_text = QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumBlockCount(500)
+        self.log_text.setMinimumHeight(140)
+        status_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.progress_bar)
+        status_layout.addWidget(self.log_text)
+        layout.addWidget(status_box, 1)
+
+        self.acquire_flatness_button.clicked.connect(self._show_flatness_calibration_dialog)
+        self.abort_button.clicked.connect(self._request_abort)
+        self.load_calibration_button.clicked.connect(self._choose_calibration_to_load)
+        self.tile_frames_button.clicked.connect(self._show_tile_transition_frames)
+        self.plane_views_button.clicked.connect(self._show_surface_and_plane_views)
+        self.abort_button.setEnabled(False)
+        self.tile_frames_button.setEnabled(False)
+        self.plane_views_button.setEnabled(False)
+        self._flatness_summary: dict[str, object] | None = None
+
+    def _set_running(self, running: bool) -> None:
+        self.acquire_flatness_button.setEnabled(not running)
+        self.abort_button.setEnabled(running)
+        self.load_calibration_button.setEnabled(not running)
+
+    def _set_visualization_enabled(self, enabled: bool) -> None:
+        self.tile_frames_button.setEnabled(enabled)
+        self.plane_views_button.setEnabled(enabled)
+
+    def _handle_finished(self, ok: bool, payload: object) -> None:
+        super()._handle_finished(ok, payload)
+        run_type, result = payload if isinstance(payload, tuple) else ("slm_psf", payload)
+        if ok and run_type == "flatness" and isinstance(result, dict):
+            self._set_flatness_summary(result)
+
+    def _set_flatness_summary(self, summary: dict[str, object]) -> None:
+        self._flatness_summary = summary
+        self._current_root_dir = Path(str(summary["acquisition"]["output_root"]))
+        plane = summary["plane"]
+        tiles = summary.get("tiles", [])
+        self.summary_label.setText(
+            f"Loaded {len(tiles)} tile fits from {self._current_root_dir}. "
+            f"Plane residual RMS: {float(plane['residual_rms_um']):.2f} um."
+        )
+        self.correction_label.setText(
+            "Measured non-flatness: "
+            f"{float(plane['tilt_about_x_deg']):.3f} deg about X, "
+            f"{float(plane['tilt_about_y_deg']):.3f} deg about Y.\n"
+            "Apply opposite correction, after confirming the mechanical sign convention: "
+            f"{float(plane['correction_about_x_deg']):.3f} deg about X, "
+            f"{float(plane['correction_about_y_deg']):.3f} deg about Y."
+        )
+        self._set_visualization_enabled(True)
+
+    def _prompt_delete_aborted_data(self) -> None:
+        root_dir = self._current_root_dir
+        if root_dir is None or not root_dir.exists():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete Aborted Data?",
+            f"Delete the partially acquired flatness-calibration data in:\n{root_dir}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            shutil.rmtree(root_dir)
+            self._append_status(f"Deleted aborted flatness calibration at {root_dir}")
+
+    def _choose_calibration_to_load(self) -> None:
+        identifier = self.calibration_id_edit.text().strip()
+        if not identifier:
+            QMessageBox.warning(self, "Animal ID Required", "Enter an animal ID to search for calibrations.")
+            return
+        root = Path(r"F:\flatness calibration")
+        if not root.is_dir():
+            QMessageBox.warning(self, "Calibration Folder Missing", f"Could not find {root}")
+            return
+        candidates: list[tuple[Path, dict[str, object]]] = []
+        for summary_path in root.glob(f"**/{FLATNESS_SUMMARY_FILENAME}"):
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if str(summary.get("animal_id", "")).casefold() == identifier.casefold():
+                candidates.append((summary_path.parent, summary))
+        if not candidates:
+            QMessageBox.information(self, "No Calibrations", f"No completed flatness calibrations matched '{identifier}'.")
+            return
+        candidates.sort(key=lambda entry: str(entry[1].get("created_at", "")), reverse=True)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Flatness Calibration")
+        dialog.resize(760, 360)
+        dialog_layout = QVBoxLayout(dialog)
+        list_widget = QListWidget()
+        for path, summary in candidates:
+            plane = summary.get("plane", {})
+            label = (
+                f"{summary.get('created_at', 'unknown time')} | {path}\n"
+                f"X {float(plane.get('correction_about_x_deg', float('nan'))):.3f} deg, "
+                f"Y {float(plane.get('correction_about_y_deg', float('nan'))):.3f} deg"
+            )
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            list_widget.addItem(item)
+        dialog_layout.addWidget(list_widget)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted or list_widget.currentItem() is None:
+            return
+        calibration_dir = Path(str(list_widget.currentItem().data(Qt.ItemDataRole.UserRole)))
+        try:
+            self._set_flatness_summary(analyze_flatness_calibration_root(calibration_dir))
+            self._append_status(f"Loaded flatness calibration from {calibration_dir}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Flatness Calibration Failed", str(exc))
+
+    def _show_tile_transition_frames(self) -> None:
+        if self._flatness_summary is None or self._current_root_dir is None:
+            return
+        stack_file = self._current_root_dir / str(
+            self._flatness_summary.get("slice_average_stack_file", FLATNESS_AVERAGE_STACK_FILENAME)
+        )
+        if not stack_file.is_file():
+            QMessageBox.warning(self, "Transition Frames Missing", f"Could not find saved averaged stack:\n{stack_file}")
+            return
+        stack = _normalize_frame_stack(tifffile.imread(stack_file))
+        acquisition = self._flatness_summary["acquisition"]
+        row_chunks = [chunk for chunk in np.array_split(np.arange(stack.shape[1]), int(acquisition["tile_rows"])) if chunk.size]
+        col_chunks = [chunk for chunk in np.array_split(np.arange(stack.shape[2]), int(acquisition["tile_columns"])) if chunk.size]
+        tiles = list(self._flatness_summary.get("tiles", []))
+        dialog = MatplotlibDialog("Tile Frames at Fitted Surface Transition", self)
+        columns = max(1, len(col_chunks))
+        for tile in tiles:
+            row = int(tile["row"])
+            col = int(tile["column"])
+            transition_index = tile.get("transition_slice_index")
+            if transition_index is None or row >= len(row_chunks) or col >= len(col_chunks):
+                continue
+            axis = dialog.figure.add_subplot(len(row_chunks), columns, row * columns + col + 1)
+            image = stack[int(transition_index), row_chunks[row][:, None], col_chunks[col]]
+            axis.imshow(image, cmap="gray")
+            midpoint = tile["fit"].get("midpoint_um")
+            axis.set_title(f"r{row + 1} c{col + 1}\nz={float(midpoint):.1f} um", fontsize=7)
+            axis.set_xticks([])
+            axis.set_yticks([])
+        dialog.figure.suptitle("Each tile at the Z plane nearest its fitted sigmoid midpoint", fontsize=11)
+        dialog.canvas.draw()
+        dialog.exec()
+
+    def _show_surface_and_plane_views(self) -> None:
+        if self._flatness_summary is None:
+            return
+        tiles = [tile for tile in self._flatness_summary.get("tiles", []) if tile["fit"].get("midpoint_um") is not None]
+        if not tiles:
+            return
+        plane = self._flatness_summary["plane"]
+        x = np.asarray([float(tile["x_um"]) for tile in tiles])
+        y = np.asarray([float(tile["y_um"]) for tile in tiles])
+        z = np.asarray([float(tile["fit"]["midpoint_um"]) for tile in tiles])
+        slope_x = float(plane["slope_dz_dx"])
+        slope_y = float(plane["slope_dz_dy"])
+        intercept = float(plane["intercept_um"])
+        dialog = MatplotlibDialog("Measured Surface and Fitted Plane", self)
+        axis_y = dialog.figure.add_subplot(131)
+        axis_x = dialog.figure.add_subplot(132)
+        axis_3d = dialog.figure.add_subplot(133, projection="3d")
+        y_line = np.linspace(y.min(), y.max(), 100)
+        x_centre = float(np.mean(x))
+        axis_y.scatter(y, z, c="tab:blue", label="Tile transition")
+        axis_y.plot(y_line, slope_x * x_centre + slope_y * y_line + intercept, "r", label="Fitted plane")
+        axis_y.set_title(f"Across Y | tilt about X = {float(plane['tilt_about_x_deg']):.3f} deg")
+        axis_y.set_xlabel("Y (um)")
+        axis_y.set_ylabel("Surface Z (um)")
+        axis_y.grid(True, alpha=0.3)
+        axis_y.legend(fontsize=8)
+        x_line = np.linspace(x.min(), x.max(), 100)
+        y_centre = float(np.mean(y))
+        axis_x.scatter(x, z, c="tab:blue", label="Tile transition")
+        axis_x.plot(x_line, slope_x * x_line + slope_y * y_centre + intercept, "r", label="Fitted plane")
+        axis_x.set_title(f"Across X | tilt about Y = {float(plane['tilt_about_y_deg']):.3f} deg")
+        axis_x.set_xlabel("X (um)")
+        axis_x.set_ylabel("Surface Z (um)")
+        axis_x.grid(True, alpha=0.3)
+        axis_x.legend(fontsize=8)
+        x_grid, y_grid = np.meshgrid(np.linspace(x.min(), x.max(), 20), np.linspace(y.min(), y.max(), 20))
+        z_grid = slope_x * x_grid + slope_y * y_grid + intercept
+        axis_3d.scatter(x, y, z, c="tab:blue", s=24, label="Measured tile transitions")
+        axis_3d.plot_surface(x_grid, y_grid, z_grid, color="tab:red", alpha=0.45, label="Fitted plane")
+        axis_3d.set_title("Measured surface and fitted plane")
+        axis_3d.set_xlabel("X (um)")
+        axis_3d.set_ylabel("Y (um)")
+        axis_3d.set_zlabel("Surface Z (um)")
+        axis_3d.legend(fontsize=8)
         dialog.canvas.draw()
         dialog.exec()

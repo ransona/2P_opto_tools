@@ -305,11 +305,11 @@ Visualisation tools in the `Diagnostics` tab:
 - `Cross Section`
 - `Open Existing Result`
 
-### Acquire Surface Flatness Calibration
+### Flatten Window
 
-`Acquire Surface Flatness Calibration` measures the inclination of a fluorescent sample surface relative to the current imaging plane.
+The `Flatten Window` tab measures the inclination of a fluorescent sample surface relative to the current imaging plane and reviews completed calibrations.
 
-1. Enter the animal ID and optional acquisition settings. The default is a centered motor stack from `-50` to `+50 um`, with `5 um` spacing and `10` frames averaged per slice.
+1. Enter the animal ID and acquisition settings. The default is a centered motor stack from `-50` to `+50 um`, with `5 um` spacing and `10` frames averaged per slice.
 2. The tool starts ScanImage focus mode. Adjust the sample position, frame, and zoom until the surface transition is approximately in the centre of the live image, then click `Acquire`.
 3. Focus is stopped. The current frame and zoom are retained while ScanImage acquires a uniform, motor-actuated, centred Z stack. Current ScanImage logging records all frames at each depth; the tool then computes the exact arithmetic mean per depth during processing.
 4. The run is saved under:
@@ -320,7 +320,15 @@ Visualisation tools in the `Diagnostics` tab:
    - slope `a = dz/dx` gives rotation about the physical Y axis: `atan(a)`
    - slope `b = dz/dy` gives rotation about the physical X axis: `atan(b)`
 
-The reported correction has the opposite sign to the fitted tilt. Confirm the physical stage/controller axis and sign convention with a small test adjustment before relying on the sign. The complete acquisition settings, FOV coordinates, slice-average tile profiles, sigmoid fits, plane coefficients, and correction angles are saved in `flatness_calibration_summary.json` in the run folder. Re-run the procedure after adjustment to verify that both corrections are near zero.
+The reported correction has the opposite sign to the fitted tilt. Confirm the physical stage/controller axis and sign convention with a small test adjustment before relying on the sign. The complete acquisition settings, FOV coordinates, slice-average tile profiles, sigmoid fits, plane coefficients, and correction angles are saved in `flatness_calibration_summary.json` in the run folder. The averaged Z stack is saved as `flatness_slice_averages.tif`.
+
+The tab can display:
+
+- every tile at the image plane nearest its fitted surface transition;
+- a Y-profile and X-profile of measured tile depths overlaid with the corresponding fitted-plane cross section;
+- a 3D view of measured tile transition depths and the transparent fitted plane.
+
+Enter an animal ID in `Load Calibration` to select from that animal's completed runs. Re-run the procedure after adjustment to verify that both corrections are near zero.
 
 ### File format
 

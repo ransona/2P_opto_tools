@@ -50,7 +50,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .diagnostics import DiagnosticsWidget
+from .diagnostics import DiagnosticsWidget, FlattenWindow
 from .imaging_coordinates import (
     ProcessedFovGroup,
     ScanfieldChoice,
@@ -3558,6 +3558,7 @@ class MainWindow(QMainWindow):
         )
         self.online_activity_widget = OnlineActivityWidget(self.scanimage_control)
         self.diagnostics_widget = DiagnosticsWidget(self.scanimage_control)
+        self.flatten_window = FlattenWindow(self.scanimage_control)
 
         self.pattern_list = QListWidget()
         self.sequence_list = QListWidget()
@@ -3675,6 +3676,7 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self.schema_splitter, "Stimulation Schema")
         self.main_tabs.addTab(self.online_activity_widget, "Online activity")
         self.main_tabs.addTab(self.diagnostics_widget, "Diagnostics")
+        self.main_tabs.addTab(self.flatten_window, "Flatten Window")
         self.setCentralWidget(self.main_tabs)
 
         self.add_pattern_btn.clicked.connect(self.add_pattern)
