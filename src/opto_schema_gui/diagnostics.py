@@ -1402,13 +1402,29 @@ class FlattenWindow(DiagnosticsWidget):
         result_layout.addWidget(self.correction_label)
         layout.addWidget(result_box)
 
-        view_row = QHBoxLayout()
-        self.tile_frames_button = QPushButton("Tile Transition Frames")
-        self.plane_views_button = QPushButton("Surface and Plane Views")
-        view_row.addWidget(self.tile_frames_button)
-        view_row.addWidget(self.plane_views_button)
-        view_row.addStretch(1)
-        layout.addLayout(view_row)
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from matplotlib.figure import Figure
+
+        figures_box = QGroupBox("Flatness Visualisation")
+        figures_layout = QGridLayout(figures_box)
+        self.plane_figure = Figure(constrained_layout=True)
+        self.plane_canvas = FigureCanvasQTAgg(self.plane_figure)
+        self.plane_canvas.setMinimumHeight(300)
+        self.tile_gallery_figure = Figure(constrained_layout=True)
+        self.tile_gallery_canvas = FigureCanvasQTAgg(self.tile_gallery_figure)
+        self.tile_gallery_canvas.setMinimumHeight(360)
+        self.tile_detail_figure = Figure(constrained_layout=True)
+        self.tile_detail_canvas = FigureCanvasQTAgg(self.tile_detail_figure)
+        self.tile_detail_canvas.setMinimumHeight(360)
+        figures_layout.addWidget(QLabel("Surface cross-sections and fitted plane"), 0, 0, 1, 2)
+        figures_layout.addWidget(self.plane_canvas, 1, 0, 1, 2)
+        figures_layout.addWidget(QLabel("Tile transition frames (click a tile)"), 2, 0)
+        figures_layout.addWidget(QLabel("Selected tile transition and brightness profile"), 2, 1)
+        figures_layout.addWidget(self.tile_gallery_canvas, 3, 0)
+        figures_layout.addWidget(self.tile_detail_canvas, 3, 1)
+        figures_layout.setColumnStretch(0, 1)
+        figures_layout.setColumnStretch(1, 1)
+        layout.addWidget(figures_box, 3)
 
         status_box = QGroupBox("Run Status")
         status_layout = QVBoxLayout(status_box)
@@ -1429,12 +1445,11 @@ class FlattenWindow(DiagnosticsWidget):
         self.acquire_flatness_button.clicked.connect(self._show_flatness_calibration_dialog)
         self.abort_button.clicked.connect(self._request_abort)
         self.load_calibration_button.clicked.connect(self._choose_calibration_to_load)
-        self.tile_frames_button.clicked.connect(self._show_tile_transition_frames)
-        self.plane_views_button.clicked.connect(self._show_surface_and_plane_views)
         self.abort_button.setEnabled(False)
-        self.tile_frames_button.setEnabled(False)
-        self.plane_views_button.setEnabled(False)
         self._flatness_summary: dict[str, object] | None = None
+        self._tile_axis_records: dict[object, tuple[dict[str, object], np.ndarray]] = {}
+        self.tile_gallery_canvas.mpl_connect("button_press_event", self._tile_gallery_clicked)
+        self._show_empty_flatness_figures()
 
     def _set_running(self, running: bool) -> None:
         self.acquire_flatness_button.setEnabled(not running)
@@ -1442,8 +1457,9 @@ class FlattenWindow(DiagnosticsWidget):
         self.load_calibration_button.setEnabled(not running)
 
     def _set_visualization_enabled(self, enabled: bool) -> None:
-        self.tile_frames_button.setEnabled(enabled)
-        self.plane_views_button.setEnabled(enabled)
+        self.plane_canvas.setEnabled(enabled)
+        self.tile_gallery_canvas.setEnabled(enabled)
+        self.tile_detail_canvas.setEnabled(enabled)
 
     def _handle_finished(self, ok: bool, payload: object) -> None:
         super()._handle_finished(ok, payload)
@@ -1469,6 +1485,7 @@ class FlattenWindow(DiagnosticsWidget):
             f"{float(plane['correction_about_y_deg']):.3f} deg about Y."
         )
         self._set_visualization_enabled(True)
+        self._render_flatness_figures()
 
     def _prompt_delete_aborted_data(self) -> None:
         root_dir = self._current_root_dir
@@ -1534,6 +1551,150 @@ class FlattenWindow(DiagnosticsWidget):
             self._append_status(f"Loaded flatness calibration from {calibration_dir}")
         except Exception as exc:
             QMessageBox.critical(self, "Load Flatness Calibration Failed", str(exc))
+
+    def _show_empty_flatness_figures(self) -> None:
+        for figure, message in (
+            (self.plane_figure, "Load or acquire a flatness calibration to show the fitted surface."),
+            (self.tile_gallery_figure, "Tile transition frames will appear here."),
+            (self.tile_detail_figure, "Click a tile frame to inspect its brightness-versus-Z fit."),
+        ):
+            figure.clear()
+            axis = figure.add_subplot(111)
+            axis.text(0.5, 0.5, message, ha="center", va="center", transform=axis.transAxes, wrap=True)
+            axis.set_axis_off()
+        self.plane_canvas.draw_idle()
+        self.tile_gallery_canvas.draw_idle()
+        self.tile_detail_canvas.draw_idle()
+
+    def _render_flatness_figures(self) -> None:
+        if self._flatness_summary is None or self._current_root_dir is None:
+            self._show_empty_flatness_figures()
+            return
+        stack_file = self._current_root_dir / str(
+            self._flatness_summary.get("slice_average_stack_file", FLATNESS_AVERAGE_STACK_FILENAME)
+        )
+        if not stack_file.is_file():
+            QMessageBox.warning(self, "Transition Frames Missing", f"Could not find saved averaged stack:\n{stack_file}")
+            return
+        stack = _normalize_frame_stack(tifffile.imread(stack_file))
+        self._render_surface_views()
+        self._render_tile_gallery(stack)
+        self.tile_detail_figure.clear()
+        detail_axis = self.tile_detail_figure.add_subplot(111)
+        detail_axis.text(
+            0.5,
+            0.5,
+            "Click a tile frame on the left to show its transition image,\nbrightness profile, sigmoid fit, and midpoint.",
+            ha="center",
+            va="center",
+            transform=detail_axis.transAxes,
+        )
+        detail_axis.set_axis_off()
+        self.tile_detail_canvas.draw_idle()
+
+    def _render_surface_views(self) -> None:
+        assert self._flatness_summary is not None
+        tiles = [tile for tile in self._flatness_summary.get("tiles", []) if tile["fit"].get("midpoint_um") is not None]
+        self.plane_figure.clear()
+        if not tiles:
+            axis = self.plane_figure.add_subplot(111)
+            axis.text(0.5, 0.5, "No usable tile transition fits.", ha="center", va="center", transform=axis.transAxes)
+            axis.set_axis_off()
+            self.plane_canvas.draw_idle()
+            return
+        plane = self._flatness_summary["plane"]
+        x = np.asarray([float(tile["x_um"]) for tile in tiles])
+        y = np.asarray([float(tile["y_um"]) for tile in tiles])
+        z = np.asarray([float(tile["fit"]["midpoint_um"]) for tile in tiles])
+        slope_x = float(plane["slope_dz_dx"])
+        slope_y = float(plane["slope_dz_dy"])
+        intercept = float(plane["intercept_um"])
+        axis_y = self.plane_figure.add_subplot(131)
+        axis_x = self.plane_figure.add_subplot(132)
+        axis_3d = self.plane_figure.add_subplot(133, projection="3d")
+        y_line = np.linspace(y.min(), y.max(), 100)
+        axis_y.scatter(y, z, c="tab:blue", s=14, label="Tile transition")
+        axis_y.plot(y_line, slope_x * float(np.mean(x)) + slope_y * y_line + intercept, "r", label="Fitted plane")
+        axis_y.set_title(f"Across Y\nTilt about X: {float(plane['tilt_about_x_deg']):.3f} deg")
+        axis_y.set_xlabel("Y (um)")
+        axis_y.set_ylabel("Surface Z (um)")
+        axis_y.grid(True, alpha=0.3)
+        axis_y.legend(fontsize=7)
+        axis_y.set_box_aspect(1)
+        x_line = np.linspace(x.min(), x.max(), 100)
+        axis_x.scatter(x, z, c="tab:blue", s=14, label="Tile transition")
+        axis_x.plot(x_line, slope_x * x_line + slope_y * float(np.mean(y)) + intercept, "r", label="Fitted plane")
+        axis_x.set_title(f"Across X\nTilt about Y: {float(plane['tilt_about_y_deg']):.3f} deg")
+        axis_x.set_xlabel("X (um)")
+        axis_x.set_ylabel("Surface Z (um)")
+        axis_x.grid(True, alpha=0.3)
+        axis_x.legend(fontsize=7)
+        axis_x.set_box_aspect(1)
+        x_grid, y_grid = np.meshgrid(np.linspace(x.min(), x.max(), 20), np.linspace(y.min(), y.max(), 20))
+        z_grid = slope_x * x_grid + slope_y * y_grid + intercept
+        axis_3d.scatter(x, y, z, c="tab:blue", s=14, label="Measured transitions")
+        axis_3d.plot_surface(x_grid, y_grid, z_grid, color="tab:red", alpha=0.42)
+        axis_3d.set_title("Measured surface + fitted plane")
+        axis_3d.set_xlabel("X (um)")
+        axis_3d.set_ylabel("Y (um)")
+        axis_3d.set_zlabel("Surface Z (um)")
+        axis_3d.set_box_aspect((1, 1, 0.6))
+        self.plane_canvas.draw_idle()
+
+    def _render_tile_gallery(self, stack: np.ndarray) -> None:
+        assert self._flatness_summary is not None
+        acquisition = self._flatness_summary["acquisition"]
+        row_chunks = [chunk for chunk in np.array_split(np.arange(stack.shape[1]), int(acquisition["tile_rows"])) if chunk.size]
+        col_chunks = [chunk for chunk in np.array_split(np.arange(stack.shape[2]), int(acquisition["tile_columns"])) if chunk.size]
+        self.tile_gallery_figure.clear()
+        self._tile_axis_records.clear()
+        for tile in self._flatness_summary.get("tiles", []):
+            row = int(tile["row"])
+            col = int(tile["column"])
+            transition_index = tile.get("transition_slice_index")
+            if transition_index is None or row >= len(row_chunks) or col >= len(col_chunks):
+                continue
+            axis = self.tile_gallery_figure.add_subplot(len(row_chunks), len(col_chunks), row * len(col_chunks) + col + 1)
+            image = stack[int(transition_index), row_chunks[row][:, None], col_chunks[col]]
+            axis.imshow(image, cmap="gray")
+            self._tile_axis_records[axis] = (tile, image)
+            midpoint = tile["fit"].get("midpoint_um")
+            axis.set_title(f"r{row + 1} c{col + 1}\nz={float(midpoint):.1f}", fontsize=6)
+            axis.set_xticks([])
+            axis.set_yticks([])
+        self.tile_gallery_figure.suptitle("Tile frame nearest each fitted transition midpoint", fontsize=10)
+        self.tile_gallery_canvas.draw_idle()
+
+    def _tile_gallery_clicked(self, event) -> None:
+        if event.inaxes not in self._tile_axis_records:
+            return
+        tile, image = self._tile_axis_records[event.inaxes]
+        self._render_tile_detail(tile, image)
+
+    def _render_tile_detail(self, tile: dict[str, object], image: np.ndarray) -> None:
+        fit = tile["fit"]
+        z_um = np.asarray(tile["z_positions_um"], dtype=float)
+        intensity = np.asarray(tile["raw_intensity"], dtype=float)
+        midpoint = fit.get("midpoint_um")
+        self.tile_detail_figure.clear()
+        image_axis = self.tile_detail_figure.add_subplot(121)
+        profile_axis = self.tile_detail_figure.add_subplot(122)
+        image_axis.imshow(image, cmap="gray")
+        image_axis.set_title(f"Tile r{int(tile['row']) + 1} c{int(tile['column']) + 1}\nZ={float(midpoint):.2f} um")
+        image_axis.set_xticks([])
+        image_axis.set_yticks([])
+        profile_axis.plot(z_um, intensity, "o-", color="tab:blue", label="Tile mean brightness")
+        fitted = np.asarray(fit.get("fitted_intensity", []), dtype=float)
+        if fitted.size == z_um.size:
+            profile_axis.plot(z_um, fitted, "-", color="tab:red", linewidth=2, label="Sigmoid fit")
+        if midpoint is not None:
+            profile_axis.axvline(float(midpoint), color="black", linestyle="--", label=f"Midpoint {float(midpoint):.2f} um")
+        profile_axis.set_xlabel("Relative Z (um)")
+        profile_axis.set_ylabel("Mean tile brightness")
+        profile_axis.set_title("Brightness across Z")
+        profile_axis.grid(True, alpha=0.3)
+        profile_axis.legend(fontsize=7)
+        self.tile_detail_canvas.draw_idle()
 
     def _show_tile_transition_frames(self) -> None:
         if self._flatness_summary is None or self._current_root_dir is None:

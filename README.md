@@ -324,10 +324,9 @@ The reported correction has the opposite sign to the fitted tilt. Confirm the ph
 
 The tab can display:
 
-- every tile at the image plane nearest its fitted surface transition;
-- double-clicking a tile opens its transition frame and full brightness-versus-Z profile with the fitted sigmoid midpoint;
-- a Y-profile and X-profile of measured tile depths overlaid with the corresponding fitted-plane cross section;
-- a 3D view of measured tile transition depths and the transparent fitted plane.
+- three embedded square views: measured versus fitted cross-sections across Y and X, plus the measured surface with transparent fitted plane;
+- an embedded tile gallery at the image plane nearest each fitted surface transition;
+- an embedded selected-tile panel: click a tile to display its transition frame and full brightness-versus-Z profile with fitted sigmoid midpoint.
 
 Enter an animal ID in `Load Calibration` to select from that animal's completed runs. Re-run the procedure after adjustment to verify that both corrections are near zero.
 
