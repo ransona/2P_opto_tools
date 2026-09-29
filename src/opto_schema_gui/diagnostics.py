@@ -1418,7 +1418,7 @@ class FlattenWindow(DiagnosticsWidget):
         self.tile_detail_canvas.setMinimumHeight(360)
         figures_layout.addWidget(QLabel("Surface cross-sections and fitted plane"), 0, 0, 1, 2)
         figures_layout.addWidget(self.plane_canvas, 1, 0, 1, 2)
-        figures_layout.addWidget(QLabel("Tile transition frames (click a tile)"), 2, 0)
+        figures_layout.addWidget(QLabel("Fitted tile transition-depth grid (click a tile)"), 2, 0)
         figures_layout.addWidget(QLabel("Selected tile transition and brightness profile"), 2, 1)
         figures_layout.addWidget(self.tile_gallery_canvas, 3, 0)
         figures_layout.addWidget(self.tile_detail_canvas, 3, 1)
@@ -1447,9 +1447,11 @@ class FlattenWindow(DiagnosticsWidget):
         self.load_calibration_button.clicked.connect(self._choose_calibration_to_load)
         self.abort_button.setEnabled(False)
         self._flatness_summary: dict[str, object] | None = None
-        self._tile_axis_records: dict[object, tuple[dict[str, object], np.ndarray]] = {}
+        self._tile_records_by_grid: dict[tuple[int, int], tuple[dict[str, object], np.ndarray]] = {}
+        self._tile_row_edges = np.asarray([], dtype=float)
+        self._tile_col_edges = np.asarray([], dtype=float)
+        self._tile_gallery_axis = None
         self.tile_gallery_canvas.mpl_connect("button_press_event", self._tile_gallery_clicked)
-        self.tile_gallery_canvas.mpl_connect("pick_event", self._tile_gallery_picked)
         self._show_empty_flatness_figures()
 
     def _set_running(self, running: bool) -> None:
@@ -1648,35 +1650,57 @@ class FlattenWindow(DiagnosticsWidget):
         row_chunks = [chunk for chunk in np.array_split(np.arange(stack.shape[1]), int(acquisition["tile_rows"])) if chunk.size]
         col_chunks = [chunk for chunk in np.array_split(np.arange(stack.shape[2]), int(acquisition["tile_columns"])) if chunk.size]
         self.tile_gallery_figure.clear()
-        self._tile_axis_records.clear()
+        self._tile_records_by_grid.clear()
+        self._tile_row_edges = np.asarray([chunk[0] for chunk in row_chunks] + [row_chunks[-1][-1] + 1], dtype=float)
+        self._tile_col_edges = np.asarray([chunk[0] for chunk in col_chunks] + [col_chunks[-1][-1] + 1], dtype=float)
+        z_grid = np.full((len(row_chunks), len(col_chunks)), np.nan, dtype=float)
         for tile in self._flatness_summary.get("tiles", []):
             row = int(tile["row"])
             col = int(tile["column"])
             transition_index = tile.get("transition_slice_index")
             if transition_index is None or row >= len(row_chunks) or col >= len(col_chunks):
                 continue
-            axis = self.tile_gallery_figure.add_subplot(len(row_chunks), len(col_chunks), row * len(col_chunks) + col + 1)
             image = stack[int(transition_index), row_chunks[row][:, None], col_chunks[col]]
-            image_artist = axis.imshow(image, cmap="gray", picker=True)
-            axis.patch.set_picker(True)
-            self._tile_axis_records[axis] = (tile, image)
             midpoint = tile["fit"].get("midpoint_um")
-            axis.set_title(f"r{row + 1} c{col + 1}\nz={float(midpoint):.1f}", fontsize=6)
-            axis.set_xticks([])
-            axis.set_yticks([])
-        self.tile_gallery_figure.suptitle("Tile frame nearest each fitted transition midpoint", fontsize=10)
+            if midpoint is None:
+                continue
+            z_grid[row, col] = float(midpoint)
+            self._tile_records_by_grid[(row, col)] = (tile, image)
+        axis = self.tile_gallery_figure.add_subplot(111)
+        self._tile_gallery_axis = axis
+        mesh = axis.pcolormesh(
+            self._tile_col_edges,
+            self._tile_row_edges,
+            z_grid,
+            shading="flat",
+            cmap="viridis",
+            edgecolors="white",
+            linewidth=1.0,
+        )
+        colorbar = self.tile_gallery_figure.colorbar(mesh, ax=axis, pad=0.02)
+        colorbar.set_label("Fitted transition Z (um)")
+        for (row, col), (tile, _) in self._tile_records_by_grid.items():
+            midpoint = float(tile["fit"]["midpoint_um"])
+            x_center = (self._tile_col_edges[col] + self._tile_col_edges[col + 1]) / 2.0
+            y_center = (self._tile_row_edges[row] + self._tile_row_edges[row + 1]) / 2.0
+            axis.text(x_center, y_center, f"{midpoint:.1f}", color="red", ha="center", va="center", fontsize=8, fontweight="bold")
+        axis.set_xlim(self._tile_col_edges[0], self._tile_col_edges[-1])
+        axis.set_ylim(self._tile_row_edges[-1], self._tile_row_edges[0])
+        axis.set_aspect("equal")
+        axis.set_xlabel("Frame X pixels")
+        axis.set_ylabel("Frame Y pixels")
+        axis.set_title("Fitted transition depth by image tile")
         self.tile_gallery_canvas.draw_idle()
 
     def _tile_gallery_clicked(self, event) -> None:
-        self._select_tile_axis(event.inaxes)
-
-    def _tile_gallery_picked(self, event) -> None:
-        self._select_tile_axis(getattr(event.artist, "axes", None))
-
-    def _select_tile_axis(self, axis: object | None) -> None:
-        if axis not in self._tile_axis_records:
+        if event.inaxes is not self._tile_gallery_axis or event.xdata is None or event.ydata is None:
             return
-        tile, image = self._tile_axis_records[axis]
+        col = int(np.searchsorted(self._tile_col_edges, event.xdata, side="right") - 1)
+        row = int(np.searchsorted(self._tile_row_edges, event.ydata, side="right") - 1)
+        record = self._tile_records_by_grid.get((row, col))
+        if record is None:
+            return
+        tile, image = record
         try:
             self._render_tile_detail(tile, image)
             self._append_status(f"Selected tile r{int(tile['row']) + 1} c{int(tile['column']) + 1} for transition inspection.")
