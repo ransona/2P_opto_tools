@@ -1621,6 +1621,8 @@ class FlattenWindow(DiagnosticsWidget):
         axis_y.set_title(f"Across Y\nTilt about X: {float(plane['tilt_about_x_deg']):.3f} deg")
         axis_y.set_xlabel("Y (um)")
         axis_y.set_ylabel("Surface Z (um)")
+        # Match image-space depth: negative Z at the top and positive Z at the bottom.
+        axis_y.invert_yaxis()
         axis_y.grid(True, alpha=0.3)
         axis_y.legend(fontsize=7)
         axis_y.set_box_aspect(1)
@@ -1630,6 +1632,7 @@ class FlattenWindow(DiagnosticsWidget):
         axis_x.set_title(f"Across X\nTilt about Y: {float(plane['tilt_about_y_deg']):.3f} deg")
         axis_x.set_xlabel("X (um)")
         axis_x.set_ylabel("Surface Z (um)")
+        axis_x.invert_yaxis()
         axis_x.grid(True, alpha=0.3)
         axis_x.legend(fontsize=7)
         axis_x.set_box_aspect(1)
