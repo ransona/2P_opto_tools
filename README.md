@@ -274,8 +274,8 @@ Current default acquisition values:
   - `5`
 - frames per slice:
   - `10`
-- saved-frame average:
-  - equal to `frames per slice`
+- saved-frame logging:
+  - all frames are retained; Python performs the exact per-slice arithmetic average during processing
 - display average:
   - `5`
 - z step:
@@ -311,7 +311,7 @@ Visualisation tools in the `Diagnostics` tab:
 
 1. Enter the animal ID and optional acquisition settings. The default is a centered motor stack from `-50` to `+50 um`, with `5 um` spacing and `10` frames averaged per slice.
 2. The tool starts ScanImage focus mode. Adjust the sample position, frame, and zoom until the surface transition is approximately in the centre of the live image, then click `Acquire`.
-3. Focus is stopped. The current frame and zoom are retained while ScanImage acquires a uniform, motor-actuated, centred Z stack. ScanImage logging averages each saved frame over all `frames per slice`, avoiding raw-frame output.
+3. Focus is stopped. The current frame and zoom are retained while ScanImage acquires a uniform, motor-actuated, centred Z stack. Current ScanImage logging records all frames at each depth; the tool then computes the exact arithmetic mean per depth during processing.
 4. The run is saved under:
    - `F:\flatness calibration\<animalID>\<timestamp>`
 5. The saved images are divided into a configurable grid (default `10 x 10`). A four-parameter sigmoid is fitted to each tile's mean intensity versus Z. Tile midpoint depths are fitted with:

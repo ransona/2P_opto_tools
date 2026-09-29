@@ -390,7 +390,7 @@ class SlmPsfAcquisitionParams:
     lines_per_frame: int = 128
     num_slices: int = 5
     frames_per_slice: int = 10
-    log_average_factor: int = 10
+    log_average_factor: int = 1
     display_average_factor: int = 5
     z_step_um: float = 5.0
     sequence_duration_s: float = 0.007
@@ -518,7 +518,7 @@ class FlatnessCalibrationConfigDialog(QDialog):
         form.addRow("Z step (um)", self.z_step_spin)
         form.addRow("Range above/below focus (um)", self.z_range_spin)
         form.addRow("Frames per slice", self.frames_per_slice_spin)
-        form.addRow("Saved-frame average", QLabel("Equal to frames per slice"))
+        form.addRow("Saved-frame logging", QLabel("All frames (exact average during processing)"))
         form.addRow("Display average", self.display_average_spin)
         form.addRow("Tile rows", self.tile_rows_spin)
         form.addRow("Tile columns", self.tile_columns_spin)
@@ -659,7 +659,7 @@ class SlmPsfConfigDialog(QDialog):
         self.frames_per_slice_spin.setValue(10)
         self.log_average_spin = QSpinBox()
         self.log_average_spin.setRange(1, 10000)
-        self.log_average_spin.setValue(self.frames_per_slice_spin.value())
+        self.log_average_spin.setValue(1)
         self.log_average_spin.setEnabled(False)
         self.display_average_spin = QSpinBox()
         self.display_average_spin.setRange(1, 10000)
@@ -685,7 +685,7 @@ class SlmPsfConfigDialog(QDialog):
         form.addRow("Lines per frame", self.lines_per_frame_spin)
         form.addRow("Slices", self.num_slices_spin)
         form.addRow("Frames per slice", self.frames_per_slice_spin)
-        form.addRow("Saved-frame average", self.log_average_spin)
+        form.addRow("Saved-frame logging", QLabel("All frames (exact average during processing)"))
         form.addRow("Display average", self.display_average_spin)
         form.addRow("Z step (um)", self.z_step_spin)
         form.addRow("Stim duration (ms)", self.sequence_duration_ms_spin)
@@ -703,7 +703,7 @@ class SlmPsfConfigDialog(QDialog):
         layout.addWidget(buttons)
 
     def _sync_log_average_to_frames_per_slice(self) -> None:
-        self.log_average_spin.setValue(self.frames_per_slice_spin.value())
+        self.log_average_spin.setValue(1)
 
     def _browse_output_root(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Select output root", self.output_root_edit.text().strip() or "")
@@ -738,7 +738,7 @@ class SlmPsfConfigDialog(QDialog):
         y_values = _parse_axis_values(self.y_edit.text())
         z_values = _parse_axis_values(self.z_edit.text())
         frames_per_slice = self.frames_per_slice_spin.value()
-        log_average_factor = frames_per_slice
+        log_average_factor = 1
         return SlmPsfAcquisitionParams(
             path_name=path_name,
             output_root=output_root,
@@ -1109,7 +1109,7 @@ class DiagnosticsWidget(QWidget):
             "acquisition": {
                 **asdict(params),
                 "num_slices": params.num_slices,
-                "log_average_factor": params.frames_per_slice,
+                "log_average_factor": 1,
                 "output_root": str(root_dir),
             },
         }
@@ -1134,7 +1134,7 @@ class DiagnosticsWidget(QWidget):
                     num_slices=params.num_slices,
                     frames_per_slice=params.frames_per_slice,
                     z_step_um=params.z_step_um,
-                    log_average_factor=params.frames_per_slice,
+                    log_average_factor=1,
                     display_average_factor=params.display_average_factor,
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
