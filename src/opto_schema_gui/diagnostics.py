@@ -1551,6 +1551,7 @@ class FlattenWindow(DiagnosticsWidget):
         tiles = list(self._flatness_summary.get("tiles", []))
         dialog = MatplotlibDialog("Tile Frames at Fitted Surface Transition", self)
         columns = max(1, len(col_chunks))
+        axis_tiles: dict[object, tuple[dict[str, object], np.ndarray]] = {}
         for tile in tiles:
             row = int(tile["row"])
             col = int(tile["column"])
@@ -1560,11 +1561,52 @@ class FlattenWindow(DiagnosticsWidget):
             axis = dialog.figure.add_subplot(len(row_chunks), columns, row * columns + col + 1)
             image = stack[int(transition_index), row_chunks[row][:, None], col_chunks[col]]
             axis.imshow(image, cmap="gray")
+            axis_tiles[axis] = (tile, image)
             midpoint = tile["fit"].get("midpoint_um")
             axis.set_title(f"r{row + 1} c{col + 1}\nz={float(midpoint):.1f} um", fontsize=7)
             axis.set_xticks([])
             axis.set_yticks([])
+
+        def show_tile_detail(event) -> None:
+            if not event.dblclick or event.inaxes not in axis_tiles:
+                return
+            tile, image = axis_tiles[event.inaxes]
+            self._show_tile_transition_detail(tile, image)
+
+        dialog.canvas.mpl_connect("button_press_event", show_tile_detail)
         dialog.figure.suptitle("Each tile at the Z plane nearest its fitted sigmoid midpoint", fontsize=11)
+        dialog.canvas.draw()
+        dialog.exec()
+
+    def _show_tile_transition_detail(self, tile: dict[str, object], image: np.ndarray) -> None:
+        """Show the selected transition frame alongside its complete Z profile."""
+        fit = tile["fit"]
+        z_um = np.asarray(tile["z_positions_um"], dtype=float)
+        intensity = np.asarray(tile["raw_intensity"], dtype=float)
+        midpoint = fit.get("midpoint_um")
+        dialog = MatplotlibDialog(
+            f"Tile r{int(tile['row']) + 1} c{int(tile['column']) + 1} Surface Transition",
+            self,
+        )
+        image_axis = dialog.figure.add_subplot(121)
+        profile_axis = dialog.figure.add_subplot(122)
+        image_axis.imshow(image, cmap="gray")
+        image_axis.set_title(
+            f"Frame nearest fitted midpoint\nZ={float(midpoint):.2f} um" if midpoint is not None else "No fitted midpoint"
+        )
+        image_axis.set_xticks([])
+        image_axis.set_yticks([])
+        profile_axis.plot(z_um, intensity, "o-", color="tab:blue", label="Tile mean brightness")
+        fitted = np.asarray(fit.get("fitted_intensity", []), dtype=float)
+        if fitted.size == z_um.size:
+            profile_axis.plot(z_um, fitted, "-", color="tab:red", linewidth=2, label="Sigmoid fit")
+        if midpoint is not None:
+            profile_axis.axvline(float(midpoint), color="black", linestyle="--", label=f"Midpoint {float(midpoint):.2f} um")
+        profile_axis.set_xlabel("Relative Z (um)")
+        profile_axis.set_ylabel("Mean tile brightness")
+        profile_axis.set_title("Brightness across the full acquired Z range")
+        profile_axis.grid(True, alpha=0.3)
+        profile_axis.legend(fontsize=8)
         dialog.canvas.draw()
         dialog.exec()
 
