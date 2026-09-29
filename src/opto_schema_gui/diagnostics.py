@@ -1449,6 +1449,7 @@ class FlattenWindow(DiagnosticsWidget):
         self._flatness_summary: dict[str, object] | None = None
         self._tile_axis_records: dict[object, tuple[dict[str, object], np.ndarray]] = {}
         self.tile_gallery_canvas.mpl_connect("button_press_event", self._tile_gallery_clicked)
+        self.tile_gallery_canvas.mpl_connect("pick_event", self._tile_gallery_picked)
         self._show_empty_flatness_figures()
 
     def _set_running(self, running: bool) -> None:
@@ -1656,7 +1657,8 @@ class FlattenWindow(DiagnosticsWidget):
                 continue
             axis = self.tile_gallery_figure.add_subplot(len(row_chunks), len(col_chunks), row * len(col_chunks) + col + 1)
             image = stack[int(transition_index), row_chunks[row][:, None], col_chunks[col]]
-            axis.imshow(image, cmap="gray")
+            image_artist = axis.imshow(image, cmap="gray", picker=True)
+            axis.patch.set_picker(True)
             self._tile_axis_records[axis] = (tile, image)
             midpoint = tile["fit"].get("midpoint_um")
             axis.set_title(f"r{row + 1} c{col + 1}\nz={float(midpoint):.1f}", fontsize=6)
@@ -1666,10 +1668,20 @@ class FlattenWindow(DiagnosticsWidget):
         self.tile_gallery_canvas.draw_idle()
 
     def _tile_gallery_clicked(self, event) -> None:
-        if event.inaxes not in self._tile_axis_records:
+        self._select_tile_axis(event.inaxes)
+
+    def _tile_gallery_picked(self, event) -> None:
+        self._select_tile_axis(getattr(event.artist, "axes", None))
+
+    def _select_tile_axis(self, axis: object | None) -> None:
+        if axis not in self._tile_axis_records:
             return
-        tile, image = self._tile_axis_records[event.inaxes]
-        self._render_tile_detail(tile, image)
+        tile, image = self._tile_axis_records[axis]
+        try:
+            self._render_tile_detail(tile, image)
+            self._append_status(f"Selected tile r{int(tile['row']) + 1} c{int(tile['column']) + 1} for transition inspection.")
+        except Exception as exc:
+            self._append_status(f"Could not render selected tile detail: {exc}")
 
     def _render_tile_detail(self, tile: dict[str, object], image: np.ndarray) -> None:
         fit = tile["fit"]
