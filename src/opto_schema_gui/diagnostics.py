@@ -275,9 +275,10 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
         "slope_dz_dx": float(slope_x),
         "slope_dz_dy": float(slope_y),
         "intercept_um": float(intercept),
-        "tilt_about_y_deg": float(math.degrees(math.atan(slope_x))),
+        # LM tilt follows the displayed image-space convention, opposite the raw dz/dx sign.
+        "tilt_about_y_deg": float(-math.degrees(math.atan(slope_x))),
         "tilt_about_x_deg": float(math.degrees(math.atan(slope_y))),
-        "correction_about_y_deg": float(-math.degrees(math.atan(slope_x))),
+        "correction_about_y_deg": float(math.degrees(math.atan(slope_x))),
         "correction_about_x_deg": float(-math.degrees(math.atan(slope_y))),
         "residual_rms_um": residual_rms_um,
     }
@@ -1185,11 +1186,11 @@ class DiagnosticsWidget(QWidget):
                 self,
                 "Surface Flatness Correction",
                 "Measured sample tilt:\n"
-                f"  about X: {plane['tilt_about_x_deg']:.3f} deg\n"
-                f"  about Y: {plane['tilt_about_y_deg']:.3f} deg\n\n"
+                f"  AP tilt: {plane['tilt_about_x_deg']:.3f} deg\n"
+                f"  LM tilt: {plane['tilt_about_y_deg']:.3f} deg\n\n"
                 "Apply the opposite correction (subject to your stage's axis/sign convention):\n"
-                f"  about X: {plane['correction_about_x_deg']:.3f} deg\n"
-                f"  about Y: {plane['correction_about_y_deg']:.3f} deg",
+                f"  AP: {plane['correction_about_x_deg']:.3f} deg\n"
+                f"  LM: {plane['correction_about_y_deg']:.3f} deg",
             )
             return
         self._append_status("SLM PSF acquisition and processing completed.")
@@ -1481,11 +1482,15 @@ class FlattenWindow(DiagnosticsWidget):
         )
         self.correction_label.setText(
             "Measured non-flatness: "
-            f"{float(plane['tilt_about_x_deg']):.3f} deg about X, "
-            f"{float(plane['tilt_about_y_deg']):.3f} deg about Y.\n"
+            f"AP tilt {float(plane['tilt_about_x_deg']):.3f} deg, "
+            f"LM tilt {float(plane['tilt_about_y_deg']):.3f} deg.\n"
             "Apply opposite correction, after confirming the mechanical sign convention: "
-            f"{float(plane['correction_about_x_deg']):.3f} deg about X, "
-            f"{float(plane['correction_about_y_deg']):.3f} deg about Y."
+            f"AP {float(plane['correction_about_x_deg']):.3f} deg, "
+            f"LM {float(plane['correction_about_y_deg']):.3f} deg."
+        )
+        self._append_status(
+            f"Flatness result: AP tilt {float(plane['tilt_about_x_deg']):.3f} deg; "
+            f"LM tilt {float(plane['tilt_about_y_deg']):.3f} deg."
         )
         self._set_visualization_enabled(True)
         self._render_flatness_figures()
@@ -1535,16 +1540,44 @@ class FlattenWindow(DiagnosticsWidget):
             plane = summary.get("plane", {})
             label = (
                 f"{summary.get('created_at', 'unknown time')} | {path}\n"
-                f"X {float(plane.get('correction_about_x_deg', float('nan'))):.3f} deg, "
-                f"Y {float(plane.get('correction_about_y_deg', float('nan'))):.3f} deg"
+                f"AP {float(plane.get('correction_about_x_deg', float('nan'))):.3f} deg, "
+                f"LM {float(plane.get('correction_about_y_deg', float('nan'))):.3f} deg"
             )
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, str(path))
             list_widget.addItem(item)
         dialog_layout.addWidget(list_widget)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel)
+        delete_button = buttons.addButton("Delete Selected", QDialogButtonBox.ButtonRole.DestructiveRole)
+
+        def delete_selected() -> None:
+            item = list_widget.currentItem()
+            if item is None:
+                QMessageBox.warning(dialog, "No Calibration Selected", "Select a calibration to delete.")
+                return
+            calibration_dir = Path(str(item.data(Qt.ItemDataRole.UserRole)))
+            answer = QMessageBox.question(
+                dialog,
+                "Delete Saved Calibration?",
+                f"Permanently delete this saved flatness calibration and all of its TIFF data?\n\n{calibration_dir}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                shutil.rmtree(calibration_dir)
+            except Exception as exc:
+                QMessageBox.critical(dialog, "Delete Calibration Failed", str(exc))
+                return
+            list_widget.takeItem(list_widget.row(item))
+            self._append_status(f"Deleted saved flatness calibration at {calibration_dir}")
+            if list_widget.count() == 0:
+                dialog.reject()
+
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
+        delete_button.clicked.connect(delete_selected)
         dialog_layout.addWidget(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted or list_widget.currentItem() is None:
             return
@@ -1618,7 +1651,7 @@ class FlattenWindow(DiagnosticsWidget):
         y_line = np.linspace(y.min(), y.max(), 100)
         axis_y.scatter(y, z, c="tab:blue", s=14, label="Tile transition")
         axis_y.plot(y_line, slope_x * float(np.mean(x)) + slope_y * y_line + intercept, "r", label="Fitted plane")
-        axis_y.set_title(f"Across Y\nTilt about X: {float(plane['tilt_about_x_deg']):.3f} deg")
+        axis_y.set_title(f"AP tilt: {float(plane['tilt_about_x_deg']):.3f} deg")
         axis_y.set_xlabel("Y (um)")
         axis_y.set_ylabel("Surface Z (um)")
         # Match image-space depth: negative Z at the top and positive Z at the bottom.
@@ -1629,7 +1662,7 @@ class FlattenWindow(DiagnosticsWidget):
         x_line = np.linspace(x.min(), x.max(), 100)
         axis_x.scatter(x, z, c="tab:blue", s=14, label="Tile transition")
         axis_x.plot(x_line, slope_x * x_line + slope_y * float(np.mean(y)) + intercept, "r", label="Fitted plane")
-        axis_x.set_title(f"Across X\nTilt about Y: {float(plane['tilt_about_y_deg']):.3f} deg")
+        axis_x.set_title(f"LM tilt: {float(plane['tilt_about_y_deg']):.3f} deg")
         axis_x.set_xlabel("X (um)")
         axis_x.set_ylabel("Surface Z (um)")
         axis_x.invert_yaxis()
@@ -1831,7 +1864,7 @@ class FlattenWindow(DiagnosticsWidget):
         x_centre = float(np.mean(x))
         axis_y.scatter(y, z, c="tab:blue", label="Tile transition")
         axis_y.plot(y_line, slope_x * x_centre + slope_y * y_line + intercept, "r", label="Fitted plane")
-        axis_y.set_title(f"Across Y | tilt about X = {float(plane['tilt_about_x_deg']):.3f} deg")
+        axis_y.set_title(f"AP tilt: {float(plane['tilt_about_x_deg']):.3f} deg")
         axis_y.set_xlabel("Y (um)")
         axis_y.set_ylabel("Surface Z (um)")
         axis_y.grid(True, alpha=0.3)
@@ -1840,7 +1873,7 @@ class FlattenWindow(DiagnosticsWidget):
         y_centre = float(np.mean(y))
         axis_x.scatter(x, z, c="tab:blue", label="Tile transition")
         axis_x.plot(x_line, slope_x * x_line + slope_y * y_centre + intercept, "r", label="Fitted plane")
-        axis_x.set_title(f"Across X | tilt about Y = {float(plane['tilt_about_y_deg']):.3f} deg")
+        axis_x.set_title(f"LM tilt: {float(plane['tilt_about_y_deg']):.3f} deg")
         axis_x.set_xlabel("X (um)")
         axis_x.set_ylabel("Surface Z (um)")
         axis_x.grid(True, alpha=0.3)
