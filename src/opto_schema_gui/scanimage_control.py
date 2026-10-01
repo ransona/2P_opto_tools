@@ -2780,7 +2780,12 @@ class ScanImageControlWidget(QWidget):
             widgets.udp_text.clear()
 
     def _append_simple_status(self, message: str) -> None:
-        self.simple_status_text.appendPlainText(f"{self._timestamp()} {message}")
+        # Preserve explicit blank lines so experiment boundaries remain easy to scan.
+        for line in str(message).split("\n"):
+            if line:
+                self.simple_status_text.appendPlainText(f"{self._timestamp()} {line}")
+            else:
+                self.simple_status_text.appendPlainText("")
         scrollbar = self.simple_status_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -5550,6 +5555,9 @@ class ScanImageControlWidget(QWidget):
 
         old_exp_id = tracking.exp_id
         if exp_id and exp_id != old_exp_id:
+            self.signals.simple_status_message.emit(
+                f"\n\n\nNew experiment started: {exp_id}"
+            )
             self._clear_scanimage_state_for_new_experiment(old_exp_id, exp_id)
 
         tracking.reset()
