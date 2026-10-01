@@ -5752,6 +5752,10 @@ class ScanImageControlWidget(QWidget):
             f"Photostim preparation completed in {photostim_prep_duration:.3f}s: trial {trial_index}, "
             f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}"
         )
+        self.signals.simple_status_message.emit(
+            f"Awaiting BonVision start trigger: trial {trial_index}, "
+            f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}"
+        )
         self._send_json_reply(
             request_path_name,
             reply_address,
