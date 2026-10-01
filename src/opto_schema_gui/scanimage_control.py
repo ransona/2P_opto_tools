@@ -2752,9 +2752,11 @@ class ScanImageControlWidget(QWidget):
         detailed_log_layout.addWidget(self.log_text)
         log_splitter.addWidget(simple_status_box)
         log_splitter.addWidget(detailed_log_box)
-        log_splitter.setStretchFactor(0, 0)
+        log_splitter.setStretchFactor(0, 1)
         log_splitter.setStretchFactor(1, 1)
-        log_splitter.setSizes([280, 900])
+        # Use real pixel sizes; [1, 1] is treated as a near-zero request and
+        # lets Qt expand the panes according to their unequal size hints.
+        log_splitter.setSizes([500, 500])
         log_layout.addWidget(log_splitter, 1)
         layout.addWidget(log_box, 1)
 
