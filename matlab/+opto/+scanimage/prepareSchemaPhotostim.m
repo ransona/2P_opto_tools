@@ -21,6 +21,10 @@ arguments
     opts.NumSequences (1,1) double = 1
 end
 
+prepTimer = tic();
+stageTimer = tic();
+fprintf('PREP_TIMING total begin\n');
+
 if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
     error('The provided hSI handle does not expose hPhotostim.');
 end
@@ -35,6 +39,7 @@ else
     error('prepareSchemaPhotostim requires schemaSource to be a struct or path string.');
 end
 disp('prepareSchemaPhotostim: schema ready');
+fprintf('PREP_TIMING schema resolution: %.3f s (total %.3f s)\n', toc(stageTimer), toc(prepTimer));
 if ~isfield(schema, 'patterns') || ~isfield(schema, 'sequences')
     error('Schema data must contain patterns and sequences blocks.');
 end
@@ -59,6 +64,7 @@ end
 
 hPs = hSI.hPhotostim;
 disp('prepareSchemaPhotostim: photostim handle ready');
+stageTimer = tic();
 if hPs.active
     disp('prepareSchemaPhotostim: aborting active photostim');
     hPs.abort();
@@ -68,14 +74,19 @@ disp('prepareSchemaPhotostim: clearing existing stimulus groups');
 hPs.stimRoiGroups = scanimage.mroi.RoiGroup.empty(1, 0);
 hPs.sequenceSelectedStimuli = [];
 disp('prepareSchemaPhotostim: existing stimulus groups cleared');
+fprintf('PREP_TIMING clear existing groups: %.3f s (total %.3f s)\n', toc(stageTimer), toc(prepTimer));
 
+nBeamsTimer = tic();
 nBeams = getPhotostimBeamCount(hSI);
 disp('prepareSchemaPhotostim: beam count resolved');
 disp(nBeams);
+fprintf('PREP_TIMING beam count resolution: %.3f s (total %.3f s)\n', toc(nBeamsTimer), toc(prepTimer));
+stageTimer = tic();
 disp('Preparing reserved stimulus group: BLANK');
 hPs.stimRoiGroups(end + 1) = makeBlankOnlyGroup("BLANK", opts.BlankDuration, nBeams);
 disp('Preparing reserved stimulus group: PARK');
 hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration, nBeams);
+fprintf('PREP_TIMING reserved groups: %.3f s (total %.3f s)\n', toc(stageTimer), toc(prepTimer));
 
 importedPatternNames = strings(0, 1);
 patternNumbers = zeros(0, 1);
@@ -97,10 +108,25 @@ for idx = 1:numel(preparedSequenceIndices)
     sequenceDuration_s = computeSequenceDuration(sequenceSteps, schema.patterns);
     blockCount = max(1, ceil(double(sequenceDuration_s) ./ double(opts.BlockDuration)));
     firstPreparedGroupIdx = numel(hPs.stimRoiGroups) + 1;
+    sequenceTimer = tic();
+    sequenceBuildTime = 0;
+    sequenceAssignTime = 0;
     for blockIdx = 1:blockCount
+        blockTimer = tic();
         hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, schema.patterns, schemaPatternNames, blockIdx, hSI, opts);
+        blockBuildTime = toc(blockTimer);
+        assignTimer = tic();
         hPs.stimRoiGroups(end + 1) = hGroup;
+        blockAssignTime = toc(assignTimer);
+        sequenceBuildTime = sequenceBuildTime + blockBuildTime;
+        sequenceAssignTime = sequenceAssignTime + blockAssignTime;
+        if blockIdx == 1 || blockIdx == blockCount || mod(blockIdx, 10) == 0
+            fprintf('PREP_TIMING sequence %s block %d/%d: build %.3f s, assign %.3f s, total %.3f s\n', ...
+                char(sequenceName), blockIdx, blockCount, blockBuildTime, blockAssignTime, toc(prepTimer));
+        end
     end
+    fprintf('PREP_TIMING sequence %s groups: %d, build total %.3f s, assign total %.3f s, sequence total %.3f s, total %.3f s\n', ...
+        char(sequenceName), blockCount, sequenceBuildTime, sequenceAssignTime, toc(sequenceTimer), toc(prepTimer));
     sequenceGroupIndicesBySeq{preparedSequenceIndices(idx)} = firstPreparedGroupIdx:numel(hPs.stimRoiGroups);
 
     for stepIdx = 1:numel(sequenceSteps)
@@ -121,6 +147,7 @@ importedPatternNames = usedPatternNames;
 patternNumbers = usedPatternNumbers;
 
 if opts.ConfigureSequence
+    sequenceConfigTimer = tic();
     hPs.stimulusMode = 'sequence';
     hPs.sequenceSelectedStimuli = [];
     for trialIdx = 1:numel(trialSequenceIndices)
@@ -152,14 +179,18 @@ if opts.ConfigureSequence
     disp(hPs.sequenceSelectedStimuli);
     disp('Prepared photostim trial count:');
     disp(numel(trialSequenceIndices));
+    fprintf('PREP_TIMING sequence configuration: %.3f s (total %.3f s)\n', toc(sequenceConfigTimer), toc(prepTimer));
     if opts.StartPhotostim
         disp('Starting photostim mask generation');
+        startTimer = tic();
         hPs.start();
+        fprintf('PREP_TIMING hPs.start mask generation: %.3f s (total %.3f s)\n', toc(startTimer), toc(prepTimer));
         disp('Photostim mask generation ready');
     end
 else
     disp('Prepared photostim groups without configuring a playback sequence.');
 end
+fprintf('PREP_TIMING total end: %.3f s\n', toc(prepTimer));
 end
 
 
