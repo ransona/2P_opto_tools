@@ -8,6 +8,7 @@ import html
 import json
 import os
 import random
+import shlex
 import shutil
 import socket
 import subprocess
@@ -123,6 +124,9 @@ class ScanImageSignals(QObject):
     show_connecting_dialog = pyqtSignal(str, str, object)
     update_connecting_dialog = pyqtSignal(str, str)
     hide_connecting_dialog = pyqtSignal(str)
+    update_progress = pyqtSignal(str)
+    update_status_ready = pyqtSignal(object, object)
+    update_finished = pyqtSignal(bool, str)
 
 
 @dataclass
@@ -897,6 +901,51 @@ class MatlabConnectDialog(QDialog):
         super().closeEvent(event)
 
 
+class UpdateProgressDialog(QDialog):
+    """Show the update transcript while network Git operations run in a worker."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Updating 2P Opto Tools")
+        self.setModal(True)
+        self.resize(760, 440)
+
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel("Checking repository state...")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.output_text = QPlainTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        layout.addWidget(self.output_text, 1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        self.close_btn = QPushButton("Close")
+        self.close_btn.setEnabled(False)
+        self.close_btn.clicked.connect(self.close)
+        button_row.addWidget(self.close_btn)
+        layout.addLayout(button_row)
+
+    def append(self, message: str) -> None:
+        self.output_text.appendPlainText(message)
+        scrollbar = self.output_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def set_finished(self, success: bool, detail: str) -> None:
+        self.status_label.setText(
+            "Update complete. Restarting application..." if success else f"Update failed: {detail}"
+        )
+        self.close_btn.setEnabled(True)
+
+    def closeEvent(self, event) -> None:
+        if not self.close_btn.isEnabled():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
 class ScanImageControlWidget(QWidget):
     def __init__(
         self,
@@ -936,10 +985,15 @@ class ScanImageControlWidget(QWidget):
         self.signals.show_connecting_dialog.connect(self._show_connecting_dialog)
         self.signals.update_connecting_dialog.connect(self._update_connecting_dialog)
         self.signals.hide_connecting_dialog.connect(self._hide_connecting_dialog)
+        self.signals.update_progress.connect(self._append_update_progress)
+        self.signals.update_status_ready.connect(self._begin_update_after_status)
+        self.signals.update_finished.connect(self._finish_update_and_restart)
         self.machine_config: MachineConfig | None = None
         self._runtimes: dict[str, PathRuntime] = {}
         self._path_tabs: dict[str, PathTabWidgets] = {}
         self._connect_dialogs: dict[str, MatlabConnectDialog] = {}
+        self._update_progress_dialog: UpdateProgressDialog | None = None
+        self._update_in_progress = False
         self._ignore_combo_changes = False
         self._current_machine_name = ""
         self._current_config_name = ""
@@ -2849,14 +2903,21 @@ class ScanImageControlWidget(QWidget):
             except Exception as exc:
                 self.signals.log_message.emit(f"[{path_name}] shutdown warning: {exc}")
 
+    def _report_update_progress(self, message: str) -> None:
+        self.signals.log_message.emit(message)
+        self.signals.update_progress.emit(message)
+
     def _run_git_command(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        self._report_update_progress(f"> git {shlex.join(args)}")
+        completed = subprocess.run(
             ["git", *args],
             cwd=self.repo_root,
             capture_output=True,
             text=True,
             check=False,
         )
+        self._report_update_progress(f"[update] git exited with code {completed.returncode}")
+        return completed
 
     def _relaunch_command(self) -> list[str]:
         if sys.argv and sys.argv[0]:
@@ -2874,12 +2935,12 @@ class ScanImageControlWidget(QWidget):
             for line in stdout.splitlines():
                 cleaned = line.strip()
                 if cleaned:
-                    self.signals.log_message.emit(f"{prefix} {cleaned}")
+                    self._report_update_progress(f"{prefix} {cleaned}")
         if stderr:
             for line in stderr.splitlines():
                 cleaned = line.strip()
                 if cleaned:
-                    self.signals.log_message.emit(f"{prefix} stderr: {cleaned}")
+                    self._report_update_progress(f"{prefix} stderr: {cleaned}")
 
     @staticmethod
     def _is_ignorable_git_status_entry(entry: str) -> bool:
@@ -2925,7 +2986,7 @@ class ScanImageControlWidget(QWidget):
         tracked_paths = [self._git_status_entry_path(entry) for entry in entries if self._git_status_entry_path(entry)]
         if not tracked_paths:
             return True
-        self.signals.log_message.emit("[update] Committing local config changes before update")
+        self._report_update_progress("[update] Committing local config changes before update")
         add_result = self._run_git_command(["add", "--", *tracked_paths])
         self._log_process_output("[update]", add_result)
         if add_result.returncode != 0:
@@ -2945,9 +3006,9 @@ class ScanImageControlWidget(QWidget):
     def _push_current_branch(self) -> bool:
         branch = self._current_git_branch()
         if not branch:
-            self.signals.log_message.emit("[update] Could not determine current git branch for push")
+            self._report_update_progress("[update] Could not determine current git branch for push")
             return False
-        self.signals.log_message.emit(f"[update] Pushing local config commit to origin/{branch}")
+        self._report_update_progress(f"[update] Pushing local config commit to origin/{branch}")
         push_result = self._run_git_command(["push", "origin", branch])
         self._log_process_output("[update]", push_result)
         return push_result.returncode == 0
@@ -2956,9 +3017,9 @@ class ScanImageControlWidget(QWidget):
         tracked_paths = [self._git_status_entry_path(entry) for entry in entries if self._git_status_entry_path(entry)]
         if not tracked_paths:
             return True
-        self.signals.log_message.emit("[update] Discarding tracked local changes before pull")
+        self._report_update_progress("[update] Discarding tracked local changes before pull")
         for entry in entries[:10]:
-            self.signals.log_message.emit(f"[update] reset {entry}")
+            self._report_update_progress(f"[update] reset {entry}")
         restore_result = self._run_git_command(["restore", "--source=HEAD", "--", *tracked_paths])
         self._log_process_output("[update]", restore_result)
         return restore_result.returncode == 0
@@ -2967,14 +3028,28 @@ class ScanImageControlWidget(QWidget):
         self._update_and_restart()
 
     def _update_and_restart(self) -> None:
-        status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=all"])
+        if self._update_in_progress:
+            if self._update_progress_dialog is not None:
+                self._update_progress_dialog.raise_()
+                self._update_progress_dialog.activateWindow()
+            return
+
+        self._update_in_progress = True
+        self._update_progress_dialog = UpdateProgressDialog(self)
+        self._update_progress_dialog.show()
+        QApplication.processEvents()
+        threading.Thread(target=self._inspect_update_status, daemon=True).start()
+
+    def _inspect_update_status(self) -> None:
+        try:
+            status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=all"])
+        except Exception as exc:
+            self._report_update_progress(f"[update] ERROR: {exc}")
+            self.signals.update_finished.emit(False, "Could not start git status.")
+            return
         if status_result.returncode != 0:
             self._log_process_output("[update]", status_result)
-            QMessageBox.critical(
-                self,
-                "Update failed",
-                "Could not inspect git status. See debug log for details.",
-            )
+            self.signals.update_finished.emit(False, "Could not inspect git status.")
             return
         dirty_entries = [
             line.rstrip()
@@ -2987,59 +3062,71 @@ class ScanImageControlWidget(QWidget):
             for entry in dirty_entries
             if entry not in config_entries and not self._is_untracked_git_status_entry(entry)
         ]
+        self.signals.update_status_ready.emit(config_entries, other_entries)
+
+    def _begin_update_after_status(self, config_entries: list[str], other_entries: list[str]) -> None:
         should_use_rebase_pull = False
         should_push_after_pull = False
+        commit_message: str | None = None
         if config_entries:
             policy = self._prompt_config_update_policy(config_entries)
             if policy == "cancel":
-                self.signals.log_message.emit("[update] Update cancelled by user")
+                self._report_update_progress("[update] Update cancelled by user")
+                self._finish_update_and_restart(False, "Update cancelled by user.")
                 return
             if policy == "sync_push":
                 commit_message = (
                     f"Sync local configs before update "
                     f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                if not self._commit_git_changes(config_entries, commit_message):
-                    QMessageBox.critical(
-                        self,
-                        "Update failed",
-                        "Could not commit local config changes before updating. See debug log for details.",
-                    )
-                    return
                 should_use_rebase_pull = True
                 should_push_after_pull = True
-        if other_entries:
-            if not self._discard_tracked_git_changes(other_entries):
-                QMessageBox.critical(
-                    self,
-                    "Update failed",
-                    "Could not discard tracked local changes before pulling. See debug log for details.",
-                )
-                return
 
-        pull_cmd = ["pull", "--rebase", "--autostash"] if should_use_rebase_pull else ["pull", "--ff-only"]
-        self.signals.log_message.emit(f"[update] Running git {' '.join(pull_cmd)}")
-        pull_result = self._run_git_command(pull_cmd)
-        self._log_process_output("[update]", pull_result)
-        if pull_result.returncode != 0:
-            QMessageBox.critical(
-                self,
-                "Update failed",
-                f"git {' '.join(pull_cmd)} failed. See debug log for details.",
-            )
-            return
+        self._update_progress_dialog.status_label.setText("Updating repository. Git commands and output are shown below.")
+        threading.Thread(
+            target=self._run_update_and_restart,
+            args=(
+                config_entries,
+                other_entries,
+                commit_message if config_entries else None,
+                should_use_rebase_pull,
+                should_push_after_pull,
+            ),
+            daemon=True,
+        ).start()
 
-        if should_push_after_pull and not self._push_current_branch():
-            QMessageBox.critical(
-                self,
-                "Update failed",
-                "Could not push local config changes after pulling. See debug log for details.",
-            )
-            return
-
-        relaunch_cmd = self._relaunch_command()
-        self.signals.log_message.emit(f"[update] Relaunching: {' '.join(relaunch_cmd)}")
+    def _run_update_and_restart(
+        self,
+        config_entries: list[str],
+        other_entries: list[str],
+        commit_message: str | None,
+        should_use_rebase_pull: bool,
+        should_push_after_pull: bool,
+    ) -> None:
         try:
+            if config_entries:
+                assert commit_message is not None
+                if not self._commit_git_changes(config_entries, commit_message):
+                    raise RuntimeError("Could not commit local config changes before updating.")
+            if other_entries and not self._discard_tracked_git_changes(other_entries):
+                raise RuntimeError("Could not discard tracked local changes before pulling.")
+
+            pull_cmd = (
+                ["pull", "--rebase", "--autostash"]
+                if should_use_rebase_pull
+                else ["pull", "--ff-only"]
+            )
+            self._report_update_progress(f"[update] Running git {' '.join(pull_cmd)}")
+            pull_result = self._run_git_command(pull_cmd)
+            self._log_process_output("[update]", pull_result)
+            if pull_result.returncode != 0:
+                raise RuntimeError(f"git {' '.join(pull_cmd)} failed.")
+
+            if should_push_after_pull and not self._push_current_branch():
+                raise RuntimeError("Could not push local config changes after pulling.")
+
+            relaunch_cmd = self._relaunch_command()
+            self._report_update_progress(f"[update] Relaunching: {shlex.join(relaunch_cmd)}")
             popen_kwargs: dict[str, object] = {
                 "cwd": self.repo_root,
                 "start_new_session": True,
@@ -3052,15 +3139,35 @@ class ScanImageControlWidget(QWidget):
                     popen_kwargs["creationflags"] = creationflags
             subprocess.Popen(relaunch_cmd, **popen_kwargs)
         except Exception as exc:
-            self.signals.log_message.emit(f"[update] relaunch failed: {exc}")
+            self._report_update_progress(f"[update] ERROR: {exc}")
+            self.signals.update_finished.emit(False, str(exc))
+            return
+
+        self._report_update_progress("[update] Restarting application")
+        self.signals.update_finished.emit(True, "Update complete.")
+
+    def _append_update_progress(self, message: str) -> None:
+        if self._update_progress_dialog is not None:
+            self._update_progress_dialog.append(message)
+            if message.startswith("> git "):
+                self._update_progress_dialog.status_label.setText(f"Running: {message[2:]}")
+
+    def _finish_update_and_restart(self, success: bool, detail: str) -> None:
+        self._update_in_progress = False
+        if self._update_progress_dialog is not None:
+            self._update_progress_dialog.set_finished(success, detail)
+        if not success:
             QMessageBox.critical(
                 self,
-                "Restart failed",
-                f"Could not relaunch the application:\n{exc}",
+                "Update failed",
+                f"{detail}\n\nThe update transcript remains open and is also in the diagnostic log.",
             )
             return
 
-        self.signals.log_message.emit("[update] Restarting application")
+        # Let the user see the final status before the existing process exits.
+        QTimer.singleShot(250, self._complete_update_restart)
+
+    def _complete_update_restart(self) -> None:
         self.shutdown()
         app = QApplication.instance()
         if app is not None:
