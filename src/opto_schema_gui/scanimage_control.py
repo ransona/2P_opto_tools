@@ -6686,6 +6686,9 @@ class ScanImageControlWidget(QWidget):
                     path_name
                 )
                 if started:
+                    self.signals.simple_status_message.emit(
+                        f"Photostim sequence triggered: sequence '{sequence_name}'"
+                    )
                     if started_wall_time is None and integration_snapshot is None:
                         mark_trial_start_once()
                     else:
