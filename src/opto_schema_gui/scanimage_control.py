@@ -2740,7 +2740,7 @@ class ScanImageControlWidget(QWidget):
         self.log_text.setReadOnly(True)
         log_layout.addWidget(filter_row)
         log_splitter = QSplitter(Qt.Orientation.Horizontal)
-        simple_status_box = QGroupBox("Photostim Status")
+        simple_status_box = QGroupBox("Status")
         simple_status_layout = QVBoxLayout(simple_status_box)
         self.simple_status_text = QPlainTextEdit()
         self.simple_status_text.setReadOnly(True)
