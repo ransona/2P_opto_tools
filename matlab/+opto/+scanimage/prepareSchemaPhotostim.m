@@ -106,10 +106,24 @@ usedPatternNumbers = zeros(0, 1);
 
 preparedSequenceIndices = unique(trialSequenceIndices, 'stable');
 sequenceGroupIndicesBySeq = cell(1, numel(sequenceNames));
+patternGeometryCache = cell(1, numel(schemaPatternNames));
+geometryCacheTimer = tic();
 for idx = 1:numel(preparedSequenceIndices)
     sequenceName = sequenceNames(preparedSequenceIndices(idx));
     sequence = getStructByOriginalName(schema.sequences, sequenceName, "Sequence");
     sequenceSteps = getStructArrayField(sequence, 'steps');
+    for stepIdx = 1:numel(sequenceSteps)
+        stepPatternName = string(sequenceSteps(stepIdx).pattern);
+        stepPatternNumber = find(schemaPatternNames == stepPatternName, 1, 'first');
+        if isempty(stepPatternNumber)
+            error('Could not resolve schema pattern number for pattern "%s".', stepPatternName);
+        end
+        if isempty(patternGeometryCache{stepPatternNumber})
+            patternGeometryCache{stepPatternNumber} = buildPatternGeometry( ...
+                getStructByOriginalName(schema.patterns, stepPatternName, "Pattern"), ...
+                stepPatternNumber, hSI, opts, nBeams);
+        end
+    end
     disp("Preparing schema sequence:");
     disp(sequenceName);
     disp(idx);
@@ -122,7 +136,9 @@ for idx = 1:numel(preparedSequenceIndices)
     sequenceAssignTime = 0;
     for blockIdx = 1:blockCount
         blockTimer = tic();
-        hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, schema.patterns, schemaPatternNames, blockIdx, hSI, opts);
+        hGroup = buildSequenceWindowStimGroup( ...
+            sequenceName, sequenceSteps, schema.patterns, schemaPatternNames, ...
+            blockIdx, hSI, opts, nBeams, patternGeometryCache);
         blockBuildTime = toc(blockTimer);
         assignTimer = tic();
         preparedGroups(end + 1) = hGroup;
@@ -154,6 +170,8 @@ for idx = 1:numel(preparedSequenceIndices)
         usedPatternNumbers(end + 1, 1) = patternNumber; %#ok<AGROW>
     end
 end
+fprintf('PREP_TIMING pattern geometry cache: %d patterns, %.3f s (total %.3f s)\n', ...
+    nnz(~cellfun(@isempty, patternGeometryCache)), toc(geometryCacheTimer), toc(prepTimer));
 
 if opts.BatchAssignGroups
     assignAllTimer = tic();
@@ -213,27 +231,26 @@ fprintf('PREP_TIMING total end: %.3f s\n', toc(prepTimer));
 end
 
 
-function hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts)
-nBeams = getPhotostimBeamCount(hSI);
+function hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams, patternGeometryCache)
 hGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__block_%03d', sequenceName, blockIdx)));
 if opts.EmbedBlankAndParkInStimGroup
     if blockIdx ~= 1
         error('EmbedBlankAndParkInStimGroup requires a single prepared block.');
     end
     if opts.BlankDuration > 0
-        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, 0, opts.BlankDuration, hSI, opts, nBeams);
+        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, 0, opts.BlankDuration, hSI, opts, nBeams, patternGeometryCache);
     end
-    appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams);
+    appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams, patternGeometryCache);
     if opts.ParkDuration > 0
         hGroup.add(makeZeroPowerPointRoi(opts.ParkDuration, nBeams));
     end
 else
-    appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams);
+    appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams, patternGeometryCache);
 end
 end
 
 
-function appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams)
+function appendSequenceWindowToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, blockIdx, hSI, opts, nBeams, patternGeometryCache)
 blockStart_s = (double(blockIdx) - 1.0) * double(opts.BlockDuration);
 blockEnd_s = blockStart_s + double(opts.BlockDuration);
 cursor_s = blockStart_s;
@@ -256,12 +273,12 @@ for stepIdx = 1:numel(sequenceSteps)
     end
 
     if overlapStart_s > cursor_s
-        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, overlapStart_s - cursor_s, hSI, opts, nBeams);
+        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, overlapStart_s - cursor_s, hSI, opts, nBeams, patternGeometryCache);
     end
 
     appendPatternSliceToGroup( ...
         hGroup, ...
-        pattern, ...
+        patternGeometryCache{patternNumber}, ...
         patternNumber, ...
         overlapStart_s - stepStart_s, ...
         overlapEnd_s - overlapStart_s, ...
@@ -274,12 +291,12 @@ for stepIdx = 1:numel(sequenceSteps)
 end
 
 if cursor_s < blockEnd_s
-    appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, blockEnd_s - cursor_s, hSI, opts, nBeams);
+    appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, blockEnd_s - cursor_s, hSI, opts, nBeams, patternGeometryCache);
 end
 end
 
 
-function appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams)
+function appendFullSequenceToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, hSI, opts, nBeams, patternGeometryCache)
 cursor_s = 0.0;
 
 for stepIdx = 1:numel(sequenceSteps)
@@ -296,12 +313,12 @@ for stepIdx = 1:numel(sequenceSteps)
     stepEnd_s = stepStart_s + stepDuration_s;
 
     if stepStart_s > cursor_s
-        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, stepStart_s - cursor_s, hSI, opts, nBeams);
+        appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, cursor_s, stepStart_s - cursor_s, hSI, opts, nBeams, patternGeometryCache);
     end
 
     appendPatternSliceToGroup( ...
         hGroup, ...
-        pattern, ...
+        patternGeometryCache{patternNumber}, ...
         patternNumber, ...
         0, ...
         stepDuration_s, ...
@@ -315,22 +332,22 @@ end
 end
 
 
-function appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, gapStart_s, gapDuration_s, hSI, opts, nBeams)
+function appendZeroPowerGapToGroup(hGroup, sequenceSteps, patterns, schemaPatternNames, gapStart_s, gapDuration_s, hSI, opts, nBeams, patternGeometryCache)
 if gapDuration_s <= 0
     return;
 end
 [gapPattern, gapPatternNumber] = resolveGapPattern(sequenceSteps, patterns, schemaPatternNames, gapStart_s);
 appendPatternSliceToGroup( ...
     hGroup, ...
-    gapPattern, ...
+    patternGeometryCache{gapPatternNumber}, ...
     gapPatternNumber, ...
     0, ...
     gapDuration_s, ...
-    false, ...
-    hSI, ...
-    opts, ...
-    nBeams, ...
-    true ...
+        false, ...
+        hSI, ...
+        opts, ...
+        nBeams, ...
+        true ...
 );
 end
 
@@ -357,10 +374,7 @@ end
 end
 
 
-function appendPatternSliceToGroup(hGroup, pattern, patternNumber, patternOffset_s, segmentDuration_s, isFirstBlockOfSequence, hSI, opts, nBeams, forceZeroPower)
-if nargin < 10
-    forceZeroPower = false;
-end
+function geometry = buildPatternGeometry(pattern, patternNumber, hSI, opts, nBeams)
 validateattributes(pattern.frequency_hz, {'numeric'}, {'scalar','positive','finite','nonnan'});
 validateattributes(pattern.duty_cycle, {'numeric'}, {'scalar','finite','nonnan','>=',0,'<=',1});
 validateattributes(pattern.power_percent, {'numeric'}, {'scalar','finite','nonnan','>=',0});
@@ -387,13 +401,11 @@ weights = pointsUm(:,4);
 if ~any(weights > 0)
     weights = ones(size(weights));
 end
-
 centerUm = chooseSpiralCenter(pointsUm(:,1:2), weights, opts.MinCenterDistanceUm);
 pointsRef = pointsUm;
 pointsRef(:,1) = pointsUm(:,1) ./ resX;
 pointsRef(:,2) = pointsUm(:,2) ./ resY;
-centerRef = [centerUm(1) ./ resX, centerUm(2) ./ resY];
-centerRef = reshape(centerRef, 1, []);
+centerRef = reshape([centerUm(1) ./ resX, centerUm(2) ./ resY], 1, []);
 
 stimDuration = pattern.duty_cycle ./ pattern.frequency_hz;
 repeatCount = max(1, round(pattern.duration_s .* pattern.frequency_hz));
@@ -404,44 +416,45 @@ end
 if cycleDuration < opts.PreStimPauseDuration + stimDuration - 1e-9
     error( ...
         'Pattern P%d timing is impossible: duration %.6fs, frequency %.6fHz, duty_cycle %.6f, and pre-stim pause %.6fs exceed the cycle duration %.6fs.', ...
-        patternNumber, ...
-        pattern.duration_s, ...
-        pattern.frequency_hz, ...
-        pattern.duty_cycle, ...
-        opts.PreStimPauseDuration, ...
-        cycleDuration ...
-    );
-end
-spiralWidth = getfieldwithdefault(pattern, 'spiral_width', 10); %#ok<GFLD>
-spiralHeight = getfieldwithdefault(pattern, 'spiral_height', 10); %#ok<GFLD>
-sizeRef = [double(spiralWidth) ./ resX, double(spiralHeight) ./ resY];
-totalDuration_s = double(pattern.duration_s);
-if segmentDuration_s <= 0
-    error('Pattern P%d segment is out of range for pattern duration %.6fs.', patternNumber, totalDuration_s);
+        patternNumber, pattern.duration_s, pattern.frequency_hz, pattern.duty_cycle, ...
+        opts.PreStimPauseDuration, cycleDuration);
 end
 
+spiralWidth = getfieldwithdefault(pattern, 'spiral_width', 10); %#ok<GFLD>
+spiralHeight = getfieldwithdefault(pattern, 'spiral_height', 10); %#ok<GFLD>
 stimField = scanimage.mroi.scanfield.fields.StimulusField();
 stimField.centerXY = centerRef;
-stimField.sizeXY = sizeRef;
-stimField.duration = segmentDuration_s;
+stimField.sizeXY = [double(spiralWidth) ./ resX, double(spiralHeight) ./ resY];
 stimField.repetitions = 1;
 stimField.stimfcnhdl = @scanimage.mroi.stimulusfunctions.logspiral;
 stimField.stimparams = {'revolutions', opts.Revolutions, 'direction', 'outward'};
-nPoints = size(pointsRef, 1);
-slmPattern = zeros(nPoints, 4);
 % SI_2026 stores SLM point XY in absolute reference coordinates; centerXY
 % only controls the galvo/logspiral offset.
-slmPattern(:,1) = pointsRef(:,1);
-slmPattern(:,2) = pointsRef(:,2);
-slmPattern(:,3) = pointsRef(:,3);
-slmPattern(:,4) = pointsRef(:,4);
-stimField.slmPattern = slmPattern;
+stimField.slmPattern = pointsRef;
 
-beamPowersOn = zeros(1, nBeams);
-if ~forceZeroPower
-    beamPowersOn(3) = double(pattern.power_percent) .* double(numel(patternCells));
+geometry.stimField = stimField;
+geometry.stimDuration = stimDuration;
+geometry.cycleDuration = cycleDuration;
+geometry.totalDuration_s = double(pattern.duration_s);
+geometry.beamPowersOn = zeros(1, nBeams);
+geometry.beamPowersOn(3) = double(pattern.power_percent) .* double(numel(patternCells));
+geometry.beamPowersOff = zeros(1, nBeams);
 end
-beamPowersOff = zeros(1, nBeams);
+
+
+function appendPatternSliceToGroup(hGroup, geometry, patternNumber, patternOffset_s, segmentDuration_s, isFirstBlockOfSequence, hSI, opts, nBeams, forceZeroPower)
+if nargin < 10
+    forceZeroPower = false;
+end
+if segmentDuration_s <= 0
+    error('Pattern P%d segment is out of range for pattern duration %.6fs.', patternNumber, geometry.totalDuration_s);
+end
+stimField = geometry.stimField;
+beamPowersOn = geometry.beamPowersOn;
+if forceZeroPower
+    beamPowersOn = geometry.beamPowersOff;
+end
+beamPowersOff = geometry.beamPowersOff;
 
 segmentStart_s = double(patternOffset_s);
 segmentEnd_s = segmentStart_s + double(segmentDuration_s);
@@ -455,10 +468,10 @@ if isFirstBlockOfSequence && segmentStart_s <= 1e-9
     firstActiveLeadIn_s = max(0, double(opts.InitialBlockLeadInDuration));
 end
 
-cycleCount = max(1, ceil(totalDuration_s ./ cycleDuration));
+cycleCount = max(1, ceil(geometry.totalDuration_s ./ geometry.cycleDuration));
 for cycleIdx = 0:(cycleCount - 1)
-    cycleStart_s = double(cycleIdx) * cycleDuration;
-    cycleEnd_s = min(totalDuration_s, cycleStart_s + cycleDuration);
+    cycleStart_s = double(cycleIdx) * geometry.cycleDuration;
+    cycleEnd_s = min(geometry.totalDuration_s, cycleStart_s + geometry.cycleDuration);
     if cycleEnd_s <= segmentStart_s
         continue;
     end
@@ -470,7 +483,7 @@ for cycleIdx = 0:(cycleCount - 1)
     if cycleIdx == 0 && firstActiveLeadIn_s > 0
         activeStart_s = min(cycleEnd_s, max(activeStart_s, firstActiveLeadIn_s));
     end
-    activeEnd_s = min(cycleEnd_s, activeStart_s + stimDuration);
+    activeEnd_s = min(cycleEnd_s, activeStart_s + geometry.stimDuration);
 
     overlapStart_s = max(segmentStart_s, activeStart_s);
     if overlapStart_s > cursor_s
