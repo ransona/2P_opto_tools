@@ -305,6 +305,8 @@ class OnlineAnalysisState:
     requested_imaging_path: str = ""
     exp_id: str = ""
     configured: bool = False
+    configuration_signature: str = ""
+    pending_configuration_signature: str = ""
     channel: int = 1
     roi_diameter_px: int = 11
     pre_s: float = 1.0
@@ -1540,26 +1542,28 @@ class ScanImageControlWidget(QWidget):
     def _configure_online_analysis_if_possible_async(self) -> None:
         threading.Thread(target=self._configure_online_analysis_if_possible, daemon=True).start()
 
-    def _configure_online_analysis_if_possible(self) -> None:
+    def _configure_online_analysis_if_possible(self) -> bool:
         if not self.online_analysis_enabled():
-            return
+            return True
         tracking_runtime_name = self._online_analysis_tracking_runtime_name()
         if not tracking_runtime_name:
-            return
+            return False
         runtime = self._runtimes.get(tracking_runtime_name)
         if runtime is None or not runtime.experiment_tracking.params:
-            return
+            return False
         if runtime.prepared_photostim.schema_path is None:
             self.signals.log_message.emit(
                 "[online analysis] waiting for prep_patterns before configuring ROIs"
             )
-            return
+            return False
         try:
             self._configure_online_analysis_for_tracking(runtime.experiment_tracking)
+            return True
         except Exception as exc:
             with self._online_analysis.lock:
                 self._online_analysis.last_error = str(exc)
             self.signals.log_message.emit(f"[online analysis] configure failed: {exc}")
+            return False
 
     def _online_analysis_tracking_runtime_name(self) -> str:
         if self.machine_config is not None:
@@ -1801,6 +1805,8 @@ class ScanImageControlWidget(QWidget):
                 self._online_analysis.imaging_path = ""
                 self._online_analysis.exp_id = tracking.exp_id
                 self._online_analysis.configured = False
+                self._online_analysis.configuration_signature = ""
+                self._online_analysis.pending_configuration_signature = ""
                 self._online_analysis.last_error = "No plottable cells were found for the current experiment conditions."
                 self._clear_online_analysis_runtime_buffers_locked(
                     "no_plottable_cells",
@@ -1819,6 +1825,8 @@ class ScanImageControlWidget(QWidget):
                 self._online_analysis.imaging_path = imaging_path
                 self._online_analysis.exp_id = tracking.exp_id
                 self._online_analysis.configured = False
+                self._online_analysis.configuration_signature = ""
+                self._online_analysis.pending_configuration_signature = ""
                 self._online_analysis.last_error = f"Imaging path '{imaging_path}' is not launched."
                 self._clear_online_analysis_runtime_buffers_locked(
                     f"imaging_path_unavailable:{imaging_path}",
@@ -1842,6 +1850,28 @@ class ScanImageControlWidget(QWidget):
             }
             for cell in cells_by_key.values()
         ]
+
+        configuration_signature = json.dumps(
+            {
+                "exp_id": tracking.exp_id,
+                "imaging_path": imaging_path,
+                "channel": channel,
+                "roi_diameter_px": roi_diameter_px,
+                "history_length": history_length,
+                "rois": roi_specs,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._online_analysis.lock:
+            if (
+                self._online_analysis.configured
+                and self._online_analysis.configuration_signature == configuration_signature
+            ):
+                # The same experiment-wide ROI group is already active. It must
+                # remain untouched while imaging is running between trials.
+                return
+            self._online_analysis.pending_configuration_signature = configuration_signature
 
         lines = self.eval_matlab_command(
             imaging_path,
@@ -1889,6 +1919,8 @@ class ScanImageControlWidget(QWidget):
             self._online_analysis.imaging_path = imaging_path
             self._online_analysis.exp_id = tracking.exp_id
             self._online_analysis.configured = True
+            self._online_analysis.configuration_signature = configuration_signature
+            self._online_analysis.pending_configuration_signature = ""
             self._online_analysis.last_error = ""
             self._online_analysis.current_condition_index = tracking.current_trial_index
             self._clear_online_analysis_runtime_buffers_locked(
@@ -1961,6 +1993,8 @@ class ScanImageControlWidget(QWidget):
                     self.signals.log_message.emit(f"[online analysis] restore warning: {exc}")
         with self._online_analysis.lock:
             self._online_analysis.configured = False
+            self._online_analysis.configuration_signature = ""
+            self._online_analysis.pending_configuration_signature = ""
             self._clear_online_analysis_runtime_buffers_locked(
                 "restore",
                 emit_log=False,
@@ -4554,11 +4588,6 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit(
             f"[{path_name}] prepared sequence block stimulus groups for {len(plan.sequence_names)} sequence(s)"
         )
-        if self.online_analysis_enabled():
-            try:
-                self._configure_online_analysis_if_possible()
-            except Exception as exc:
-                self.signals.log_message.emit(f"[online analysis] prep hook warning: {exc}")
 
     def _find_next_opto_trial_index(
         self,
@@ -5370,6 +5399,8 @@ class ScanImageControlWidget(QWidget):
 
         with self._online_analysis.lock:
             self._online_analysis.configured = False
+            self._online_analysis.configuration_signature = ""
+            self._online_analysis.pending_configuration_signature = ""
             self._clear_online_analysis_runtime_buffers_locked(
                 reason,
                 emit_log=False,
@@ -5531,6 +5562,16 @@ class ScanImageControlWidget(QWidget):
                 f"{len(prep_state.planned_trial_seq_nums)} trial(s)"
             )
 
+        if self.online_analysis_enabled():
+            with self._online_analysis.lock:
+                pending_signature = self._online_analysis.pending_configuration_signature
+                online_exp_id = self._online_analysis.exp_id
+            if pending_signature or online_exp_id != tracking.exp_id:
+                raise RuntimeError(
+                    "Online analysis ROIs have not been allocated for this experiment. "
+                    "Run prep_patterns while ScanImage is idle before starting trials."
+                )
+
         planned_seq_num = prep_state.planned_trial_seq_nums[trial_index]
         if planned_seq_num is None:
             self.signals.log_message.emit(
@@ -5614,8 +5655,6 @@ class ScanImageControlWidget(QWidget):
         prep_state.triggered_seq_num = planned_seq_num
         prep_state.triggered_sequence_name = sequence_name
         prep_state.triggered_stimulus_groups = list(stimulus_group_nums)
-        if self.online_analysis_enabled():
-            self._configure_online_analysis_if_possible()
 
         self.signals.log_message.emit(
             f"[{photostim_path}] trial {trial_index} armed and ready: sequence '{sequence_name}', "
@@ -5730,8 +5769,13 @@ class ScanImageControlWidget(QWidget):
             f"[{photostim_path}] registered {len(planned_trial_seq_nums)} planned trial(s) for per-trial photostim preparation; "
             "no ScanImage masks or analogue waveforms were generated."
         )
-        if self.online_analysis_enabled():
-            self._configure_online_analysis_if_possible()
+        if self.online_analysis_enabled() and not self._configure_online_analysis_if_possible():
+            with self._online_analysis.lock:
+                detail = self._online_analysis.last_error
+            raise RuntimeError(
+                "Online analysis ROI allocation must complete while ScanImage is idle before trials begin."
+                + (f" ScanImage reported: {detail}" if detail else "")
+            )
         payload = {
             "action": "prep_patterns",
             "status": "ready",
