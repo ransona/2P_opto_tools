@@ -177,6 +177,67 @@ def _sigmoid_with_offset(z: np.ndarray, amplitude: float, midpoint: float, width
     return offset + amplitude / (1.0 + np.exp(exponent))
 
 
+def _validate_surface_plateaus(
+    z_um: np.ndarray,
+    values: np.ndarray,
+    *,
+    amplitude: float,
+    midpoint: float,
+    width: float,
+    offset: float,
+) -> dict[str, object]:
+    """Require observed, stable low- and high-Z asymptotes before fitting the surface plane."""
+    finite_values = np.asarray(values, dtype=float)
+    window_size = min(finite_values.size, max(3, int(math.ceil(finite_values.size * 0.2))))
+    amplitude_abs = abs(float(amplitude))
+    lower_asymptote = float(offset)
+    upper_asymptote = float(offset + amplitude)
+    lower_values = finite_values[:window_size]
+    upper_values = finite_values[-window_size:]
+    fit_fraction = 1.0 / (1.0 + np.exp(np.clip(-(z_um - midpoint) / max(abs(width), 1e-9), -700.0, 700.0)))
+    plateau_tolerance = max(amplitude_abs * 0.20, np.finfo(float).eps)
+    reasons: list[str] = []
+
+    lower_covered = bool(fit_fraction[0] <= 0.10)
+    upper_covered = bool(fit_fraction[-1] >= 0.90)
+    lower_mean = float(np.mean(lower_values))
+    upper_mean = float(np.mean(upper_values))
+    lower_flat = bool(np.ptp(lower_values) <= plateau_tolerance)
+    upper_flat = bool(np.ptp(upper_values) <= plateau_tolerance)
+    lower_matches = bool(abs(lower_mean - lower_asymptote) <= plateau_tolerance)
+    upper_matches = bool(abs(upper_mean - upper_asymptote) <= plateau_tolerance)
+
+    if finite_values.size < 7:
+        reasons.append("too_few_z_slices")
+    if not math.isfinite(amplitude_abs) or amplitude_abs <= np.finfo(float).eps:
+        reasons.append("no_resolved_transition_amplitude")
+    if not lower_covered:
+        reasons.append("lower_asymptote_not_covered")
+    if not lower_matches:
+        reasons.append("lower_tail_does_not_match_asymptote")
+    if not lower_flat:
+        reasons.append("lower_tail_not_flat")
+    if not upper_covered:
+        reasons.append("upper_asymptote_not_covered")
+    if not upper_matches:
+        reasons.append("upper_tail_does_not_match_asymptote")
+    if not upper_flat:
+        reasons.append("upper_tail_not_flat")
+
+    return {
+        "accepted_for_surface_fit": not reasons,
+        "rejection_reasons": reasons,
+        "window_size": int(window_size),
+        "plateau_tolerance": float(plateau_tolerance),
+        "lower_plateau_detected": lower_covered and lower_matches and lower_flat,
+        "upper_plateau_detected": upper_covered and upper_matches and upper_flat,
+        "lower_edge_fraction": float(fit_fraction[0]),
+        "upper_edge_fraction": float(fit_fraction[-1]),
+        "lower_tail_mean": lower_mean,
+        "upper_tail_mean": upper_mean,
+    }
+
+
 def _fit_surface_transition(z_um: np.ndarray, values: np.ndarray) -> dict[str, object]:
     offset0 = float(np.nanmin(values))
     amplitude0 = float(np.nanmax(values) - offset0)
@@ -193,6 +254,14 @@ def _fit_surface_transition(z_um: np.ndarray, values: np.ndarray) -> dict[str, o
             maxfev=20000,
         )
         amplitude, midpoint, width, offset = [float(value) for value in params]
+        plateau_validation = _validate_surface_plateaus(
+            z_um,
+            values,
+            amplitude=amplitude,
+            midpoint=midpoint,
+            width=width,
+            offset=offset,
+        )
         return {
             "ok": True,
             "amplitude": amplitude,
@@ -200,9 +269,19 @@ def _fit_surface_transition(z_um: np.ndarray, values: np.ndarray) -> dict[str, o
             "width_um": width,
             "offset": offset,
             "fitted_intensity": _sigmoid_with_offset(z_um, amplitude, midpoint, width, offset).astype(float).tolist(),
+            **plateau_validation,
         }
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "midpoint_um": None, "fitted_intensity": []}
+        return {
+            "ok": False,
+            "error": str(exc),
+            "midpoint_um": None,
+            "fitted_intensity": [],
+            "accepted_for_surface_fit": False,
+            "lower_plateau_detected": False,
+            "upper_plateau_detected": False,
+            "rejection_reasons": ["sigmoid_fit_failed"],
+        }
 
 
 def _tile_center_coordinates(
@@ -262,9 +341,11 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
                     "transition_slice_index": transition_slice_index,
                 }
             )
-    valid_tiles = [tile for tile in tiles if tile["fit"].get("midpoint_um") is not None]
+    valid_tiles = [tile for tile in tiles if tile["fit"].get("accepted_for_surface_fit", False)]
     if len(valid_tiles) < 3:
-        raise RuntimeError("Fewer than three tiles had usable surface-transition fits; cannot fit a plane.")
+        raise RuntimeError(
+            "Fewer than three tiles had sigmoid fits with observed plateaus at both Z-range ends; cannot fit a plane."
+        )
     design = np.asarray([[tile["x_um"], tile["y_um"], 1.0] for tile in valid_tiles], dtype=float)
     depths = np.asarray([tile["fit"]["midpoint_um"] for tile in valid_tiles], dtype=float)
     slope_x, slope_y, intercept = np.linalg.lstsq(design, depths, rcond=None)[0]
@@ -287,6 +368,8 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
     summary["slice_image_shape"] = [int(height), int(width)]
     summary["slice_average_stack_file"] = FLATNESS_AVERAGE_STACK_FILENAME
     summary["tiles"] = tiles
+    summary["surface_fit_tile_count"] = len(valid_tiles)
+    summary["excluded_tile_count"] = len(tiles) - len(valid_tiles)
     summary["plane"] = plane
     _safe_json_dump(summary_path, summary)
     return summary
@@ -1476,8 +1559,13 @@ class FlattenWindow(DiagnosticsWidget):
         self._current_root_dir = Path(str(summary["acquisition"]["output_root"]))
         plane = summary["plane"]
         tiles = summary.get("tiles", [])
+        included_tiles = int(summary.get("surface_fit_tile_count", sum(
+            bool(tile["fit"].get("accepted_for_surface_fit", False)) for tile in tiles
+        )))
+        excluded_tiles = len(tiles) - included_tiles
         self.summary_label.setText(
-            f"Loaded {len(tiles)} tile fits from {self._current_root_dir}. "
+            f"Loaded {len(tiles)} tile fits from {self._current_root_dir}: "
+            f"{included_tiles} included, {excluded_tiles} excluded for incomplete plateaus. "
             f"Plane residual RMS: {float(plane['residual_rms_um']):.2f} um."
         )
         self.correction_label.setText(
@@ -1630,7 +1718,11 @@ class FlattenWindow(DiagnosticsWidget):
 
     def _render_surface_views(self) -> None:
         assert self._flatness_summary is not None
-        tiles = [tile for tile in self._flatness_summary.get("tiles", []) if tile["fit"].get("midpoint_um") is not None]
+        tiles = [
+            tile
+            for tile in self._flatness_summary.get("tiles", [])
+            if tile["fit"].get("accepted_for_surface_fit", False)
+        ]
         self.plane_figure.clear()
         if not tiles:
             axis = self.plane_figure.add_subplot(111)
@@ -1689,7 +1781,7 @@ class FlattenWindow(DiagnosticsWidget):
         self._tile_records_by_grid.clear()
         self._tile_row_edges = np.asarray([chunk[0] for chunk in row_chunks] + [row_chunks[-1][-1] + 1], dtype=float)
         self._tile_col_edges = np.asarray([chunk[0] for chunk in col_chunks] + [col_chunks[-1][-1] + 1], dtype=float)
-        z_grid = np.full((len(row_chunks), len(col_chunks)), np.nan, dtype=float)
+        z_grid = np.ma.masked_all((len(row_chunks), len(col_chunks)), dtype=float)
         for tile in self._flatness_summary.get("tiles", []):
             row = int(tile["row"])
             col = int(tile["column"])
@@ -1700,26 +1792,34 @@ class FlattenWindow(DiagnosticsWidget):
             midpoint = tile["fit"].get("midpoint_um")
             if midpoint is None:
                 continue
-            z_grid[row, col] = float(midpoint)
             self._tile_records_by_grid[(row, col)] = (tile, image)
+            if tile["fit"].get("accepted_for_surface_fit", False):
+                z_grid[row, col] = float(midpoint)
         axis = self.tile_gallery_figure.add_subplot(111)
         self._tile_gallery_axis = axis
+        from matplotlib import colormaps
+
+        cmap = colormaps["viridis"].copy()
+        cmap.set_bad("black")
         mesh = axis.pcolormesh(
             self._tile_col_edges,
             self._tile_row_edges,
             z_grid,
             shading="flat",
-            cmap="viridis",
+            cmap=cmap,
             edgecolors="white",
             linewidth=1.0,
         )
         colorbar = self.tile_gallery_figure.colorbar(mesh, ax=axis, pad=0.02)
-        colorbar.set_label("Fitted transition Z (um)")
+        colorbar.set_label("Accepted fitted transition Z (um)")
         for (row, col), (tile, _) in self._tile_records_by_grid.items():
-            midpoint = float(tile["fit"]["midpoint_um"])
             x_center = (self._tile_col_edges[col] + self._tile_col_edges[col + 1]) / 2.0
             y_center = (self._tile_row_edges[row] + self._tile_row_edges[row + 1]) / 2.0
-            axis.text(x_center, y_center, f"{midpoint:.1f}", color="red", ha="center", va="center", fontsize=8, fontweight="bold")
+            if tile["fit"].get("accepted_for_surface_fit", False):
+                label = f"{float(tile['fit']['midpoint_um']):.1f}"
+            else:
+                label = "X"
+            axis.text(x_center, y_center, label, color="red", ha="center", va="center", fontsize=8, fontweight="bold")
         axis.set_xlim(self._tile_col_edges[0], self._tile_col_edges[-1])
         axis.set_ylim(self._tile_row_edges[-1], self._tile_row_edges[0])
         axis.set_aspect("equal")
@@ -1763,7 +1863,11 @@ class FlattenWindow(DiagnosticsWidget):
             profile_axis.axvline(float(midpoint), color="black", linestyle="--", label=f"Midpoint {float(midpoint):.2f} um")
         profile_axis.set_xlabel("Relative Z (um)")
         profile_axis.set_ylabel("Mean tile brightness")
-        profile_axis.set_title("Brightness across Z")
+        if fit.get("accepted_for_surface_fit", False):
+            profile_axis.set_title("Brightness across Z: included in surface fit")
+        else:
+            reasons = ", ".join(str(reason).replace("_", " ") for reason in fit.get("rejection_reasons", []))
+            profile_axis.set_title(f"Brightness across Z: excluded ({reasons or 'plateau check failed'})")
         profile_axis.grid(True, alpha=0.3)
         profile_axis.legend(fontsize=7)
         self.tile_detail_canvas.draw_idle()
@@ -1846,7 +1950,11 @@ class FlattenWindow(DiagnosticsWidget):
     def _show_surface_and_plane_views(self) -> None:
         if self._flatness_summary is None:
             return
-        tiles = [tile for tile in self._flatness_summary.get("tiles", []) if tile["fit"].get("midpoint_um") is not None]
+        tiles = [
+            tile
+            for tile in self._flatness_summary.get("tiles", [])
+            if tile["fit"].get("accepted_for_surface_fit", False)
+        ]
         if not tiles:
             return
         plane = self._flatness_summary["plane"]
