@@ -5693,6 +5693,7 @@ class ScanImageControlWidget(QWidget):
         prep_state.phase_mask_batch_status = "preparing"
         prep_state.phase_mask_batch_error = ""
         self._clear_pending_photostim_trial_state(prep_state)
+        photostim_prep_started = time.perf_counter()
         self._import_pattern_subset(
             photostim_path,
             schema_path,
@@ -5702,6 +5703,7 @@ class ScanImageControlWidget(QWidget):
             prepared_seq_num=planned_seq_num,
             prepared_trial_seq_nums=[planned_seq_num],
         )
+        photostim_prep_duration = time.perf_counter() - photostim_prep_started
         self.signals.log_message.emit(
             f"[{photostim_path}] TIMING start_trial preparation through ScanImage: "
             f"{time.perf_counter() - request_started:.3f}s"
@@ -5747,7 +5749,7 @@ class ScanImageControlWidget(QWidget):
             f"{len(stimulus_group_nums)} stimulus group advance(s)"
         )
         self.signals.simple_status_message.emit(
-            f"Photostim preparation completed: trial {trial_index}, "
+            f"Photostim preparation completed in {photostim_prep_duration:.3f}s: trial {trial_index}, "
             f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}"
         )
         self._send_json_reply(
