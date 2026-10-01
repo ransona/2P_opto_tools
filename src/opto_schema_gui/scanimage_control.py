@@ -4356,28 +4356,55 @@ class ScanImageControlWidget(QWidget):
         prepared_seq_num: int | None = None,
         prepared_trial_seq_nums: list[int] | None = None,
     ) -> None:
+        import_started = time.perf_counter()
+        self.signals.log_message.emit(
+            f"[{path_name}] TIMING per-trial import begin: prepare_sequence={prepare_sequence} "
+            f"start_photostim={start_photostim}"
+        )
         if prepare_sequence or start_photostim:
+            schema_load_started = time.perf_counter()
             project = load_schema(schema_path)
             required_seq_nums = []
             if prepared_seq_num is not None:
                 required_seq_nums.append(int(prepared_seq_num))
             required_seq_nums.extend(int(value) for value in (prepared_trial_seq_nums or []))
             self._validate_schema_for_photostim(project, required_seq_nums)
+            self.signals.log_message.emit(
+                f"[{path_name}] TIMING Python schema load/validation: "
+                f"{time.perf_counter() - schema_load_started:.3f}s"
+            )
         runtime = self._ensure_session(path_name)
         schema_json_path: Path | None = None
         if prepare_sequence or start_photostim:
+            payload_started = time.perf_counter()
             schema_payload = yaml.safe_load(schema_path.read_text()) or {}
             schema_json_path = runtime.path_config.directory / "_opto_schema_payload.json"
             schema_json_path.write_text(json.dumps(schema_payload, separators=(",", ":")))
+            self.signals.log_message.emit(
+                f"[{path_name}] TIMING schema payload read/write: "
+                f"{time.perf_counter() - payload_started:.3f}s path={schema_json_path}"
+            )
         with runtime.lock:
             assert runtime.session is not None
             if prepare_sequence or start_photostim:
                 assert schema_json_path is not None
+                payload_command_started = time.perf_counter()
+                self.signals.log_message.emit(
+                    f"[{path_name}] TIMING MATLAB payload-load begin"
+                )
                 lines = runtime.session.eval(
                     build_schema_payload_load_command(runtime.path_config, schema_json_path=schema_json_path),
                     timeout_s=runtime.path_config.command_timeout_s,
                 )
+                self.signals.log_message.emit(
+                    f"[{path_name}] TIMING MATLAB payload-load end: "
+                    f"{time.perf_counter() - payload_command_started:.3f}s"
+                )
                 self._emit_lines(path_name, lines)
+                prepare_command_started = time.perf_counter()
+                self.signals.log_message.emit(
+                    f"[{path_name}] TIMING MATLAB photostim-prepare begin"
+                )
                 lines = runtime.session.eval(
                     build_prepare_schema_photostim_command(
                         runtime.path_config,
@@ -4385,6 +4412,10 @@ class ScanImageControlWidget(QWidget):
                         [] if prepared_trial_seq_nums is None else list(prepared_trial_seq_nums),
                     ),
                     timeout_s=runtime.path_config.command_timeout_s,
+                )
+                self.signals.log_message.emit(
+                    f"[{path_name}] TIMING MATLAB photostim-prepare end: "
+                    f"{time.perf_counter() - prepare_command_started:.3f}s"
                 )
             else:
                 lines = runtime.session.eval(
@@ -4401,6 +4432,10 @@ class ScanImageControlWidget(QWidget):
             runtime.status = "photostim ready" if start_photostim else "patterns imported"
             self.signals.path_status.emit(path_name, runtime.status)
             self._emit_lines(path_name, lines)
+        self.signals.log_message.emit(
+            f"[{path_name}] TIMING per-trial import total: "
+            f"{time.perf_counter() - import_started:.3f}s"
+        )
         if schema_json_path is not None:
             try:
                 schema_json_path.unlink(missing_ok=True)
@@ -5531,6 +5566,10 @@ class ScanImageControlWidget(QWidget):
         if trial_index_raw is None:
             raise ValueError("start_trial requires trial_index")
         trial_index = int(trial_index_raw)
+        request_started = time.perf_counter()
+        self.signals.log_message.emit(
+            f"[{request_path_name}] TIMING start_trial received: trial_index={trial_index}"
+        )
         condition_index = self._condition_index_for_trial_index(tracking, trial_index)
         if condition_index < 0 or condition_index >= len(tracking.stimulus_conditions):
             raise IndexError(
@@ -5598,6 +5637,7 @@ class ScanImageControlWidget(QWidget):
         schema_path = prep_state.schema_path
         if schema_path is None:
             raise ValueError("No registered schema path is available for per-trial preparation.")
+        planning_started = time.perf_counter()
         project = load_schema(schema_path)
         self._validate_schema_for_photostim(project, [planned_seq_num])
         sequence_names = list(project.sequences.keys())
@@ -5612,6 +5652,10 @@ class ScanImageControlWidget(QWidget):
             f"[{photostim_path}] per-trial preparation {trial_index}: sequence '{sequence_name}', "
             f"{len(pattern_names)} unique schema pattern(s)"
         )
+        self.signals.log_message.emit(
+            f"[{photostim_path}] TIMING Python trial planning: "
+            f"{time.perf_counter() - planning_started:.3f}s"
+        )
         prep_state.phase_mask_batch_status = "preparing"
         prep_state.phase_mask_batch_error = ""
         self._clear_pending_photostim_trial_state(prep_state)
@@ -5623,6 +5667,10 @@ class ScanImageControlWidget(QWidget):
             start_photostim=True,
             prepared_seq_num=planned_seq_num,
             prepared_trial_seq_nums=[planned_seq_num],
+        )
+        self.signals.log_message.emit(
+            f"[{photostim_path}] TIMING start_trial preparation through ScanImage: "
+            f"{time.perf_counter() - request_started:.3f}s"
         )
         prep_state.prepared_seq_nums = [planned_seq_num]
         prep_state.prepared_sequence_names = [sequence_name]
@@ -5651,6 +5699,10 @@ class ScanImageControlWidget(QWidget):
             schema_name=tracking.schema_name,
             exp_id=tracking.exp_id,
             seq_num=planned_seq_num,
+        )
+        self.signals.log_message.emit(
+            f"[{photostim_path}] TIMING start_trial waveform arm: "
+            f"{time.perf_counter() - request_started:.3f}s total"
         )
         prep_state.triggered_seq_num = planned_seq_num
         prep_state.triggered_sequence_name = sequence_name
@@ -6732,6 +6784,11 @@ class ScanImageControlWidget(QWidget):
     ) -> None:
         if not stimulus_group_nums:
             raise ValueError("No prepared stimulus groups are available for this sequence.")
+        trigger_started = time.perf_counter()
+        self.signals.log_message.emit(
+            f"[{path_name}] TIMING trigger/waveform setup begin: "
+            f"groups={len(stimulus_group_nums)} pulses={len(trigger_times_s)}"
+        )
         runtime = self._ensure_session(path_name)
         prep_state = runtime.prepared_photostim
         self._cancel_software_trigger(path_name)
@@ -6739,6 +6796,10 @@ class ScanImageControlWidget(QWidget):
         if len(trigger_times_s) != len(stimulus_group_nums):
             raise ValueError("Trigger timing does not match the planned triggered stimulus sequence.")
         trigger_lines = self._apply_trigger_sequence(path_name, stimulus_group_nums)
+        self.signals.log_message.emit(
+            f"[{path_name}] TIMING trigger sequence programmed: "
+            f"{time.perf_counter() - trigger_started:.3f}s"
+        )
         prep_state.triggered_insert_position = self._extract_marker_int(trigger_lines, "TRIGGER_PHOTOSTIM_INSERT_POSITION")
         prep_state.triggered_idle_position = self._extract_marker_int(trigger_lines, "TRIGGER_PHOTOSTIM_IDLE_POSITION")
 
@@ -6748,6 +6809,10 @@ class ScanImageControlWidget(QWidget):
         prep_state.waveform_expected_done_time_s = None
 
         baseline_active, baseline_position, _, baseline_completed, _ = self._query_photostim_sequence_state(path_name)
+        self.signals.log_message.emit(
+            f"[{path_name}] TIMING photostim state query: "
+            f"{time.perf_counter() - trigger_started:.3f}s"
+        )
         if not baseline_active:
             raise RuntimeError("Photostim is not active after programming the trigger sequence.")
 
@@ -6758,6 +6823,10 @@ class ScanImageControlWidget(QWidget):
             prep_state.remaining_expected_triggers = len(trigger_times_s)
             prep_state.waveform_expected_done_time_s = trigger_times_s[-1] if trigger_times_s else 0.0
             self._prepare_trial_waveform(path_name, trigger_times_s, external_start=False)
+            self.signals.log_message.emit(
+                f"[{path_name}] TIMING waveform prepared: "
+                f"{time.perf_counter() - trigger_started:.3f}s"
+            )
             self._start_waveform_software_playback(
                 path_name,
                 sequence_name,
@@ -6776,6 +6845,10 @@ class ScanImageControlWidget(QWidget):
             prep_state.remaining_expected_triggers = len(trigger_times_s)
             prep_state.waveform_expected_done_time_s = trigger_times_s[-1] if trigger_times_s else 0.0
             self._prepare_trial_waveform(path_name, trigger_times_s, external_start=True)
+            self.signals.log_message.emit(
+                f"[{path_name}] TIMING waveform prepared: "
+                f"{time.perf_counter() - trigger_started:.3f}s"
+            )
             self._start_waveform_external_monitor(
                 path_name,
                 sequence_name,
