@@ -4836,6 +4836,26 @@ class ScanImageControlWidget(QWidget):
                 },
             )
 
+    def _process_start_trial_udp(
+        self,
+        path_name: str,
+        message: dict[str, object],
+        address: tuple[str, int],
+    ) -> None:
+        try:
+            runtime = self._runtimes[path_name]
+            # Preparation changes ScanImage photostim state. Keep it serialized
+            # with experiment updates and defer the reply until the trial is armed.
+            with runtime.experiment_update_lock:
+                self._handle_start_trial_request(path_name, message, address)
+        except Exception as exc:
+            self.signals.log_message.emit(f"[{path_name}] start_trial preparation failed: {exc}")
+            self._send_json_reply(
+                path_name,
+                address,
+                {"action": "start_trial", "status": "error", "error": str(exc)},
+            )
+
     def _extract_json_command(self, payload: bytes) -> dict[str, object] | None:
         try:
             decoded = payload.decode("utf-8").strip()
@@ -4874,24 +4894,13 @@ class ScanImageControlWidget(QWidget):
         if action == "start_trial":
             trial_index_raw = message.get("trial_index")
             self.signals.log_message.emit(
-                f"[{path_name}] updated current trial selection to index={trial_index_raw}"
+                f"[{path_name}] requested per-trial photostim preparation for index={trial_index_raw}"
             )
-            try:
-                self._handle_start_trial_request(
-                    request_path_name=path_name,
-                    message=message,
-                    reply_address=address,
-                )
-            except Exception as exc:
-                self._send_json_reply(
-                    path_name,
-                    address,
-                    {
-                        "action": "start_trial",
-                        "status": "error",
-                        "error": str(exc),
-                    },
-                )
+            threading.Thread(
+                target=self._process_start_trial_udp,
+                args=(path_name, dict(message), address),
+                daemon=True,
+            ).start()
             return
 
         if action == "prep_patterns":
@@ -5229,17 +5238,122 @@ class ScanImageControlWidget(QWidget):
             raise IndexError(
                 f"Resolved condition index {condition_index} is out of range for {len(tracking.stimulus_conditions)} stimulus condition(s)"
             )
+
         tracking.current_trial_order_index = trial_index
         tracking.current_trial_index = condition_index
         tracking.current_stimulus_condition = dict(tracking.stimulus_conditions[condition_index])
         selected_stimulus_id = tracking.current_stimulus_condition.get("stimulus_id")
         self.signals.log_message.emit(
-            f"[{request_path_name}] current trial set to trial_index={trial_index} condition_index={condition_index}"
+            f"[{request_path_name}] preparing trial_index={trial_index} condition_index={condition_index}"
             + (f" stimulus_id={selected_stimulus_id}" if selected_stimulus_id is not None else "")
         )
         with self._online_analysis.lock:
             self._online_analysis.current_condition_index = condition_index
 
+        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
+        if not photostim_path:
+            raise ValueError("No photostim path configured")
+        prep_state = self._runtimes[photostim_path].prepared_photostim
+        if prep_state.exp_id != tracking.exp_id or prep_state.schema_name != tracking.schema_name:
+            raise ValueError(
+                "start_trial requires prep_patterns to register the current experiment before trials begin."
+            )
+        if trial_index >= len(prep_state.planned_trial_seq_nums):
+            raise IndexError(
+                f"trial_index {trial_index} is outside registered trial plan of "
+                f"{len(prep_state.planned_trial_seq_nums)} trial(s)"
+            )
+
+        planned_seq_num = prep_state.planned_trial_seq_nums[trial_index]
+        if planned_seq_num is None:
+            self.signals.log_message.emit(
+                f"[{photostim_path}] trial {trial_index} has no opto_2p feature; releasing prior photostim state"
+            )
+            self._abort_photo_stim(photostim_path)
+            prep_state.phase_mask_batch_status = "ready"
+            self._clear_pending_photostim_trial_state(prep_state)
+            self._send_json_reply(
+                request_path_name,
+                reply_address,
+                {
+                    "action": "start_trial",
+                    "status": "ready",
+                    "expID": tracking.exp_id,
+                    "schema_name": tracking.schema_name,
+                    "trial_index": trial_index,
+                    "condition_index": condition_index,
+                    "opto_enabled": False,
+                },
+            )
+            return
+
+        schema_path = prep_state.schema_path
+        if schema_path is None:
+            raise ValueError("No registered schema path is available for per-trial preparation.")
+        project = load_schema(schema_path)
+        self._validate_schema_for_photostim(project, [planned_seq_num])
+        sequence_names = list(project.sequences.keys())
+        sequence_name = sequence_names[planned_seq_num]
+        pattern_names = [
+            name
+            for name in project.patterns.keys()
+            if name in self._sequence_pattern_name_sets(project)[planned_seq_num]
+        ]
+
+        self.signals.log_message.emit(
+            f"[{photostim_path}] per-trial preparation {trial_index}: sequence '{sequence_name}', "
+            f"{len(pattern_names)} unique schema pattern(s)"
+        )
+        prep_state.phase_mask_batch_status = "preparing"
+        prep_state.phase_mask_batch_error = ""
+        self._clear_pending_photostim_trial_state(prep_state)
+        self._import_pattern_subset(
+            photostim_path,
+            schema_path,
+            pattern_names,
+            prepare_sequence=True,
+            start_photostim=True,
+            prepared_seq_num=planned_seq_num,
+            prepared_trial_seq_nums=[planned_seq_num],
+        )
+        prep_state.prepared_seq_nums = [planned_seq_num]
+        prep_state.prepared_sequence_names = [sequence_name]
+        prep_state.imported_pattern_names = list(pattern_names)
+        prep_state.pattern_to_schema_index = {
+            name: index + 1 for index, name in enumerate(project.patterns.keys()) if name in pattern_names
+        }
+        prep_state.sequence_to_stimulus_group, prep_state.sequence_to_stimulus_groups = self._sequence_group_mappings(
+            self._runtimes[photostim_path], project, [sequence_name]
+        )
+        prep_state.prepared_trial_start_index = trial_index
+        prep_state.prepared_trial_stop_index = trial_index
+        prep_state.prepared_opto_trial_indices = [trial_index]
+        prep_state.phase_mask_batch_pattern_names = list(pattern_names)
+        prep_state.phase_mask_batch_status = "ready"
+
+        _, stimulus_group_nums, trigger_times_s, stimulus_pattern_numbers = self._resolve_trigger_groups(
+            project, planned_seq_num, prep_state.sequence_to_stimulus_groups
+        )
+        self._trigger_photo_stim_checked(
+            photostim_path,
+            stimulus_group_nums,
+            trigger_times_s,
+            stimulus_pattern_numbers,
+            sequence_name,
+            schema_name=tracking.schema_name,
+            exp_id=tracking.exp_id,
+            seq_num=planned_seq_num,
+        )
+        prep_state.triggered_seq_num = planned_seq_num
+        prep_state.triggered_sequence_name = sequence_name
+        prep_state.triggered_stimulus_groups = list(stimulus_group_nums)
+        if self.online_analysis_enabled():
+            self._configure_online_analysis_if_possible()
+
+        self.signals.log_message.emit(
+            f"[{photostim_path}] trial {trial_index} armed and ready: sequence '{sequence_name}', "
+            f"{len(stimulus_group_nums)} stimulus group advance(s)"
+        )
         self._send_json_reply(
             request_path_name,
             reply_address,
@@ -5250,7 +5364,11 @@ class ScanImageControlWidget(QWidget):
                 "schema_name": tracking.schema_name,
                 "trial_index": trial_index,
                 "condition_index": condition_index,
-                "stimulus_condition": tracking.current_stimulus_condition,
+                "opto_enabled": True,
+                "seq_num": planned_seq_num,
+                "sequence_name": sequence_name,
+                "stimulus_group_count": len(stimulus_group_nums),
+                "pattern_count": len(pattern_names),
             },
         )
 
@@ -5293,7 +5411,7 @@ class ScanImageControlWidget(QWidget):
 
         schema_path = self._resolve_schema_path(schema_name, exp_id)
         self.signals.log_message.emit("--------------------")
-        self.signals.log_message.emit("Pre-building all stimulus groups for experiment")
+        self.signals.log_message.emit("Registering full trial plan for per-trial photostim preparation")
         self.signals.log_message.emit(f"Loading schema: {schema_path}")
         project = load_schema(schema_path)
         self._validate_schema_for_photostim(project, [seq_num])
@@ -5308,16 +5426,12 @@ class ScanImageControlWidget(QWidget):
             raise ValueError(
                 "prep_patterns requires update_experiment_params to include trial_condition_indices for the full experiment trial order."
             )
-        if (
-            prep_state.schema_path is None
-            or prep_state.schema_path != schema_path
-            or prep_state.exp_id != exp_id
-            or prep_state.schema_name != schema_name
-        ):
-            prep_state.reset()
-            prep_state.schema_path = schema_path
-            prep_state.schema_name = schema_name
-            prep_state.exp_id = exp_id
+        # Registration is metadata-only, but it supersedes every previous
+        # per-trial mapping so a retried registration cannot reuse stale groups.
+        prep_state.reset()
+        prep_state.schema_path = schema_path
+        prep_state.schema_name = schema_name
+        prep_state.exp_id = exp_id
 
         sequence_names = list(project.sequences.keys())
         planned_trial_seq_nums: list[int | None] = []
@@ -5341,79 +5455,34 @@ class ScanImageControlWidget(QWidget):
             planned_trial_seq_nums.append(int(resolved_seq_num))
         if not any(seq_num is not None for seq_num in planned_trial_seq_nums):
             raise ValueError("prep_patterns did not find any planned trials with an enabled opto_2p feature.")
-        batch_size = self._phase_mask_batch_size()
-        initial_plan = self._build_phase_mask_batch_plan(
-            project,
-            planned_trial_seq_nums,
-            start_index=0,
-            batch_size=batch_size,
-            batch_index=1,
-        )
-        if initial_plan is None:
-            raise ValueError("No opto trials were found in the planned trial sequence.")
         prep_state.planned_trial_seq_nums = list(planned_trial_seq_nums)
-        prep_state.phase_mask_batch_size = batch_size
-        prep_state.phase_mask_batch_status = "preparing"
+        prep_state.phase_mask_batch_status = "registered"
         prep_state.phase_mask_batch_error = ""
-        prep_state.phase_mask_batch_index = initial_plan.batch_index
-        self._log_phase_mask_batch_plan(photostim_path, initial_plan, batch_size)
-
-        def worker() -> None:
-            def run_initial_batch(name: str) -> None:
-                try:
-                    self._prepare_phase_mask_batch(name, schema_path, project, initial_plan)
-                except Exception as exc:
-                    prep_state.phase_mask_batch_status = "error"
-                    prep_state.phase_mask_batch_error = str(exc)
-                    raise
-
-            ok = self._run_action(
-                photostim_path,
-                "Pre-building phase-mask batch 1 for experiment",
-                run_initial_batch,
-            )
-            prep_state_local = self._runtimes[photostim_path].prepared_photostim
-            status = "ready" if ok else "error"
-            payload = {
-                "action": "prep_patterns",
-                "status": status,
-                "schema_name": schema_name,
-                "expID": exp_id,
-                "seq_num": seq_num,
-                "prepared_seq_nums": list(prep_state_local.prepared_seq_nums),
-                "prepared_sequence_names": list(prep_state_local.prepared_sequence_names),
-                "planned_trial_seq_nums": list(planned_trial_seq_nums),
-                "skipped_non_opto_trials": list(skipped_non_opto_trials),
-                "pattern_names": list(prep_state_local.imported_pattern_names),
-                "phase_mask_batch_size": prep_state_local.phase_mask_batch_size,
-                "phase_mask_batch_index": prep_state_local.phase_mask_batch_index,
-                "prepared_trial_start_index": prep_state_local.prepared_trial_start_index,
-                "prepared_trial_stop_index": prep_state_local.prepared_trial_stop_index,
-                "prepared_opto_trial_indices": list(prep_state_local.prepared_opto_trial_indices),
-                "stimulus_groups": [],
-            }
-            if ok:
-                payload["stimulus_groups"] = [
-                    {
-                        "stimulus_group_nums": prep_state_local.sequence_to_stimulus_groups[sequence_name],
-                        "sequence_name": sequence_name,
-                        "seq_num": seq_num_value,
-                    }
-                    for seq_num_value, sequence_name in zip(
-                        prep_state_local.prepared_seq_nums,
-                        prep_state_local.prepared_sequence_names,
-                    )
-                ]
-            else:
-                prep_state_local.phase_mask_batch_status = "error"
-                payload["error"] = prep_state_local.phase_mask_batch_error or "prep_patterns failed"
-
-            if reply_address is not None:
-                self._send_json_reply(request_path_name, reply_address, payload)
-            else:
-                self.signals.log_message.emit(f"[config] gui prep_patterns result={payload}")
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._clear_pending_photostim_trial_state(prep_state)
+        self.signals.log_message.emit(
+            f"[{photostim_path}] registered {len(planned_trial_seq_nums)} planned trial(s) for per-trial photostim preparation; "
+            "no ScanImage masks or analogue waveforms were generated."
+        )
+        if self.online_analysis_enabled():
+            self._configure_online_analysis_if_possible()
+        payload = {
+            "action": "prep_patterns",
+            "status": "ready",
+            "schema_name": schema_name,
+            "expID": exp_id,
+            "seq_num": seq_num,
+            "preparation_mode": "per_trial",
+            "planned_trial_seq_nums": list(planned_trial_seq_nums),
+            "skipped_non_opto_trials": list(skipped_non_opto_trials),
+            "prepared_seq_nums": [],
+            "prepared_sequence_names": [],
+            "pattern_names": [],
+            "stimulus_groups": [],
+        }
+        if reply_address is not None:
+            self._send_json_reply(request_path_name, reply_address, payload)
+        else:
+            self.signals.log_message.emit(f"[config] gui prep_patterns result={payload}")
 
     def _handle_trigger_photo_stim_request(
         self,
@@ -5444,6 +5513,11 @@ class ScanImageControlWidget(QWidget):
         prep_state = runtime.prepared_photostim
         if prep_state.schema_path != schema_path or prep_state.schema_name != schema_name or prep_state.exp_id != exp_id:
             raise ValueError("trigger_photo_stim requires matching prepared photostim state. Run prep_patterns first.")
+        if prep_state.prepared_trial_start_index is not None:
+            raise ValueError(
+                "Per-trial photostim is already armed by start_trial. "
+                "Do not send trigger_photo_stim; start the physical trial only after start_trial returns ready."
+            )
         if prep_state.phase_mask_batch_status == "preparing":
             raise ValueError("Phase-mask batch preparation is still in progress.")
         if prep_state.phase_mask_batch_status == "error":
@@ -5851,15 +5925,6 @@ class ScanImageControlWidget(QWidget):
             running = True
             reason = "trial_running_or_armed"
             expected_idle_after_s = max(0, idle_position - position) * block_duration_s
-
-        current_trial_index = runtime.experiment_tracking.current_trial_order_index
-        if idle and reason == "terminal_idle_park_reached":
-            next_batch_started = self._start_next_phase_mask_batch_if_needed(path_name, current_trial_index)
-            if next_batch_started:
-                idle = False
-                running = True
-                reason = "preparing_phase_mask_batch"
-                expected_idle_after_s = 1.0
 
         payload: dict[str, object] = {
             "action": "check_idle",
