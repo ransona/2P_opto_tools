@@ -934,9 +934,7 @@ class UpdateProgressDialog(QDialog):
         scrollbar.setValue(scrollbar.maximum())
 
     def set_finished(self, success: bool, detail: str) -> None:
-        self.status_label.setText(
-            "Update complete. Restarting application..." if success else f"Update failed: {detail}"
-        )
+        self.status_label.setText(f"{detail} Restarting application..." if success else f"Operation failed: {detail}")
         self.close_btn.setEnabled(True)
 
     def closeEvent(self, event) -> None:
@@ -944,6 +942,72 @@ class UpdateProgressDialog(QDialog):
             event.ignore()
             return
         super().closeEvent(event)
+
+
+class RepoVersionDialog(QDialog):
+    """Let the user select a historical commit to run temporarily."""
+
+    def __init__(self, commits: list[tuple[str, str, str, str, str]], current_sha: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._selected_sha = ""
+        self.setWindowTitle("Choose Repository Version")
+        self.resize(900, 560)
+
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "Select a commit to run. The application will check it out in detached mode and restart. "
+            "Tracked local changes must be clean; use this selector again to choose another version."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.commit_table = QTableWidget(len(commits), 4)
+        self.commit_table.setHorizontalHeaderLabels(["Commit", "Date", "Author", "Message"])
+        self.commit_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.commit_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.commit_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for row, (sha, short_sha, date, author, subject) in enumerate(commits):
+            commit_label = f"{short_sha} (current)" if sha == current_sha else short_sha
+            values = [commit_label, date, author, subject]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, sha)
+                self.commit_table.setItem(row, column, item)
+            if sha == current_sha:
+                self.commit_table.selectRow(row)
+        self.commit_table.resizeColumnsToContents()
+        self.commit_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.commit_table, 1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        self.cancel_btn = QPushButton("Cancel")
+        self.switch_btn = QPushButton("Switch And Restart")
+        self.switch_btn.setEnabled(self.commit_table.currentRow() >= 0)
+        button_row.addWidget(self.cancel_btn)
+        button_row.addWidget(self.switch_btn)
+        layout.addLayout(button_row)
+
+        self.cancel_btn.clicked.connect(self.reject)
+        self.switch_btn.clicked.connect(self._accept_selected)
+        self.commit_table.itemDoubleClicked.connect(lambda _item: self._accept_selected())
+        self.commit_table.itemSelectionChanged.connect(
+            lambda: self.switch_btn.setEnabled(self.commit_table.currentRow() >= 0)
+        )
+
+    @property
+    def selected_sha(self) -> str:
+        return self._selected_sha
+
+    def _accept_selected(self) -> None:
+        row = self.commit_table.currentRow()
+        item = self.commit_table.item(row, 0) if row >= 0 else None
+        sha = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(sha, str) or not sha:
+            return
+        self._selected_sha = sha
+        self.accept()
 
 
 class ScanImageControlWidget(QWidget):
@@ -3027,6 +3091,99 @@ class ScanImageControlWidget(QWidget):
     def update_and_restart(self) -> None:
         self._update_and_restart()
 
+    def choose_repo_version(self) -> None:
+        if self._update_in_progress:
+            QMessageBox.information(self, "Repository operation", "A repository operation is already in progress.")
+            return
+        try:
+            history_result = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    "--all",
+                    "--date=short",
+                    "--pretty=format:%H%x1f%h%x1f%ad%x1f%an%x1f%s",
+                    "-n",
+                    "100",
+                ],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            head_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Repository history", f"Could not run git:\n{exc}")
+            return
+        if history_result.returncode != 0 or head_result.returncode != 0:
+            detail = (history_result.stderr or head_result.stderr or "Unknown git error").strip()
+            QMessageBox.critical(self, "Repository history", f"Could not read repository history:\n{detail}")
+            return
+
+        commits: list[tuple[str, str, str, str, str]] = []
+        for line in history_result.stdout.splitlines():
+            fields = line.split("\x1f", 4)
+            if len(fields) == 5 and fields[0]:
+                commits.append((fields[0], fields[1], fields[2], fields[3], fields[4]))
+        if not commits:
+            QMessageBox.warning(self, "Repository history", "No commits were found in this repository.")
+            return
+
+        dialog = RepoVersionDialog(commits, head_result.stdout.strip(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.selected_sha:
+            return
+        if dialog.selected_sha == head_result.stdout.strip():
+            QMessageBox.information(self, "Repository version", "The selected version is already active.")
+            return
+        self._switch_repo_version_and_restart(dialog.selected_sha)
+
+    def _switch_repo_version_and_restart(self, target_sha: str) -> None:
+        self._update_in_progress = True
+        self._update_progress_dialog = UpdateProgressDialog(self)
+        self._update_progress_dialog.setWindowTitle("Switching 2P Opto Tools Version")
+        self._update_progress_dialog.status_label.setText(f"Preparing to switch to {target_sha[:12]}...")
+        self._update_progress_dialog.show()
+        QApplication.processEvents()
+        threading.Thread(target=self._run_repo_version_switch, args=(target_sha,), daemon=True).start()
+
+    def _run_repo_version_switch(self, target_sha: str) -> None:
+        try:
+            status_result = self._run_git_command(["status", "--porcelain", "--untracked-files=no"])
+            self._log_process_output("[version]", status_result)
+            if status_result.returncode != 0:
+                raise RuntimeError("Could not inspect git status before changing version.")
+            dirty_entries = [
+                line.rstrip()
+                for line in status_result.stdout.splitlines()
+                if line.strip() and not self._is_ignorable_git_status_entry(line.rstrip())
+            ]
+            if dirty_entries:
+                for entry in dirty_entries:
+                    self._report_update_progress(f"[version] local change: {entry}")
+                raise RuntimeError(
+                    "Tracked local changes are present. Sync or discard them before changing repository version."
+                )
+
+            checkout_result = self._run_git_command(["checkout", "--detach", target_sha])
+            self._log_process_output("[version]", checkout_result)
+            if checkout_result.returncode != 0:
+                raise RuntimeError(f"Could not check out commit {target_sha[:12]}.")
+            self._report_update_progress(f"[version] Checked out {target_sha[:12]} in detached mode")
+            self._relaunch_application()
+        except Exception as exc:
+            self._report_update_progress(f"[version] ERROR: {exc}")
+            self.signals.update_finished.emit(False, str(exc))
+            return
+
+        self._report_update_progress("[version] Restarting application")
+        self.signals.update_finished.emit(True, "Version switch complete.")
+
     def _update_and_restart(self) -> None:
         if self._update_in_progress:
             if self._update_progress_dialog is not None:
@@ -3125,19 +3282,7 @@ class ScanImageControlWidget(QWidget):
             if should_push_after_pull and not self._push_current_branch():
                 raise RuntimeError("Could not push local config changes after pulling.")
 
-            relaunch_cmd = self._relaunch_command()
-            self._report_update_progress(f"[update] Relaunching: {shlex.join(relaunch_cmd)}")
-            popen_kwargs: dict[str, object] = {
-                "cwd": self.repo_root,
-                "start_new_session": True,
-            }
-            if sys.platform.startswith("win"):
-                creationflags = 0
-                creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-                creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                if creationflags:
-                    popen_kwargs["creationflags"] = creationflags
-            subprocess.Popen(relaunch_cmd, **popen_kwargs)
+            self._relaunch_application()
         except Exception as exc:
             self._report_update_progress(f"[update] ERROR: {exc}")
             self.signals.update_finished.emit(False, str(exc))
@@ -3145,6 +3290,21 @@ class ScanImageControlWidget(QWidget):
 
         self._report_update_progress("[update] Restarting application")
         self.signals.update_finished.emit(True, "Update complete.")
+
+    def _relaunch_application(self) -> None:
+        relaunch_cmd = self._relaunch_command()
+        self._report_update_progress(f"[update] Relaunching: {shlex.join(relaunch_cmd)}")
+        popen_kwargs: dict[str, object] = {
+            "cwd": self.repo_root,
+            "start_new_session": True,
+        }
+        if sys.platform.startswith("win"):
+            creationflags = 0
+            creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if creationflags:
+                popen_kwargs["creationflags"] = creationflags
+        subprocess.Popen(relaunch_cmd, **popen_kwargs)
 
     def _append_update_progress(self, message: str) -> None:
         if self._update_progress_dialog is not None:
