@@ -19,7 +19,9 @@ arguments
     opts.EmbedBlankAndParkInStimGroup (1,1) logical = false
     opts.SingleEpochPattern (1,1) logical = false
     opts.NumSequences (1,1) double = 1
-    opts.BatchAssignGroups (1,1) logical = false
+    % Build all groups first, then assign once to avoid ScanImage's per-group
+    % SLM-listener redraw and coordinate-transform work.
+    opts.BatchAssignGroups (1,1) logical = true
 end
 
 prepTimer = tic();
