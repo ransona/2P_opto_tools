@@ -1749,6 +1749,7 @@ class ScanImageControlWidget(QWidget):
             seq_num, reason = self._condition_opto_seq_num(condition_payload, len(sequence_names))
             if seq_num is None:
                 condition.reason = reason
+                condition.label = f"{condition.label} (0 unique cells)"
                 continue
             sequence_name = sequence_names[seq_num]
             sequence = project.sequences[sequence_name]
@@ -1800,6 +1801,7 @@ class ScanImageControlWidget(QWidget):
                 condition.supported = True
             else:
                 condition.reason = "No cells were found in the condition sequence."
+            condition.label = f"{condition.label} ({len(condition.cell_roi_names)} unique cells)"
 
         if not cells_by_key:
             with self._online_analysis.lock:
@@ -4094,6 +4096,9 @@ class ScanImageControlWidget(QWidget):
         runtime = self._ensure_session(path_name)
         context = build_experiment_context(runtime.path_config, exp_id)
         self._last_exp_id = exp_id
+        self.signals.simple_status_message.emit(
+            f"Starting experiment {exp_id} on ScanImage {path_name}"
+        )
         with runtime.lock:
             assert runtime.session is not None
             lines = runtime.session.eval(
@@ -4107,6 +4112,9 @@ class ScanImageControlWidget(QWidget):
             runtime.last_context = context
             runtime.status = "acquiring"
             self.signals.path_status.emit(path_name, runtime.status)
+            self.signals.simple_status_message.emit(
+                f"ScanImage {path_name} grab started"
+            )
             self._emit_lines(path_name, lines)
 
     def _stop_acquisition(self, path_name: str) -> None:
@@ -4125,6 +4133,9 @@ class ScanImageControlWidget(QWidget):
                 )
                 runtime.status = "ready"
                 self.signals.path_status.emit(path_name, runtime.status)
+                self.signals.simple_status_message.emit(
+                    f"ScanImage {path_name} grab stopped"
+                )
                 self._emit_lines(path_name, lines)
         finally:
             if path_name == self._online_analysis.imaging_path:
@@ -4485,6 +4496,28 @@ class ScanImageControlWidget(QWidget):
                 pattern_names.add(step.pattern)
             sequence_patterns[seq_num] = pattern_names
         return sequence_patterns
+
+    def _sequence_unique_cell_count(self, project, seq_num: int) -> int:
+        sequence_name = list(project.sequences.keys())[seq_num]
+        sequence = project.sequences[sequence_name]
+        unique_cells: set[tuple[object, ...]] = set()
+        for step in sequence.steps:
+            pattern = project.patterns[step.pattern]
+            for cell in pattern.cells:
+                if cell.origin_processed_cell_id is not None:
+                    key = ("proc", int(cell.origin_processed_cell_id))
+                else:
+                    key = ("xyz", round(float(cell.x), 6), round(float(cell.y), 6), round(float(cell.z), 6))
+                unique_cells.add(key)
+        return len(unique_cells)
+
+    def _sequence_expected_duration_s(self, project, seq_num: int) -> float:
+        sequence_name = list(project.sequences.keys())[seq_num]
+        sequence = project.sequences[sequence_name]
+        return max(
+            (float(step.start_s) + float(project.patterns[step.pattern].duration_s) for step in sequence.steps),
+            default=0.0,
+        )
 
     def _validate_schema_for_photostim(self, project, required_seq_nums: list[int]) -> None:
         errors = project.validate()
@@ -5531,6 +5564,7 @@ class ScanImageControlWidget(QWidget):
             )
             return
 
+        schema_path: Path | None = None
         if schema_name:
             schema_path = self._resolve_schema_path(schema_name, exp_id)
             project = load_schema(schema_path)
@@ -5557,8 +5591,10 @@ class ScanImageControlWidget(QWidget):
 
         old_exp_id = tracking.exp_id
         if exp_id and exp_id != old_exp_id:
+            schema_status = str(schema_path) if schema_path is not None else "none"
             self.signals.simple_status_message.emit(
-                f"\n\n\nNew experiment started: {exp_id}"
+                f"\n\n\nNew experiment started: {exp_id}\n"
+                f"Schema file: {schema_status}"
             )
             self._clear_scanimage_state_for_new_experiment(old_exp_id, exp_id)
 
@@ -5674,7 +5710,7 @@ class ScanImageControlWidget(QWidget):
             self.signals.simple_status_message.emit(
                 f"Photostim preparation completed: trial {trial_index}, "
                 f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index} "
-                "(no photostim)"
+                "(no photostim, 0 unique cells, expected length unavailable)"
             )
             return
 
@@ -5686,6 +5722,8 @@ class ScanImageControlWidget(QWidget):
         self._validate_schema_for_photostim(project, [planned_seq_num])
         sequence_names = list(project.sequences.keys())
         sequence_name = sequence_names[planned_seq_num]
+        unique_cell_count = self._sequence_unique_cell_count(project, planned_seq_num)
+        expected_duration_s = self._sequence_expected_duration_s(project, planned_seq_num)
         pattern_names = [
             name
             for name in project.patterns.keys()
@@ -5760,11 +5798,13 @@ class ScanImageControlWidget(QWidget):
         )
         self.signals.simple_status_message.emit(
             f"Photostim preparation completed in {photostim_prep_duration:.3f}s: trial {trial_index}, "
-            f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}"
+            f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}, "
+            f"{unique_cell_count} unique cells, expected length {expected_duration_s:.3f}s"
         )
         self.signals.simple_status_message.emit(
             f"Awaiting BonVision start trigger: trial {trial_index}, "
-            f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}"
+            f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}, "
+            f"{unique_cell_count} unique cells, expected length {expected_duration_s:.3f}s"
         )
         self._send_json_reply(
             request_path_name,
