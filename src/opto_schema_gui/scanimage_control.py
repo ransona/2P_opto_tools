@@ -231,6 +231,7 @@ class PathRuntime:
     prepared_photostim: PreparedPhotostimState = field(default_factory=PreparedPhotostimState)
     experiment_tracking: ExperimentTrackingState = field(default_factory=ExperimentTrackingState)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    experiment_update_lock: threading.Lock = field(default_factory=threading.Lock)
     software_trigger_stop: threading.Event | None = None
     software_trigger_thread: threading.Thread | None = None
     waveform_monitor_stop: threading.Event | None = None
@@ -4809,12 +4810,18 @@ class ScanImageControlWidget(QWidget):
         address: tuple[str, int],
     ) -> None:
         try:
-            loaded_message = self._load_update_experiment_params_message(message)
-            self._handle_update_experiment_params_request(
-                request_path_name=path_name,
-                message=loaded_message,
-                reply_address=address,
-            )
+            runtime = self._runtimes[path_name]
+            with runtime.experiment_update_lock:
+                self.signals.log_message.emit(
+                    f"[{path_name}] processing update_experiment_params exclusively for expID="
+                    f"'{str(message.get('expID', '')).strip()}'"
+                )
+                loaded_message = self._load_update_experiment_params_message(message)
+                self._handle_update_experiment_params_request(
+                    request_path_name=path_name,
+                    message=loaded_message,
+                    reply_address=address,
+                )
         except Exception as exc:
             self.signals.log_message.emit(
                 f"[{path_name}] update_experiment_params failed: {exc}"
@@ -5128,6 +5135,28 @@ class ScanImageControlWidget(QWidget):
                 f"{len(stimulus_conditions)} stimulus condition(s)"
             )
 
+        normalized_params = {k: v for k, v in message.items() if k != "action"}
+        normalized_params["stimulus_conditions"] = stimulus_conditions
+        normalized_params["trial_condition_indices"] = trial_condition_indices
+        if tracking.exp_id == exp_id and tracking.params == normalized_params:
+            self.signals.log_message.emit(
+                f"[{request_path_name}] duplicate update_experiment_params for expID='{exp_id}'; "
+                "state is already current, returning ready without ScanImage mutation"
+            )
+            self._send_json_reply(
+                request_path_name,
+                reply_address,
+                {
+                    "action": "update_experiment_params",
+                    "status": "ready",
+                    "expID": exp_id,
+                    "schema_name": tracking.schema_name,
+                    "stimulus_condition_count": len(stimulus_conditions),
+                    "trial_count": len(trial_condition_indices),
+                },
+            )
+            return
+
         if schema_name:
             schema_path = self._resolve_schema_path(schema_name, exp_id)
             project = load_schema(schema_path)
@@ -5159,9 +5188,7 @@ class ScanImageControlWidget(QWidget):
         tracking.reset()
         tracking.exp_id = exp_id
         tracking.schema_name = schema_name
-        tracking.params = {k: v for k, v in message.items() if k != "action"}
-        tracking.params["stimulus_conditions"] = stimulus_conditions
-        tracking.params["trial_condition_indices"] = trial_condition_indices
+        tracking.params = normalized_params
         tracking.stimulus_conditions = stimulus_conditions
         tracking.trial_condition_indices = trial_condition_indices
 
