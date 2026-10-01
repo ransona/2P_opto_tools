@@ -45,6 +45,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QSplitter,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -118,6 +119,7 @@ DIAGNOSTIC_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 class ScanImageSignals(QObject):
     log_message = pyqtSignal(str)
+    simple_status_message = pyqtSignal(str)
     path_status = pyqtSignal(str, str)
     path_udp_log = pyqtSignal(str, str)
     waveform_test_result = pyqtSignal(str, int, int, int)
@@ -1027,6 +1029,7 @@ class ScanImageControlWidget(QWidget):
         self._diagnostic_log_path = self._initialize_diagnostic_log()
         self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
+        self.signals.simple_status_message.connect(self._append_simple_status)
         self.signals.log_message.connect(
             self._append_diagnostic_log,
             Qt.ConnectionType.DirectConnection,
@@ -2736,7 +2739,23 @@ class ScanImageControlWidget(QWidget):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         log_layout.addWidget(filter_row)
-        log_layout.addWidget(self.log_text, 1)
+        log_splitter = QSplitter(Qt.Orientation.Horizontal)
+        simple_status_box = QGroupBox("Photostim Status")
+        simple_status_layout = QVBoxLayout(simple_status_box)
+        self.simple_status_text = QPlainTextEdit()
+        self.simple_status_text.setReadOnly(True)
+        self.simple_status_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        simple_status_layout.addWidget(self.simple_status_text)
+        detailed_log_box = QGroupBox("Detailed Debug Log")
+        detailed_log_layout = QVBoxLayout(detailed_log_box)
+        detailed_log_layout.setContentsMargins(0, 0, 0, 0)
+        detailed_log_layout.addWidget(self.log_text)
+        log_splitter.addWidget(simple_status_box)
+        log_splitter.addWidget(detailed_log_box)
+        log_splitter.setStretchFactor(0, 0)
+        log_splitter.setStretchFactor(1, 1)
+        log_splitter.setSizes([280, 900])
+        log_layout.addWidget(log_splitter, 1)
         layout.addWidget(log_box, 1)
 
         self.reload_btn.clicked.connect(self.reload_discovery)
@@ -2756,8 +2775,14 @@ class ScanImageControlWidget(QWidget):
     def _clear_all_logs(self) -> None:
         self._debug_history.clear()
         self.log_text.clear()
+        self.simple_status_text.clear()
         for widgets in self._path_tabs.values():
             widgets.udp_text.clear()
+
+    def _append_simple_status(self, message: str) -> None:
+        self.simple_status_text.appendPlainText(f"{self._timestamp()} {message}")
+        scrollbar = self.simple_status_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def _export_diagnostic_log(self) -> None:
         source = self._diagnostic_log_path
@@ -5584,6 +5609,10 @@ class ScanImageControlWidget(QWidget):
             f"[{request_path_name}] preparing trial_index={trial_index} condition_index={condition_index}"
             + (f" stimulus_id={selected_stimulus_id}" if selected_stimulus_id is not None else "")
         )
+        self.signals.simple_status_message.emit(
+            f"Photostim preparation requested: trial {trial_index}, "
+            f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}"
+        )
         with self._online_analysis.lock:
             self._online_analysis.current_condition_index = condition_index
 
@@ -5631,6 +5660,11 @@ class ScanImageControlWidget(QWidget):
                     "condition_index": condition_index,
                     "opto_enabled": False,
                 },
+            )
+            self.signals.simple_status_message.emit(
+                f"Photostim preparation completed: trial {trial_index}, "
+                f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index} "
+                "(no photostim)"
             )
             return
 
@@ -5711,6 +5745,10 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit(
             f"[{photostim_path}] trial {trial_index} armed and ready: sequence '{sequence_name}', "
             f"{len(stimulus_group_nums)} stimulus group advance(s)"
+        )
+        self.signals.simple_status_message.emit(
+            f"Photostim preparation completed: trial {trial_index}, "
+            f"stimulus {selected_stimulus_id if selected_stimulus_id is not None else condition_index}"
         )
         self._send_json_reply(
             request_path_name,
