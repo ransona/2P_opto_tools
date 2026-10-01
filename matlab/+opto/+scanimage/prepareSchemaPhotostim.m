@@ -19,6 +19,7 @@ arguments
     opts.EmbedBlankAndParkInStimGroup (1,1) logical = false
     opts.SingleEpochPattern (1,1) logical = false
     opts.NumSequences (1,1) double = 1
+    opts.BatchAssignGroups (1,1) logical = false
 end
 
 prepTimer = tic();
@@ -76,6 +77,8 @@ hPs.sequenceSelectedStimuli = [];
 disp('prepareSchemaPhotostim: existing stimulus groups cleared');
 fprintf('PREP_TIMING clear existing groups: %.3f s (total %.3f s)\n', toc(stageTimer), toc(prepTimer));
 
+preparedGroups = scanimage.mroi.RoiGroup.empty(1, 0);
+
 nBeamsTimer = tic();
 nBeams = getPhotostimBeamCount(hSI);
 disp('prepareSchemaPhotostim: beam count resolved');
@@ -83,9 +86,13 @@ disp(nBeams);
 fprintf('PREP_TIMING beam count resolution: %.3f s (total %.3f s)\n', toc(nBeamsTimer), toc(prepTimer));
 stageTimer = tic();
 disp('Preparing reserved stimulus group: BLANK');
-hPs.stimRoiGroups(end + 1) = makeBlankOnlyGroup("BLANK", opts.BlankDuration, nBeams);
+preparedGroups(end + 1) = makeBlankOnlyGroup("BLANK", opts.BlankDuration, nBeams);
 disp('Preparing reserved stimulus group: PARK');
-hPs.stimRoiGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration, nBeams);
+preparedGroups(end + 1) = makeParkOnlyGroup("PARK", opts.ParkDuration, nBeams);
+if ~opts.BatchAssignGroups
+    hPs.stimRoiGroups(end + 1) = preparedGroups(end - 1);
+    hPs.stimRoiGroups(end + 1) = preparedGroups(end);
+end
 fprintf('PREP_TIMING reserved groups: %.3f s (total %.3f s)\n', toc(stageTimer), toc(prepTimer));
 
 importedPatternNames = strings(0, 1);
@@ -107,7 +114,7 @@ for idx = 1:numel(preparedSequenceIndices)
 
     sequenceDuration_s = computeSequenceDuration(sequenceSteps, schema.patterns);
     blockCount = max(1, ceil(double(sequenceDuration_s) ./ double(opts.BlockDuration)));
-    firstPreparedGroupIdx = numel(hPs.stimRoiGroups) + 1;
+    firstPreparedGroupIdx = numel(preparedGroups) + 1;
     sequenceTimer = tic();
     sequenceBuildTime = 0;
     sequenceAssignTime = 0;
@@ -116,7 +123,10 @@ for idx = 1:numel(preparedSequenceIndices)
         hGroup = buildSequenceWindowStimGroup(sequenceName, sequenceSteps, schema.patterns, schemaPatternNames, blockIdx, hSI, opts);
         blockBuildTime = toc(blockTimer);
         assignTimer = tic();
-        hPs.stimRoiGroups(end + 1) = hGroup;
+        preparedGroups(end + 1) = hGroup;
+        if ~opts.BatchAssignGroups
+            hPs.stimRoiGroups(end + 1) = hGroup;
+        end
         blockAssignTime = toc(assignTimer);
         sequenceBuildTime = sequenceBuildTime + blockBuildTime;
         sequenceAssignTime = sequenceAssignTime + blockAssignTime;
@@ -127,7 +137,7 @@ for idx = 1:numel(preparedSequenceIndices)
     end
     fprintf('PREP_TIMING sequence %s groups: %d, build total %.3f s, assign total %.3f s, sequence total %.3f s, total %.3f s\n', ...
         char(sequenceName), blockCount, sequenceBuildTime, sequenceAssignTime, toc(sequenceTimer), toc(prepTimer));
-    sequenceGroupIndicesBySeq{preparedSequenceIndices(idx)} = firstPreparedGroupIdx:numel(hPs.stimRoiGroups);
+    sequenceGroupIndicesBySeq{preparedSequenceIndices(idx)} = firstPreparedGroupIdx:numel(preparedGroups);
 
     for stepIdx = 1:numel(sequenceSteps)
         stepPatternName = string(sequenceSteps(stepIdx).pattern);
@@ -141,6 +151,13 @@ for idx = 1:numel(preparedSequenceIndices)
         usedPatternNames(end + 1, 1) = stepPatternName; %#ok<AGROW>
         usedPatternNumbers(end + 1, 1) = patternNumber; %#ok<AGROW>
     end
+end
+
+if opts.BatchAssignGroups
+    assignAllTimer = tic();
+    hPs.stimRoiGroups = preparedGroups;
+    fprintf('PREP_TIMING batch group assignment: %d groups, %.3f s (total %.3f s)\n', ...
+        numel(preparedGroups), toc(assignAllTimer), toc(prepTimer));
 end
 
 importedPatternNames = usedPatternNames;
