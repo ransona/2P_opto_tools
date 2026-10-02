@@ -1270,20 +1270,20 @@ class ScanImageControlWidget(QWidget):
         if path_name not in self._runtimes:
             raise ValueError(f"Unknown path '{path_name}'")
         runtime = self._runtimes[path_name]
-        begin_lines = self.eval_matlab_command(
-            path_name,
-            build_begin_flatness_calibration_command(
-                runtime.path_config,
-                num_slices=int(num_slices),
-                frames_per_slice=int(frames_per_slice),
-                z_step_um=float(z_step_um),
-                log_average_factor=int(log_average_factor),
-                display_average_factor=int(display_average_factor),
-            ),
-            prepend_preamble=False,
-            timeout_s=300.0,
-        )
         try:
+            begin_lines = self.eval_matlab_command(
+                path_name,
+                build_begin_flatness_calibration_command(
+                    runtime.path_config,
+                    num_slices=int(num_slices),
+                    frames_per_slice=int(frames_per_slice),
+                    z_step_um=float(z_step_um),
+                    log_average_factor=int(log_average_factor),
+                    display_average_factor=int(display_average_factor),
+                ),
+                prepend_preamble=False,
+                timeout_s=300.0,
+            )
             fov_um = self._extract_marker_json(begin_lines, "FLATNESS_FOV_UM_JSON")
             if not isinstance(fov_um, list):
                 raise RuntimeError("ScanImage did not return its imaging FOV for flatness calibration.")
