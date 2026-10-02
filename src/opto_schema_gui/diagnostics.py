@@ -299,6 +299,11 @@ def _tile_center_coordinates(
     return float(x_min + x_fraction * (x_max - x_min)), float(y_min + y_fraction * (y_max - y_min))
 
 
+def _tile_used_for_surface_fit(tile: dict[str, object]) -> bool:
+    fit = tile.get("fit", {})
+    return bool(fit.get("used_for_surface_fit", fit.get("accepted_for_surface_fit", False)))
+
+
 def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
     summary_path = root_dir / FLATNESS_SUMMARY_FILENAME
     if not summary_path.is_file():
@@ -341,10 +346,18 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
                     "transition_slice_index": transition_slice_index,
                 }
             )
-    valid_tiles = [tile for tile in tiles if tile["fit"].get("accepted_for_surface_fit", False)]
+    filter_incomplete_plateaus = bool(acquisition.get("filter_incomplete_plateaus", True))
+    for tile in tiles:
+        fit = tile["fit"]
+        fit["used_for_surface_fit"] = bool(
+            fit.get("accepted_for_surface_fit", False)
+            if filter_incomplete_plateaus
+            else fit.get("ok", False) and fit.get("midpoint_um") is not None
+        )
+    valid_tiles = [tile for tile in tiles if _tile_used_for_surface_fit(tile)]
     if len(valid_tiles) < 3:
         raise RuntimeError(
-            "Fewer than three tiles had sigmoid fits with observed plateaus at both Z-range ends; cannot fit a plane."
+            "Fewer than three usable sigmoid fits were available to fit a plane."
         )
     design = np.asarray([[tile["x_um"], tile["y_um"], 1.0] for tile in valid_tiles], dtype=float)
     depths = np.asarray([tile["fit"]["midpoint_um"] for tile in valid_tiles], dtype=float)
@@ -370,6 +383,7 @@ def analyze_flatness_calibration_root(root_dir: Path) -> dict[str, object]:
     summary["tiles"] = tiles
     summary["surface_fit_tile_count"] = len(valid_tiles)
     summary["excluded_tile_count"] = len(tiles) - len(valid_tiles)
+    summary["filter_incomplete_plateaus"] = filter_incomplete_plateaus
     summary["plane"] = plane
     _safe_json_dump(summary_path, summary)
     return summary
@@ -549,6 +563,7 @@ class FlatnessCalibrationParams:
     display_average_factor: int = 5
     tile_rows: int = 10
     tile_columns: int = 10
+    filter_incomplete_plateaus: bool = True
 
     @property
     def num_slices(self) -> int:
@@ -605,6 +620,8 @@ class FlatnessCalibrationConfigDialog(QDialog):
         self.tile_columns_spin = QSpinBox()
         self.tile_columns_spin.setRange(1, 100)
         self.tile_columns_spin.setValue(10)
+        self.filter_plateaus_checkbox = QCheckBox("Filter tiles without clear low/high plateaus")
+        self.filter_plateaus_checkbox.setChecked(True)
         form.addRow("ScanImage path", self.path_combo)
         form.addRow("Animal ID", self.animal_id_edit)
         form.addRow("Output folder", output_widget)
@@ -615,6 +632,7 @@ class FlatnessCalibrationConfigDialog(QDialog):
         form.addRow("Display average", self.display_average_spin)
         form.addRow("Tile rows", self.tile_rows_spin)
         form.addRow("Tile columns", self.tile_columns_spin)
+        form.addRow("Surface fit filtering", self.filter_plateaus_checkbox)
         layout.addWidget(form_box)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept_if_valid)
@@ -663,6 +681,7 @@ class FlatnessCalibrationConfigDialog(QDialog):
             display_average_factor=self.display_average_spin.value(),
             tile_rows=self.tile_rows_spin.value(),
             tile_columns=self.tile_columns_spin.value(),
+            filter_incomplete_plateaus=self.filter_plateaus_checkbox.isChecked(),
         )
 
 
@@ -1560,12 +1579,14 @@ class FlattenWindow(DiagnosticsWidget):
         plane = summary["plane"]
         tiles = summary.get("tiles", [])
         included_tiles = int(summary.get("surface_fit_tile_count", sum(
-            bool(tile["fit"].get("accepted_for_surface_fit", False)) for tile in tiles
+            _tile_used_for_surface_fit(tile) for tile in tiles
         )))
         excluded_tiles = len(tiles) - included_tiles
+        filtering = bool(summary.get("filter_incomplete_plateaus", summary.get("acquisition", {}).get("filter_incomplete_plateaus", True)))
+        exclusion_text = "excluded by plateau filter" if filtering else "excluded because sigmoid fitting failed"
         self.summary_label.setText(
             f"Loaded {len(tiles)} tile fits from {self._current_root_dir}: "
-            f"{included_tiles} included, {excluded_tiles} excluded for incomplete plateaus. "
+            f"{included_tiles} included, {excluded_tiles} {exclusion_text}. "
             f"Plane residual RMS: {float(plane['residual_rms_um']):.2f} um."
         )
         self.correction_label.setText(
@@ -1721,7 +1742,7 @@ class FlattenWindow(DiagnosticsWidget):
         tiles = [
             tile
             for tile in self._flatness_summary.get("tiles", [])
-            if tile["fit"].get("accepted_for_surface_fit", False)
+            if _tile_used_for_surface_fit(tile)
         ]
         self.plane_figure.clear()
         if not tiles:
@@ -1793,7 +1814,7 @@ class FlattenWindow(DiagnosticsWidget):
             if midpoint is None:
                 continue
             self._tile_records_by_grid[(row, col)] = (tile, image)
-            if tile["fit"].get("accepted_for_surface_fit", False):
+            if _tile_used_for_surface_fit(tile):
                 z_grid[row, col] = float(midpoint)
         axis = self.tile_gallery_figure.add_subplot(111)
         self._tile_gallery_axis = axis
@@ -1811,11 +1832,11 @@ class FlattenWindow(DiagnosticsWidget):
             linewidth=1.0,
         )
         colorbar = self.tile_gallery_figure.colorbar(mesh, ax=axis, pad=0.02)
-        colorbar.set_label("Accepted fitted transition Z (um)")
+        colorbar.set_label("Used fitted transition Z (um)")
         for (row, col), (tile, _) in self._tile_records_by_grid.items():
             x_center = (self._tile_col_edges[col] + self._tile_col_edges[col + 1]) / 2.0
             y_center = (self._tile_row_edges[row] + self._tile_row_edges[row + 1]) / 2.0
-            if tile["fit"].get("accepted_for_surface_fit", False):
+            if _tile_used_for_surface_fit(tile):
                 label = f"{float(tile['fit']['midpoint_um']):.1f}"
             else:
                 label = "X"
@@ -1863,7 +1884,7 @@ class FlattenWindow(DiagnosticsWidget):
             profile_axis.axvline(float(midpoint), color="black", linestyle="--", label=f"Midpoint {float(midpoint):.2f} um")
         profile_axis.set_xlabel("Relative Z (um)")
         profile_axis.set_ylabel("Mean tile brightness")
-        if fit.get("accepted_for_surface_fit", False):
+        if _tile_used_for_surface_fit(tile):
             profile_axis.set_title("Brightness across Z: included in surface fit")
         else:
             reasons = ", ".join(str(reason).replace("_", " ") for reason in fit.get("rejection_reasons", []))
@@ -1953,7 +1974,7 @@ class FlattenWindow(DiagnosticsWidget):
         tiles = [
             tile
             for tile in self._flatness_summary.get("tiles", [])
-            if tile["fit"].get("accepted_for_surface_fit", False)
+            if _tile_used_for_surface_fit(tile)
         ]
         if not tiles:
             return
