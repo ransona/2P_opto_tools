@@ -564,7 +564,7 @@ class FlatnessCalibrationParams:
     display_average_factor: int = 5
     tile_rows: int = 10
     tile_columns: int = 10
-    filter_incomplete_plateaus: bool = True
+    filter_incomplete_plateaus: bool = False
 
     @property
     def num_slices(self) -> int:
@@ -622,7 +622,7 @@ class FlatnessCalibrationConfigDialog(QDialog):
         self.tile_columns_spin.setRange(1, 100)
         self.tile_columns_spin.setValue(10)
         self.filter_plateaus_checkbox = QCheckBox("Filter tiles without clear low/high plateaus")
-        self.filter_plateaus_checkbox.setChecked(True)
+        self.filter_plateaus_checkbox.setChecked(False)
         form.addRow("ScanImage path", self.path_combo)
         form.addRow("Animal ID", self.animal_id_edit)
         form.addRow("Output folder", output_widget)
@@ -1096,6 +1096,23 @@ class DiagnosticsWidget(QWidget):
             return
         params = dialog.gather_params()
         try:
+            motor_ready, motor_details = self.scanimage_control.check_flatness_motor_ready(params.path_name)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Could Not Check ScanImage Motors",
+                f"Flatness acquisition was not started because motor status could not be checked.\n\n{exc}",
+            )
+            return
+        if not motor_ready:
+            QMessageBox.warning(
+                self,
+                "ScanImage Motors Not Initialized",
+                "Flatness acquisition was not started because the ScanImage motors are not initialized.\n\n"
+                f"{motor_details}\n\nReinitialize the motors in ScanImage, then try again.",
+            )
+            return
+        try:
             self.scanimage_control.start_flatness_focus(params.path_name)
         except Exception as exc:
             QMessageBox.critical(self, "Could Not Start Focus", str(exc))
@@ -1117,6 +1134,23 @@ class DiagnosticsWidget(QWidget):
             return
         if confirm.clickedButton() is not acquire_button:
             self._append_status("Surface flatness calibration cancelled before stack acquisition.")
+            return
+        try:
+            motor_ready, motor_details = self.scanimage_control.check_flatness_motor_ready(params.path_name)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Could Not Check ScanImage Motors",
+                f"Flatness acquisition was not started because motor status could not be checked.\n\n{exc}",
+            )
+            return
+        if not motor_ready:
+            QMessageBox.warning(
+                self,
+                "ScanImage Motors Not Initialized",
+                "Flatness acquisition was not started because the ScanImage motors are no longer initialized.\n\n"
+                f"{motor_details}\n\nReinitialize the motors in ScanImage, then try again.",
+            )
             return
         self._start_flatness_calibration(params)
 

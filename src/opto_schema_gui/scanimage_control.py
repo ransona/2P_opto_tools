@@ -66,6 +66,7 @@ from .matlab_bridge import (
     build_abort_photostim_command,
     build_begin_slm_psf_diagnostic_command,
     build_begin_flatness_calibration_command,
+    build_check_flatness_motor_command,
     build_check_flatness_calibration_status_command,
     build_check_slm_psf_volume_status_command,
     build_clear_integration_rois_command,
@@ -1252,6 +1253,26 @@ class ScanImageControlWidget(QWidget):
             prepend_preamble=False,
             timeout_s=60.0,
         )
+
+    def check_flatness_motor_ready(self, path_name: str) -> tuple[bool, str]:
+        """Check motor initialization without changing ScanImage state."""
+        if path_name not in self._runtimes:
+            raise ValueError(f"Unknown path '{path_name}'")
+        runtime = self._runtimes[path_name]
+        lines = self.eval_matlab_command(
+            path_name,
+            build_check_flatness_motor_command(runtime.path_config),
+            prepend_preamble=False,
+            timeout_s=60.0,
+        )
+        payload = self._extract_marker_json(lines, "FLATNESS_MOTOR_STATUS_JSON")
+        if not isinstance(payload, dict):
+            raise RuntimeError("ScanImage did not return motor initialization status.")
+        ready = bool(payload.get("ready", False))
+        details = str(payload.get("error_message", "")).strip()
+        if not details:
+            details = f"initialized motor instances: {payload.get('num_instances', 0)}"
+        return ready, details
 
     def run_flatness_calibration(
         self,

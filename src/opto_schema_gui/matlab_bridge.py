@@ -1380,6 +1380,24 @@ def build_stop_flatness_focus_command(path_config: PathConfig) -> str:
     )
 
 
+def build_check_flatness_motor_command(path_config: PathConfig) -> str:
+    """Report whether the ScanImage motor component is initialized."""
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"hSI = {path_config.hsi_variable};",
+            "motorReady = false;",
+            "motorInstances = 0;",
+            "motorError = '';",
+            "try; motorInstances = double(hSI.hMotors.numInstances); catch; end",
+            "try; motorError = char(string(hSI.hMotors.errorMsg)); catch ME; motorError = ME.message; end",
+            "try; motorReady = motorInstances > 0 && ~logical(hSI.hMotors.errorTf); catch; motorReady = false; end",
+            "status = struct('ready', logical(motorReady), 'num_instances', motorInstances, 'error_message', motorError);",
+            "fprintf('FLATNESS_MOTOR_STATUS_JSON:%s\\n', jsonencode(status));",
+        ]
+    )
+
+
 def build_begin_flatness_calibration_command(
     path_config: PathConfig,
     *,
@@ -1400,6 +1418,7 @@ def build_begin_flatness_calibration_command(
         f"hSI = {hsi};",
         "assert(~isempty(hSI), 'ScanImage handle is not available.');",
         "assert(~hSI.active, 'Stop focus before starting flatness calibration.');",
+        "assert(hSI.hMotors.numInstances > 0 && ~hSI.hMotors.errorTf, 'ScanImage motors are not initialized. Reinitialize the motors before starting flatness calibration.');",
         "backup = struct('valid', true);",
         "backup.motorZ = NaN;",
         "try; backup.motorZ = double(hSI.hMotors.samplePosition(3)); catch; end",
