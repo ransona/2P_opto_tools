@@ -167,6 +167,20 @@ UDP trigger messages currently supported:
 - `abort`
 - `import`
 
+To retrieve the latest detailed diagnostic-log lines remotely, send JSON to any
+configured path listener:
+
+```json
+{"action":"get_diagnostic_log","request_id":"debug-001","lines":200}
+```
+
+The reply contains the latest `lines` from the current diagnostic log. Replies
+are split into bounded UDP JSON chunks with `chunk_index` and `chunk_count`; the
+receiver should concatenate the `lines` arrays in chunk order. The maximum
+request is capped at 2000 lines. Each response includes `requested_lines`,
+`total_lines` returned, and `log_path`. The command reads only the current log
+file, not rotated archives.
+
 Plain-text start commands can optionally include an experiment ID:
 
 - `acquire 2026-01-01_01_TEST`

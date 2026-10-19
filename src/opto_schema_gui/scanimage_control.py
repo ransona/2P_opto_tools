@@ -115,6 +115,8 @@ from .models import ExperimentProject, Pattern
 
 
 MAX_UDP_DATAGRAM_BYTES = 65535
+DIAGNOSTIC_LOG_UDP_MAX_LINES = 2000
+DIAGNOSTIC_LOG_UDP_CHUNK_BYTES = 48 * 1024
 DIAGNOSTIC_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 
@@ -4140,6 +4142,8 @@ class ScanImageControlWidget(QWidget):
 
     def _stop_acquisition(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)
+        self._cancel_software_trigger(path_name)
+        self._cancel_waveform_monitor(path_name)
         context_vars = (
             context_to_matlab_variables(runtime.last_context)
             if runtime.last_context is not None
@@ -4148,6 +4152,17 @@ class ScanImageControlWidget(QWidget):
         try:
             with runtime.lock:
                 assert runtime.session is not None
+                self.signals.log_message.emit(f"[{path_name}] STOP: cleaning up trial waveform task")
+                try:
+                    waveform_lines = runtime.session.eval(
+                        build_stop_trial_waveform_command(runtime.path_config),
+                        timeout_s=runtime.path_config.command_timeout_s,
+                    )
+                    self._emit_lines(path_name, waveform_lines)
+                    self.signals.log_message.emit(f"[{path_name}] STOP: trial waveform cleanup returned")
+                except Exception as exc:
+                    self.signals.log_message.emit(f"[{path_name}] STOP: trial waveform cleanup failed: {exc}")
+                self.signals.log_message.emit(f"[{path_name}] STOP: running stop_script.m")
                 lines = runtime.session.eval(
                     build_run_script_command(runtime.path_config, "stop_script.m", context_vars),
                     timeout_s=runtime.path_config.command_timeout_s,
@@ -4158,6 +4173,7 @@ class ScanImageControlWidget(QWidget):
                     f"ScanImage {path_name} grab stopped"
                 )
                 self._emit_lines(path_name, lines)
+                self.signals.log_message.emit(f"[{path_name}] STOP: stop_script.m returned")
         finally:
             if path_name == self._online_analysis.imaging_path:
                 self._finalize_online_analysis_export("acquisition_stopped")
@@ -5296,6 +5312,20 @@ class ScanImageControlWidget(QWidget):
         udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received action={action}"
         self.signals.path_udp_log.emit(path_name, udp_line)
 
+        if action == "get_diagnostic_log":
+            requested_lines = message.get("lines", 100)
+            request_id = str(message.get("request_id", "")).strip()
+            self.signals.log_message.emit(
+                f"[{path_name}] requested diagnostic log tail lines={requested_lines}"
+                + (f" request_id={request_id}" if request_id else "")
+            )
+            threading.Thread(
+                target=self._send_diagnostic_log_udp,
+                args=(path_name, address, requested_lines, request_id),
+                daemon=True,
+            ).start()
+            return
+
         if action == "update_experiment_params":
             exp_id = str(message.get("expID", "")).strip()
             self.signals.log_message.emit(
@@ -5471,6 +5501,120 @@ class ScanImageControlWidget(QWidget):
                 )
             return
         self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
+
+    def _send_diagnostic_log_udp(
+        self,
+        path_name: str,
+        address: tuple[str, int],
+        requested_lines: object,
+        request_id: str,
+    ) -> None:
+        """Send the diagnostic-log tail as bounded, reassemblable UDP chunks."""
+        try:
+            line_count = int(requested_lines)
+        except (TypeError, ValueError):
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "get_diagnostic_log",
+                    "status": "error",
+                    "request_id": request_id,
+                    "error": "lines must be a positive integer",
+                },
+            )
+            return
+        if line_count <= 0:
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "get_diagnostic_log",
+                    "status": "error",
+                    "request_id": request_id,
+                    "error": "lines must be a positive integer",
+                },
+            )
+            return
+        if line_count > DIAGNOSTIC_LOG_UDP_MAX_LINES:
+            line_count = DIAGNOSTIC_LOG_UDP_MAX_LINES
+
+        log_path = self._diagnostic_log_path
+        if log_path is None or not log_path.is_file():
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "get_diagnostic_log",
+                    "status": "error",
+                    "request_id": request_id,
+                    "error": "Diagnostic log file is not available",
+                },
+            )
+            return
+
+        try:
+            with self._diagnostic_log_lock:
+                with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    selected_lines = list(deque(handle, maxlen=line_count))
+        except OSError as exc:
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "get_diagnostic_log",
+                    "status": "error",
+                    "request_id": request_id,
+                    "error": str(exc),
+                },
+            )
+            return
+
+        clean_lines = [line.rstrip("\r\n") for line in selected_lines]
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        for line in clean_lines:
+            candidate = current + [line]
+            probe = {
+                "action": "get_diagnostic_log",
+                "status": "chunk",
+                "request_id": request_id,
+                "chunk_index": 0,
+                "chunk_count": 1,
+                "requested_lines": int(requested_lines),
+                "total_lines": len(clean_lines),
+                "log_path": str(log_path),
+                "lines": candidate,
+            }
+            encoded_size = len(json.dumps(probe, separators=(",", ":")).encode("utf-8"))
+            if current and encoded_size > DIAGNOSTIC_LOG_UDP_CHUNK_BYTES:
+                chunks.append(current)
+                current = [line]
+            else:
+                current = candidate
+        if current or not chunks:
+            chunks.append(current)
+
+        for chunk_index, chunk in enumerate(chunks):
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": "get_diagnostic_log",
+                    "status": "chunk",
+                    "request_id": request_id,
+                    "chunk_index": chunk_index,
+                    "chunk_count": len(chunks),
+                    "requested_lines": int(requested_lines),
+                    "total_lines": len(clean_lines),
+                    "log_path": str(log_path),
+                    "lines": chunk,
+                },
+            )
+        self.signals.log_message.emit(
+            f"[{path_name}] sent diagnostic log tail lines={len(clean_lines)} "
+            f"chunks={len(chunks)} request_id={request_id or '<none>'}"
+        )
 
     def _clear_scanimage_state_for_new_experiment(self, old_exp_id: str, new_exp_id: str) -> None:
         self.signals.log_message.emit(
@@ -6459,7 +6603,7 @@ class ScanImageControlWidget(QWidget):
 
     def _query_trial_waveform_status(
         self, path_name: str
-    ) -> tuple[bool, bool, bool, float | None, dict[str, object] | None]:
+    ) -> tuple[bool, bool, bool, float | None, int, str, str, dict[str, object] | None]:
         runtime = self._ensure_session(path_name)
         with runtime.lock:
             assert runtime.session is not None
@@ -6471,6 +6615,9 @@ class ScanImageControlWidget(QWidget):
         done = True
         started = False
         started_wall_time: float | None = None
+        callback_count = 0
+        callback_snapshot_status = "not_run"
+        callback_error = ""
         integration_snapshot: dict[str, object] | None = None
         marker = None
         for raw_line in lines:
@@ -6482,6 +6629,9 @@ class ScanImageControlWidget(QWidget):
                 "TRIAL_WAVEFORM_TASK_DONE",
                 "TRIAL_WAVEFORM_TASK_STARTED",
                 "TRIAL_WAVEFORM_TASK_STARTED_WALL_TIME",
+                "TRIAL_WAVEFORM_CALLBACK_COUNT",
+                "TRIAL_WAVEFORM_CALLBACK_SNAPSHOT_STATUS",
+                "TRIAL_WAVEFORM_CALLBACK_ERROR",
                 "TRIAL_WAVEFORM_INTEGRATION_SNAPSHOT_JSON",
                 "TRIAL_WAVEFORM_STATUS_READY",
             }:
@@ -6509,6 +6659,15 @@ class ScanImageControlWidget(QWidget):
                     candidate = float("nan")
                 if candidate > 0:
                     started_wall_time = candidate
+            elif marker == "TRIAL_WAVEFORM_CALLBACK_COUNT":
+                try:
+                    callback_count = int(float(line))
+                except ValueError:
+                    callback_count = 0
+            elif marker == "TRIAL_WAVEFORM_CALLBACK_SNAPSHOT_STATUS":
+                callback_snapshot_status = line
+            elif marker == "TRIAL_WAVEFORM_CALLBACK_ERROR":
+                callback_error = line
             elif marker == "TRIAL_WAVEFORM_INTEGRATION_SNAPSHOT_JSON":
                 try:
                     payload = json.loads(line)
@@ -6516,7 +6675,16 @@ class ScanImageControlWidget(QWidget):
                     payload = None
                 if isinstance(payload, dict):
                     integration_snapshot = payload
-        return active, done, started, started_wall_time, integration_snapshot
+        return (
+            active,
+            done,
+            started,
+            started_wall_time,
+            callback_count,
+            callback_snapshot_status,
+            callback_error,
+            integration_snapshot,
+        )
 
     def _query_raw_vdaq_do_test_status(self, path_name: str) -> tuple[bool, bool]:
         runtime = self._ensure_session(path_name)
@@ -6752,10 +6920,37 @@ class ScanImageControlWidget(QWidget):
 
         if wait_for_start:
             start_deadline = time.monotonic() + 30.0
+            last_callback_count: int | None = None
+            last_callback_status: str | None = None
+            last_callback_error: str | None = None
             while not stop_event.is_set() and time.monotonic() < start_deadline:
-                active, done, started, started_wall_time, integration_snapshot = self._query_trial_waveform_status(
-                    path_name
-                )
+                (
+                    active,
+                    done,
+                    started,
+                    started_wall_time,
+                    callback_count,
+                    callback_status,
+                    callback_error,
+                    integration_snapshot,
+                ) = self._query_trial_waveform_status(path_name)
+                if callback_count != last_callback_count:
+                    self.signals.log_message.emit(
+                        f"[{path_name}] waveform callback count={callback_count}, "
+                        f"snapshot_status={callback_status}"
+                    )
+                    last_callback_count = callback_count
+                if callback_status != last_callback_status:
+                    self.signals.log_message.emit(
+                        f"[{path_name}] waveform callback snapshot status={callback_status}"
+                    )
+                    last_callback_status = callback_status
+                if callback_error != last_callback_error:
+                    if callback_error:
+                        self.signals.log_message.emit(
+                            f"[{path_name}] waveform callback snapshot error: {callback_error}"
+                        )
+                    last_callback_error = callback_error
                 if started:
                     self.signals.simple_status_message.emit(
                         f"Photostim sequence triggered: sequence '{sequence_name}'"
@@ -6776,6 +6971,12 @@ class ScanImageControlWidget(QWidget):
         if wait_for_start and not trial_start_marked:
             self.signals.log_message.emit(
                 f"[{path_name}] ERROR: waveform external start was not detected for sequence '{sequence_name}'"
+            )
+            self.signals.log_message.emit(
+                f"[{path_name}] waveform start diagnostics: callback_count="
+                f"{last_callback_count if 'last_callback_count' in locals() else 'unknown'}, "
+                f"snapshot_status={last_callback_status if 'last_callback_status' in locals() else 'unknown'}, "
+                f"callback_error={last_callback_error if 'last_callback_error' in locals() else ''}"
             )
         if (
             mismatch_message is not None

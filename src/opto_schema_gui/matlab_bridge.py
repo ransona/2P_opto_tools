@@ -1942,6 +1942,10 @@ def build_prepare_trial_waveform_command(
     callback_body = (
         "if ~exist('optoPhotostimTrialDoTaskStarted','var') || ~optoPhotostimTrialDoTaskStarted, "
         "optoPhotostimTrialDoTaskStartedWallTime = posixtime(datetime('now','TimeZone','UTC')); "
+        "optoPhotostimTrialCallbackCount = optoPhotostimTrialCallbackCount + 1; "
+        "optoPhotostimTrialDoTaskStarted = true; "
+        "optoPhotostimTrialCallbackError = ''; "
+        "try; "
         "hSI_cb = hSI; "
         "irm_cb = hSI_cb.hIntegrationRoiManager; "
         "roiNames_cb = cellfun(@char, {irm_cb.intParams.intRois.name}, 'UniformOutput', false); "
@@ -1960,7 +1964,11 @@ def build_prepare_trial_waveform_command(
         "else, timeVals_cb(ii_cb) = timeHist_cb(cursorIdx_cb, min(ii_cb, size(timeHist_cb, 2))); end; "
         "end; "
         "optoPhotostimTrialIntegrationSnapshot = struct('roi_names', {roiNames_cb}, 'cursors', double(cursor_cb(:).'), 'frame_numbers', double(frameVals_cb(:).'), 'timestamps', double(timeVals_cb(:).')); "
-        "optoPhotostimTrialDoTaskStarted = true; "
+        "optoPhotostimTrialCallbackSnapshotStatus = 'ok'; "
+        "catch ME_cb; "
+        "optoPhotostimTrialCallbackSnapshotStatus = 'error'; "
+        "optoPhotostimTrialCallbackError = ME_cb.message; "
+        "end; "
         "end;"
     )
     return "\n".join(
@@ -1978,6 +1986,9 @@ def build_prepare_trial_waveform_command(
             + "', total_duration_s=' num2str(trialTotalDurationSec, '%.4f')]);",
             "assignin('base', 'optoPhotostimTrialDoTaskStarted', false);",
             "assignin('base', 'optoPhotostimTrialDoTaskStartedWallTime', 0);",
+            "assignin('base', 'optoPhotostimTrialCallbackCount', 0);",
+            "assignin('base', 'optoPhotostimTrialCallbackError', '');",
+            "assignin('base', 'optoPhotostimTrialCallbackSnapshotStatus', 'not_run');",
             "assignin('base', 'optoPhotostimTrialIntegrationSnapshot', struct('roi_names', {{}}, 'cursors', [], 'frame_numbers', [], 'timestamps', []));",
             "do_task = opto.scanimage.testVdaqDoTriggeredByDi("
             + f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
@@ -2041,6 +2052,12 @@ def build_trial_waveform_status_command(path_config: PathConfig) -> str:
             "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStarted'',''var'')'); disp(double(evalin('base', 'optoPhotostimTrialDoTaskStarted'))); else; disp(0); end",
             "disp('TRIAL_WAVEFORM_TASK_STARTED_WALL_TIME');",
             "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStartedWallTime'',''var'')'); disp(double(evalin('base', 'optoPhotostimTrialDoTaskStartedWallTime'))); else; disp(0); end",
+            "disp('TRIAL_WAVEFORM_CALLBACK_COUNT');",
+            "if evalin('base', 'exist(''optoPhotostimTrialCallbackCount'',''var'')'); disp(double(evalin('base', 'optoPhotostimTrialCallbackCount'))); else; disp(0); end",
+            "disp('TRIAL_WAVEFORM_CALLBACK_SNAPSHOT_STATUS');",
+            "if evalin('base', 'exist(''optoPhotostimTrialCallbackSnapshotStatus'',''var'')'); disp(char(string(evalin('base', 'optoPhotostimTrialCallbackSnapshotStatus')))); else; disp('not_run'); end",
+            "disp('TRIAL_WAVEFORM_CALLBACK_ERROR');",
+            "if evalin('base', 'exist(''optoPhotostimTrialCallbackError'',''var'')'); disp(char(string(evalin('base', 'optoPhotostimTrialCallbackError')))); else; disp(''); end",
             "disp('TRIAL_WAVEFORM_INTEGRATION_SNAPSHOT_JSON');",
             "if evalin('base', 'exist(''optoPhotostimTrialIntegrationSnapshot'',''var'')'); disp(jsonencode(evalin('base', 'optoPhotostimTrialIntegrationSnapshot'))); else; disp('{}'); end",
             "disp('TRIAL_WAVEFORM_STATUS_READY');",
@@ -2062,6 +2079,9 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
             "end",
             "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStarted'',''var'')'); evalin('base', 'clear optoPhotostimTrialDoTaskStarted'); end",
             "if evalin('base', 'exist(''optoPhotostimTrialDoTaskStartedWallTime'',''var'')'); evalin('base', 'clear optoPhotostimTrialDoTaskStartedWallTime'); end",
+            "if evalin('base', 'exist(''optoPhotostimTrialCallbackCount'',''var'')'); evalin('base', 'clear optoPhotostimTrialCallbackCount'); end",
+            "if evalin('base', 'exist(''optoPhotostimTrialCallbackError'',''var'')'); evalin('base', 'clear optoPhotostimTrialCallbackError'); end",
+            "if evalin('base', 'exist(''optoPhotostimTrialCallbackSnapshotStatus'',''var'')'); evalin('base', 'clear optoPhotostimTrialCallbackSnapshotStatus'); end",
             "if evalin('base', 'exist(''optoPhotostimTrialIntegrationSnapshot'',''var'')'); evalin('base', 'clear optoPhotostimTrialIntegrationSnapshot'); end",
             "disp('TRIAL_WAVEFORM_STOPPED');",
         ]
