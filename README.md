@@ -193,6 +193,16 @@ request is capped at 2000 lines. Each response includes `requested_lines`,
 `total_lines` returned, and `log_path`. The command reads only the current log
 file, not rotated archives.
 
+The same protocol can retrieve the other runtime logs:
+
+```json
+{"action":"get_resource_log","request_id":"debug-002","lines":200}
+{"action":"get_matlab_diary","request_id":"debug-003","lines":200}
+```
+
+These commands also return bounded chunks and only expose the GUI's known
+resource-log or per-path MATLAB-diary file.
+
 Plain-text start commands can optionally include an experiment ID:
 
 - `acquire 2026-01-01_01_TEST`

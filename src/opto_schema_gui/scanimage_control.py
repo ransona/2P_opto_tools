@@ -5534,16 +5534,16 @@ class ScanImageControlWidget(QWidget):
         udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received action={action}"
         self.signals.path_udp_log.emit(path_name, udp_line)
 
-        if action == "get_diagnostic_log":
+        if action in {"get_diagnostic_log", "get_resource_log", "get_matlab_diary"}:
             requested_lines = message.get("lines", 100)
             request_id = str(message.get("request_id", "")).strip()
             self.signals.log_message.emit(
-                f"[{path_name}] requested diagnostic log tail lines={requested_lines}"
+                f"[{path_name}] requested {action} tail lines={requested_lines}"
                 + (f" request_id={request_id}" if request_id else "")
             )
             threading.Thread(
-                target=self._send_diagnostic_log_udp,
-                args=(path_name, address, requested_lines, request_id),
+                target=self._send_log_file_udp,
+                args=(path_name, address, requested_lines, request_id, action),
                 daemon=True,
             ).start()
             return
@@ -5706,14 +5706,20 @@ class ScanImageControlWidget(QWidget):
             return
         self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
 
-    def _send_diagnostic_log_udp(
+    def _send_log_file_udp(
         self,
         path_name: str,
         address: tuple[str, int],
         requested_lines: object,
         request_id: str,
+        action: str,
     ) -> None:
-        """Send the diagnostic-log tail as bounded, reassemblable UDP chunks."""
+        """Send an approved log-file tail as bounded, reassemblable UDP chunks."""
+        log_paths = {
+            "get_diagnostic_log": self._diagnostic_log_path,
+            "get_resource_log": self._resource_log_path,
+            "get_matlab_diary": self._matlab_diary_path(path_name),
+        }
         try:
             line_count = int(requested_lines)
         except (TypeError, ValueError):
@@ -5721,7 +5727,7 @@ class ScanImageControlWidget(QWidget):
                 path_name,
                 address,
                 {
-                    "action": "get_diagnostic_log",
+                    "action": action,
                     "status": "error",
                     "request_id": request_id,
                     "error": "lines must be a positive integer",
@@ -5733,7 +5739,7 @@ class ScanImageControlWidget(QWidget):
                 path_name,
                 address,
                 {
-                    "action": "get_diagnostic_log",
+                    "action": action,
                     "status": "error",
                     "request_id": request_id,
                     "error": "lines must be a positive integer",
@@ -5743,22 +5749,23 @@ class ScanImageControlWidget(QWidget):
         if line_count > DIAGNOSTIC_LOG_UDP_MAX_LINES:
             line_count = DIAGNOSTIC_LOG_UDP_MAX_LINES
 
-        log_path = self._diagnostic_log_path
+        log_path = log_paths[action]
         if log_path is None or not log_path.is_file():
             self._send_json_reply(
                 path_name,
                 address,
                 {
-                    "action": "get_diagnostic_log",
+                    "action": action,
                     "status": "error",
                     "request_id": request_id,
-                    "error": "Diagnostic log file is not available",
+                    "error": f"{action} file is not available",
                 },
             )
             return
 
         try:
-            with self._diagnostic_log_lock:
+            log_lock = self._resource_log_lock if action == "get_resource_log" else self._diagnostic_log_lock
+            with log_lock:
                 with log_path.open("r", encoding="utf-8", errors="replace") as handle:
                     selected_lines = list(deque(handle, maxlen=line_count))
         except OSError as exc:
@@ -5766,7 +5773,7 @@ class ScanImageControlWidget(QWidget):
                 path_name,
                 address,
                 {
-                    "action": "get_diagnostic_log",
+                    "action": action,
                     "status": "error",
                     "request_id": request_id,
                     "error": str(exc),
@@ -5780,7 +5787,7 @@ class ScanImageControlWidget(QWidget):
         for line in clean_lines:
             candidate = current + [line]
             probe = {
-                "action": "get_diagnostic_log",
+                "action": action,
                 "status": "chunk",
                 "request_id": request_id,
                 "chunk_index": 0,
@@ -5804,7 +5811,7 @@ class ScanImageControlWidget(QWidget):
                 path_name,
                 address,
                 {
-                    "action": "get_diagnostic_log",
+                    "action": action,
                     "status": "chunk",
                     "request_id": request_id,
                     "chunk_index": chunk_index,
@@ -5816,9 +5823,17 @@ class ScanImageControlWidget(QWidget):
                 },
             )
         self.signals.log_message.emit(
-            f"[{path_name}] sent diagnostic log tail lines={len(clean_lines)} "
+            f"[{path_name}] sent {action} tail lines={len(clean_lines)} "
             f"chunks={len(chunks)} request_id={request_id or '<none>'}"
         )
+
+    @staticmethod
+    def _matlab_diary_path(path_name: str) -> Path:
+        safe_path_name = "".join(
+            character if character.isalnum() else "_"
+            for character in path_name
+        )
+        return Path(tempfile.gettempdir()) / f"2p_opto_tools_{safe_path_name}_matlab_diary.log"
 
     def _clear_scanimage_state_for_new_experiment(self, old_exp_id: str, new_exp_id: str) -> None:
         self.signals.log_message.emit(
