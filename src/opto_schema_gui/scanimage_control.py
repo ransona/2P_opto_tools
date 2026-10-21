@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import ctypes
 import configparser
 import hashlib
 import math
@@ -118,6 +119,29 @@ MAX_UDP_DATAGRAM_BYTES = 65535
 DIAGNOSTIC_LOG_UDP_MAX_LINES = 2000
 DIAGNOSTIC_LOG_UDP_CHUNK_BYTES = 48 * 1024
 DIAGNOSTIC_LOG_MAX_BYTES = 10 * 1024 * 1024
+RESOURCE_LOG_MAX_BYTES = 10 * 1024 * 1024
+RESOURCE_SAMPLE_INTERVAL_S = 5.0
+
+
+class _WindowsMemoryStatus(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_uint32),
+        ("memory_load", ctypes.c_uint32),
+        ("total_phys", ctypes.c_ulonglong),
+        ("available_phys", ctypes.c_ulonglong),
+        ("total_page_file", ctypes.c_ulonglong),
+        ("available_page_file", ctypes.c_ulonglong),
+        ("total_virtual", ctypes.c_ulonglong),
+        ("available_virtual", ctypes.c_ulonglong),
+        ("available_extended_virtual", ctypes.c_ulonglong),
+    ]
+
+    def read(self) -> bool:
+        self.length = ctypes.sizeof(self)
+        global_memory_status_ex = ctypes.windll.kernel32.GlobalMemoryStatusEx
+        global_memory_status_ex.argtypes = [ctypes.POINTER(_WindowsMemoryStatus)]
+        global_memory_status_ex.restype = ctypes.c_bool
+        return bool(global_memory_status_ex(ctypes.byref(self)))
 
 
 class ScanImageSignals(QObject):
@@ -1028,6 +1052,15 @@ class ScanImageControlWidget(QWidget):
         self.repo_root = Path(__file__).resolve().parents[2]
         self._diagnostic_log_lock = threading.Lock()
         self._diagnostic_log_path = self._initialize_diagnostic_log()
+        self._resource_log_lock = threading.Lock()
+        self._resource_log_path = self._initialize_resource_log()
+        self._resource_monitor_stop = threading.Event()
+        self._resource_monitor_thread = threading.Thread(
+            target=self._resource_monitor_worker,
+            name="opto-resource-monitor",
+            daemon=True,
+        )
+        self._resource_monitor_thread.start()
         self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
         self.signals.simple_status_message.connect(self._append_simple_status)
@@ -3043,6 +3076,7 @@ class ScanImageControlWidget(QWidget):
         dialog.exec()
 
     def shutdown(self) -> None:
+        self._stop_resource_monitor()
         for path_name in list(self._runtimes):
             try:
                 self._stop_path(path_name)
@@ -4894,6 +4928,145 @@ class ScanImageControlWidget(QWidget):
             f"=== GUI diagnostic logging started pid={os.getpid()} cwd={Path.cwd()} ===",
         )
         return path
+
+    def _initialize_resource_log(self) -> Path | None:
+        if sys.platform.startswith("win"):
+            preferred_dir = Path("C:/temp")
+        else:
+            preferred_dir = Path(tempfile.gettempdir())
+        preferred_path = preferred_dir / "2p_opto_tools_resources.log"
+        try:
+            preferred_dir.mkdir(parents=True, exist_ok=True)
+            path = preferred_path
+        except OSError:
+            fallback_dir = Path(tempfile.gettempdir()) / "2p_opto_tools"
+            try:
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                path = fallback_dir / "2p_opto_tools_resources.log"
+            except OSError:
+                return None
+        self._write_resource_log(
+            path,
+            f"=== resource monitoring started pid={os.getpid()} interval_s={RESOURCE_SAMPLE_INTERVAL_S:.1f} ===",
+        )
+        return path
+
+    def _write_resource_log(self, path: Path | None, message: str) -> None:
+        if path is None:
+            return
+        timestamp = datetime.now().isoformat(timespec="milliseconds")
+        line = f"{timestamp} {message}\n"
+        try:
+            with self._resource_log_lock:
+                if path.exists() and path.stat().st_size + len(line.encode("utf-8")) >= RESOURCE_LOG_MAX_BYTES:
+                    rotation_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    archived_path = path.with_name(
+                        f"{path.stem}_{rotation_stamp}{path.suffix}"
+                    )
+                    path.replace(archived_path)
+                    with path.open("w", encoding="utf-8") as handle:
+                        handle.write(
+                            f"{timestamp} === resource log rotated from {archived_path.name} at 10 MB ===\n"
+                        )
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(line)
+                    handle.flush()
+        except OSError:
+            # Resource logging must never interfere with GUI or acquisition.
+            return
+
+    def _stop_resource_monitor(self) -> None:
+        stop_event = getattr(self, "_resource_monitor_stop", None)
+        thread = getattr(self, "_resource_monitor_thread", None)
+        if stop_event is None:
+            return
+        stop_event.set()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+    def _resource_monitor_worker(self) -> None:
+        while not self._resource_monitor_stop.is_set():
+            sample = self._read_resource_sample()
+            if sample is not None:
+                self._write_resource_log(self._resource_log_path, sample)
+            if self._resource_monitor_stop.wait(RESOURCE_SAMPLE_INTERVAL_S):
+                break
+
+    def _read_resource_sample(self) -> str | None:
+        if not sys.platform.startswith("win"):
+            return f"resource_status=unsupported_platform platform={sys.platform}"
+
+        try:
+            memory_status = _WindowsMemoryStatus()
+            if not memory_status.read():
+                return "resource_status=ram_unavailable"
+            total_mb = memory_status.total_phys // (1024 * 1024)
+            available_mb = memory_status.available_phys // (1024 * 1024)
+            used_mb = max(0, total_mb - available_mb)
+            used_percent = (100.0 * used_mb / total_mb) if total_mb else 0.0
+        except Exception as exc:
+            return f"resource_status=ram_error error={type(exc).__name__}"
+
+        gpu_values = self._read_nvidia_smi_memory()
+        fields = [
+            "resource_status=ok",
+            f"ram_used_mb={used_mb}",
+            f"ram_available_mb={available_mb}",
+            f"ram_total_mb={total_mb}",
+            f"ram_used_percent={used_percent:.1f}",
+        ]
+        if gpu_values is None:
+            fields.append("gpu_status=unavailable")
+        else:
+            fields.append("gpu_status=ok")
+            for gpu_index, used_mb, total_mb in gpu_values:
+                fields.extend(
+                    [
+                        f"gpu{gpu_index}_used_mb={used_mb}",
+                        f"gpu{gpu_index}_total_mb={total_mb}",
+                    ]
+                )
+        return " ".join(fields)
+
+    @staticmethod
+    def _read_nvidia_smi_memory() -> list[tuple[int, int, int]] | None:
+        executable = shutil.which("nvidia-smi")
+        if executable is None and sys.platform.startswith("win"):
+            candidate = Path("C:/Program Files/NVIDIA Corporation/NVSMI/nvidia-smi.exe")
+            if candidate.is_file():
+                executable = str(candidate)
+        if executable is None:
+            return None
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            completed = subprocess.run(
+                [
+                    executable,
+                    "--query-gpu=index,memory.used,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2.0,
+                creationflags=creation_flags,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if completed.returncode != 0:
+            return None
+        values: list[tuple[int, int, int]] = []
+        for line in completed.stdout.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) != 3:
+                continue
+            try:
+                values.append((int(parts[0]), int(parts[1]), int(parts[2])))
+            except ValueError:
+                continue
+        return values or None
 
     def _write_diagnostic_log(self, path: Path | None, message: str) -> None:
         if path is None:

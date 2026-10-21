@@ -156,6 +156,12 @@ action errors. It has no periodic background activity and does not query MATLAB,
 so it adds no acquisition-time engine traffic. The log is not cleared by `Clear
 Debug Output`.
 
+The GUI also writes a separate low-overhead Windows resource log to
+`C:\\temp\\2p_opto_tools_resources.log`. It records total system RAM and GPU
+VRAM usage every five seconds using the native Windows memory API and
+`nvidia-smi`, without querying MATLAB or ScanImage. The resource log rotates at
+10 MB independently of the diagnostic log.
+
 Each launched MATLAB path also starts a MATLAB `diary` in MATLAB's `tempdir`,
 named `2p_opto_tools_<path>_matlab_diary.log`. This captures Command Window and
 ScanImage output that may be produced while a Python Engine command is still
