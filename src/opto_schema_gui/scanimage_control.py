@@ -713,12 +713,10 @@ class PhotostimTestDialog(QDialog):
         button_row = QHBoxLayout()
         self.run_prep_btn = QPushButton("Run Prep")
         self.run_trigger_btn = QPushButton("Run Trigger")
-        self.run_abort_btn = QPushButton("Run Abort")
         self.cancel_btn = QPushButton("Cancel")
         button_row.addStretch(1)
         button_row.addWidget(self.run_prep_btn)
         button_row.addWidget(self.run_trigger_btn)
-        button_row.addWidget(self.run_abort_btn)
         button_row.addWidget(self.cancel_btn)
         layout.addLayout(button_row)
 
@@ -3015,7 +3013,7 @@ class ScanImageControlWidget(QWidget):
         dialog = PhotostimTestDialog(self)
         def run_mode(mode: str) -> None:
             schema_name, exp_id, seq_num = dialog.values()
-            if mode != "abort" and (not schema_name or not exp_id):
+            if not schema_name or not exp_id:
                 QMessageBox.warning(self, "Invalid photostim input", "Schema Name and Exp ID are required.")
                 return
             if mode == "prep":
@@ -3027,12 +3025,6 @@ class ScanImageControlWidget(QWidget):
                     schema_name=schema_name,
                     exp_id=exp_id,
                     seq_num=seq_num,
-                    reply_address=None,
-                )
-            elif mode == "abort":
-                self.signals.log_message.emit("[config] GUI abort_photo_stim")
-                self._handle_abort_photo_stim_request(
-                    request_path_name=self.machine_config.photostim_path if self.machine_config else "",
                     reply_address=None,
                 )
             else:
@@ -3048,7 +3040,6 @@ class ScanImageControlWidget(QWidget):
                 )
         dialog.run_prep_btn.clicked.connect(lambda: run_mode("prep"))
         dialog.run_trigger_btn.clicked.connect(lambda: run_mode("trigger"))
-        dialog.run_abort_btn.clicked.connect(lambda: run_mode("abort"))
         dialog.exec()
 
     def shutdown(self) -> None:
@@ -4058,10 +4049,19 @@ class ScanImageControlWidget(QWidget):
         self.signals.log_message.emit(f"[{path_name}] startup: {message}")
 
     def _build_launch_startup_command(self, path_config: PathConfig) -> str:
+        safe_path_name = "".join(
+            character if character.isalnum() else "_"
+            for character in path_config.name
+        )
+        diary_filename = f"2p_opto_tools_{safe_path_name}_matlab_diary.log"
+        diary_filename_expr = matlab_string(diary_filename)
         return "; ".join(
             [
                 f"addpath(genpath({matlab_string(str(path_config.repo_matlab_path))}))",
                 f"cd({matlab_string(str(path_config.directory))})",
+                f"matlabDiaryPath = fullfile(tempdir, {diary_filename_expr})",
+                "diary(matlabDiaryPath)",
+                "fprintf('MATLAB_DIARY_PATH:%s\\n', matlabDiaryPath)",
                 "run('launch.m')",
             ]
         )
@@ -4142,6 +4142,7 @@ class ScanImageControlWidget(QWidget):
 
     def _stop_acquisition(self, path_name: str) -> None:
         runtime = self._ensure_session(path_name)
+        self._wait_for_trial_completion_before_stop(path_name)
         self._cancel_software_trigger(path_name)
         self._cancel_waveform_monitor(path_name)
         context_vars = (
@@ -4177,6 +4178,54 @@ class ScanImageControlWidget(QWidget):
         finally:
             if path_name == self._online_analysis.imaging_path:
                 self._finalize_online_analysis_export("acquisition_stopped")
+
+    def _wait_for_trial_completion_before_stop(self, path_name: str) -> None:
+        """Do not tear down ScanImage while the current photostim trial is active."""
+        runtime = self._ensure_session(path_name)
+        prep_state = runtime.prepared_photostim
+        monitor = runtime.waveform_monitor_thread
+        if monitor is not None and monitor.is_alive() and monitor is not threading.current_thread():
+            wait_timeout_s = max(
+                35.0,
+                float(prep_state.waveform_expected_done_time_s or 0.0) + 5.0,
+            )
+            self.signals.simple_status_message.emit(
+                f"Waiting for photostim trial to complete before stopping {path_name}"
+            )
+            self.signals.log_message.emit(
+                f"[{path_name}] STOP: waiting for active trial monitor, timeout={wait_timeout_s:.1f}s"
+            )
+            monitor.join(timeout=wait_timeout_s)
+            if monitor.is_alive():
+                raise RuntimeError(
+                    f"Photostim trial did not complete within {wait_timeout_s:.1f}s; "
+                    "acquisition was not stopped."
+                )
+            self.signals.log_message.emit(
+                f"[{path_name}] STOP: active trial monitor completed"
+            )
+            return
+
+        if prep_state.remaining_expected_triggers is None:
+            return
+
+        self.signals.simple_status_message.emit(
+            f"Waiting for photostim trial to complete before stopping {path_name}"
+        )
+        self.signals.log_message.emit(
+            f"[{path_name}] STOP: pending trial detected; running completion check before stop"
+        )
+        mismatch = self._finalize_pending_photostim_check(
+            path_name,
+            "STOP trial completion check",
+        )
+        if mismatch is not None:
+            raise RuntimeError(
+                f"Photostim trial did not complete cleanly ({mismatch}); acquisition was not stopped."
+            )
+        self.signals.log_message.emit(
+            f"[{path_name}] STOP: pending photostim trial completed"
+        )
 
     def _open_test_slm_dialog(self, path_name: str) -> None:
         dialog = TestSlmDialog(
@@ -5482,24 +5531,6 @@ class ScanImageControlWidget(QWidget):
                     },
                 )
             return
-        if action == "abort_photo_stim":
-            self.signals.log_message.emit(f"[{path_name}] requested photostim abort")
-            try:
-                self._handle_abort_photo_stim_request(
-                    request_path_name=path_name,
-                    reply_address=address,
-                )
-            except Exception as exc:
-                self._send_json_reply(
-                    path_name,
-                    address,
-                    {
-                        "action": "abort_photo_stim",
-                        "status": "error",
-                        "error": str(exc),
-                    },
-                )
-            return
         self.signals.log_message.emit(f"[{path_name} udp] ignored unknown json action '{action}'")
 
     def _send_diagnostic_log_udp(
@@ -6216,44 +6247,6 @@ class ScanImageControlWidget(QWidget):
                 self._send_json_reply(request_path_name, reply_address, payload)
             else:
                 self.signals.log_message.emit(f"[config] gui trigger_photo_stim result={payload}")
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _handle_abort_photo_stim_request(
-        self,
-        request_path_name: str,
-        reply_address: tuple[str, int] | None,
-    ) -> None:
-        photostim_path = self.machine_config.photostim_path if self.machine_config is not None else None
-        if not photostim_path:
-            payload = {
-                "action": "abort_photo_stim",
-                "status": "error",
-                "error": "No photostim path configured",
-            }
-            if reply_address is not None:
-                self._send_json_reply(request_path_name, reply_address, payload)
-            else:
-                self.signals.log_message.emit("[config] abort_photo_stim skipped: no photostim path configured")
-            return
-
-        def worker() -> None:
-            ok = self._run_action(
-                photostim_path,
-                "json abort_photo_stim" if reply_address is not None else "gui abort_photo_stim",
-                self._abort_photo_stim,
-            )
-            payload = {
-                "action": "abort_photo_stim",
-                "status": "ready" if ok else "error",
-            }
-            if not ok:
-                payload["error"] = "abort_photo_stim failed"
-
-            if reply_address is not None:
-                self._send_json_reply(request_path_name, reply_address, payload)
-            else:
-                self.signals.log_message.emit(f"[config] gui abort_photo_stim result={payload}")
 
         threading.Thread(target=worker, daemon=True).start()
 

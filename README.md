@@ -156,6 +156,12 @@ action errors. It has no periodic background activity and does not query MATLAB,
 so it adds no acquisition-time engine traffic. The log is not cleared by `Clear
 Debug Output`.
 
+Each launched MATLAB path also starts a MATLAB `diary` in MATLAB's `tempdir`,
+named `2p_opto_tools_<path>_matlab_diary.log`. This captures Command Window and
+ScanImage output that may be produced while a Python Engine command is still
+blocked. If an Engine command times out, any output received before the timeout
+is included in the Python diagnostic log error.
+
 UDP trigger messages currently supported:
 
 - `acquire`
@@ -225,7 +231,9 @@ Legacy `COM/GOGO` handling now mirrors the old listeners on a per-path basis:
 - runs the path's `start_script.m`
 - sends back legacy `COM/READY`
 
-Legacy `COM/STOP` runs the path's `stop_script.m` and Python then sends `COM/READY`.
+Legacy `COM/STOP` waits for any active photostim trial completion check before
+running the path's `stop_script.m` and sending `COM/READY`. If the trial cannot
+be confirmed complete, acquisition is left running and no `READY` reply is sent.
 
 All UDP parsing, routing, and replies are handled in Python. The MATLAB scripts do not perform UDP I/O.
 

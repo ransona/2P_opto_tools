@@ -222,8 +222,15 @@ class MatlabSession:
 
         threading.Thread(target=worker, daemon=True).start()
         if not done.wait(timeout_s):
+            partial_output = output_buffer.getvalue().strip()
+            timeout_detail = (
+                f"\nOutput before timeout:\n{partial_output}"
+                if partial_output
+                else ""
+            )
             raise MatlabSessionError(
                 f"Timed out waiting for MATLAB path '{self.config.name}' while executing command."
+                f"{timeout_detail}"
             )
         text = output_buffer.getvalue()
         if error_holder:
