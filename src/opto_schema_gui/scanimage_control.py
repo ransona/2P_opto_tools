@@ -146,6 +146,7 @@ class _WindowsMemoryStatus(ctypes.Structure):
 
 class ScanImageSignals(QObject):
     log_message = pyqtSignal(str)
+    matlab_output = pyqtSignal(str)
     simple_status_message = pyqtSignal(str)
     path_status = pyqtSignal(str, str)
     path_udp_log = pyqtSignal(str, str)
@@ -1063,6 +1064,7 @@ class ScanImageControlWidget(QWidget):
         self._resource_monitor_thread.start()
         self.signals = _ControlSignals()
         self.signals.log_message.connect(self._append_log)
+        self.signals.matlab_output.connect(self._append_matlab_output)
         self.signals.simple_status_message.connect(self._append_simple_status)
         self.signals.log_message.connect(
             self._append_diagnostic_log,
@@ -2774,6 +2776,7 @@ class ScanImageControlWidget(QWidget):
         self.show_trigger_count_debug_checkbox = QCheckBox("Trigger count check")
         self.show_stimuli_debug_checkbox = QCheckBox("Stimuli")
         self.show_phase_mask_batch_debug_checkbox = QCheckBox("Phase mask batches")
+        self.show_matlab_output_only_checkbox = QCheckBox("MATLAB output only")
         self.clear_log_btn = QPushButton("Clear Debug Output")
         self.export_diagnostic_log_btn = QPushButton("Export Diagnostic Log")
         for checkbox in (
@@ -2789,6 +2792,9 @@ class ScanImageControlWidget(QWidget):
             checkbox.toggled.connect(self._refresh_debug_log)
             checkbox.toggled.connect(self._save_gui_state)
             filter_layout.addWidget(checkbox)
+        self.show_matlab_output_only_checkbox.toggled.connect(self._refresh_debug_log)
+        self.show_matlab_output_only_checkbox.toggled.connect(self._save_gui_state)
+        filter_layout.addWidget(self.show_matlab_output_only_checkbox)
         filter_layout.addWidget(self.clear_log_btn)
         filter_layout.addWidget(self.export_diagnostic_log_btn)
         filter_layout.addStretch(1)
@@ -3003,6 +3009,7 @@ class ScanImageControlWidget(QWidget):
             ("software_trigger_count", self.show_trigger_count_debug_checkbox),
             ("stimuli", self.show_stimuli_debug_checkbox),
             ("phase_mask_batch", self.show_phase_mask_batch_debug_checkbox),
+            ("matlab_output_only", self.show_matlab_output_only_checkbox),
         )
         for key, checkbox in mapping:
             if key in section:
@@ -3018,6 +3025,7 @@ class ScanImageControlWidget(QWidget):
             "software_trigger_count": str(self.show_trigger_count_debug_checkbox.isChecked()).lower(),
             "stimuli": str(self.show_stimuli_debug_checkbox.isChecked()).lower(),
             "phase_mask_batch": str(self.show_phase_mask_batch_debug_checkbox.isChecked()).lower(),
+            "matlab_output_only": str(self.show_matlab_output_only_checkbox.isChecked()).lower(),
         }
         with self._gui_state_path.open("w", encoding="utf-8") as handle:
             parser.write(handle)
@@ -4888,19 +4896,28 @@ class ScanImageControlWidget(QWidget):
         for line in lines:
             cleaned = line.strip()
             if cleaned:
-                self.signals.log_message.emit(f"[{path_name}] {cleaned}")
+                self.signals.matlab_output.emit(f"[{path_name}] {cleaned}")
+
+    def _append_matlab_output(self, message: str) -> None:
+        self._append_log_entry(message, "matlab_output")
+        self._write_diagnostic_log(self._diagnostic_log_path, message)
 
     def _append_log(self, message: str) -> None:
+        self._append_log_entry(message, self._categorize_debug_message(message))
+
+    def _append_log_entry(self, message: str, category: str) -> None:
         line = f"{self._timestamp()} {message}"
-        category = self._categorize_debug_message(message)
         is_error = "ERROR:" in message
         self._debug_history.append((line, category, is_error))
         if not self._should_show_debug_category(category):
             return
-        if is_error:
+        if is_error or category == "matlab_output":
+            color = "#b91c1c" if is_error else "#111827"
             cursor = self.log_text.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertHtml(f"<span style='color:#b91c1c;'>{html.escape(line)}</span><br>")
+            cursor.insertHtml(
+                f"<span style='color:{color}; font-weight:600;'>{html.escape(line)}</span><br>"
+            )
             self.log_text.setTextCursor(cursor)
         else:
             self.log_text.append(line)
@@ -5210,6 +5227,8 @@ class ScanImageControlWidget(QWidget):
         return "general"
 
     def _should_show_debug_category(self, category: str) -> bool:
+        if self.show_matlab_output_only_checkbox.isChecked():
+            return category == "matlab_output"
         self._debug_category_enabled = {
             "general": self.show_general_debug_checkbox.isChecked(),
             "udp": self.show_udp_debug_checkbox.isChecked(),
@@ -5218,6 +5237,7 @@ class ScanImageControlWidget(QWidget):
             "software_trigger_count": self.show_trigger_count_debug_checkbox.isChecked(),
             "stimuli": self.show_stimuli_debug_checkbox.isChecked(),
             "phase_mask_batch": self.show_phase_mask_batch_debug_checkbox.isChecked(),
+            "matlab_output": True,
         }
         if category == "udp":
             return self.show_udp_debug_checkbox.isChecked()
@@ -5238,10 +5258,13 @@ class ScanImageControlWidget(QWidget):
         for line, category, is_error in self._debug_history:
             if not self._should_show_debug_category(category):
                 continue
-            if is_error:
+            if is_error or category == "matlab_output":
+                color = "#b91c1c" if is_error else "#111827"
                 cursor = self.log_text.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
-                cursor.insertHtml(f"<span style='color:#b91c1c;'>{html.escape(line)}</span><br>")
+                cursor.insertHtml(
+                    f"<span style='color:{color}; font-weight:600;'>{html.escape(line)}</span><br>"
+                )
                 self.log_text.setTextCursor(cursor)
             else:
                 self.log_text.append(line)
