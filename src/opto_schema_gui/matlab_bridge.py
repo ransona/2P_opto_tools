@@ -2184,6 +2184,11 @@ def build_configure_online_analysis_command(
             "try; hInt.integrationHistoryLength = max(32, round(double(cfg.history_length))); catch; end",
             "hInt.roiGroup = rg;",
             "hInt.enable = numel(rg.rois) > 0;",
+            # ScanImage expands the auxiliary ROI-integration panel when the
+            # integration GUI is lazily created. Keep processing enabled, but
+            # restore the main ScanImage layout after configuring the ROIs.
+            "try; if evalin('base', 'exist(''hSIGui'',''var'')'); hSIGui_cfg = evalin('base', 'hSIGui'); if ~isempty(hSIGui_cfg) && most.idioms.isValidObj(hSIGui_cfg.hAuxiliaryPanel); hSIGui_cfg.hAuxiliaryPanel.hHeaderPanel.miniMaximize(true); end; end; catch; end",
+            "disp('ONLINE_ANALYSIS_AUXILIARY_PANEL_MINIMIZED');",
             "result = struct();",
             "result.status = 'ready';",
             "result.added = cellstr(added);",
