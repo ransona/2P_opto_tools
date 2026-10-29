@@ -1949,31 +1949,29 @@ def build_prepare_trial_waveform_command(
     callback_body = (
         "if ~exist('optoPhotostimTrialDoTaskStarted','var') || ~optoPhotostimTrialDoTaskStarted, "
         "optoPhotostimTrialDoTaskStartedWallTime = posixtime(datetime('now','TimeZone','UTC')); "
-        "optoPhotostimTrialCallbackCount = optoPhotostimTrialCallbackCount + 1; "
         "optoPhotostimTrialDoTaskStarted = true; "
+        "end; "
+        "if ~exist('optoPhotostimTrialCallbackCount','var'), optoPhotostimTrialCallbackCount = 0; end; "
+        "optoPhotostimTrialCallbackCount = optoPhotostimTrialCallbackCount + 1; "
+        "if ~exist('optoPhotostimTrialIntegrationSnapshotDone','var'), optoPhotostimTrialIntegrationSnapshotDone = false; end; "
+        "if ~optoPhotostimTrialIntegrationSnapshotDone && mod(optoPhotostimTrialCallbackCount - 1, 20) == 0, "
         "optoPhotostimTrialCallbackError = ''; "
         "try; "
         "hSI_cb = hSI; "
         "irm_cb = hSI_cb.hIntegrationRoiManager; "
-        "roiNames_cb = cellfun(@char, {irm_cb.intParams.intRois.name}, 'UniformOutput', false); "
-        "cursor_cb = double(irm_cb.integrationValueCursor); "
-        "if isempty(cursor_cb), cursor_cb = zeros(1, numel(roiNames_cb)); end; "
-        "if isscalar(cursor_cb) && numel(roiNames_cb) > 1, cursor_cb = repmat(cursor_cb, 1, numel(roiNames_cb)); end; "
-        "frameHist_cb = double(irm_cb.integrationFrameNumberHistory); "
-        "timeHist_cb = double(irm_cb.integrationTimestampHistory); "
-        "frameVals_cb = zeros(1, numel(roiNames_cb)); "
-        "timeVals_cb = zeros(1, numel(roiNames_cb)); "
-        "for ii_cb = 1:numel(roiNames_cb), "
-        "cursorIdx_cb = min(max(1, round(cursor_cb(min(ii_cb, numel(cursor_cb))))), max(1, size(frameHist_cb, 1))); "
-        "if isvector(frameHist_cb), frameVals_cb(ii_cb) = frameHist_cb(cursorIdx_cb); "
-        "else, frameVals_cb(ii_cb) = frameHist_cb(cursorIdx_cb, min(ii_cb, size(frameHist_cb, 2))); end; "
-        "if isvector(timeHist_cb), timeVals_cb(ii_cb) = timeHist_cb(cursorIdx_cb); "
-        "else, timeVals_cb(ii_cb) = timeHist_cb(cursorIdx_cb, min(ii_cb, size(timeHist_cb, 2))); end; "
-        "end; "
-        "optoPhotostimTrialIntegrationSnapshot = struct('roi_names', {roiNames_cb}, 'cursors', double(cursor_cb(:).'), 'frame_numbers', double(frameVals_cb(:).'), 'timestamps', double(timeVals_cb(:).')); "
+        "[intRois_cb, value_cb, time_cb, frame_cb] = irm_cb.getIntegrationValues(); "
+        "if isempty(intRois_cb), "
+        "optoPhotostimTrialCallbackSnapshotStatus = 'not_ready'; "
+        "else, "
+        "roiNames_cb = cellfun(@char, {intRois_cb.name}, 'UniformOutput', false); "
+        "cursor_cb = double(irm_cb.integrationValueCursor(:).'); "
+        "if numel(cursor_cb) ~= numel(roiNames_cb), cursor_cb = zeros(1, numel(roiNames_cb)); end; "
+        "optoPhotostimTrialIntegrationSnapshot = struct('roi_names', {roiNames_cb}, 'cursors', cursor_cb, 'frame_numbers', double(frame_cb(:).'), 'timestamps', double(time_cb(:).')); "
+        "optoPhotostimTrialIntegrationSnapshotDone = true; "
         "optoPhotostimTrialCallbackSnapshotStatus = 'ok'; "
+        "end; "
         "catch ME_cb; "
-        "optoPhotostimTrialCallbackSnapshotStatus = 'error'; "
+        "optoPhotostimTrialCallbackSnapshotStatus = 'not_ready'; "
         "optoPhotostimTrialCallbackError = ME_cb.message; "
         "end; "
         "end;"
@@ -1996,6 +1994,7 @@ def build_prepare_trial_waveform_command(
             "assignin('base', 'optoPhotostimTrialCallbackCount', 0);",
             "assignin('base', 'optoPhotostimTrialCallbackError', '');",
             "assignin('base', 'optoPhotostimTrialCallbackSnapshotStatus', 'not_run');",
+            "assignin('base', 'optoPhotostimTrialIntegrationSnapshotDone', false);",
             "assignin('base', 'optoPhotostimTrialIntegrationSnapshot', struct('roi_names', {{}}, 'cursors', [], 'frame_numbers', [], 'timestamps', []));",
             "do_task = opto.scanimage.testVdaqDoTriggeredByDi("
             + f"'outputLine', {matlab_string(path_config.trial_waveform_output_port.split('/')[-1])}, "
@@ -2089,6 +2088,7 @@ def build_stop_trial_waveform_command(path_config: PathConfig) -> str:
             "if evalin('base', 'exist(''optoPhotostimTrialCallbackCount'',''var'')'); evalin('base', 'clear optoPhotostimTrialCallbackCount'); end",
             "if evalin('base', 'exist(''optoPhotostimTrialCallbackError'',''var'')'); evalin('base', 'clear optoPhotostimTrialCallbackError'); end",
             "if evalin('base', 'exist(''optoPhotostimTrialCallbackSnapshotStatus'',''var'')'); evalin('base', 'clear optoPhotostimTrialCallbackSnapshotStatus'); end",
+            "if evalin('base', 'exist(''optoPhotostimTrialIntegrationSnapshotDone'',''var'')'); evalin('base', 'clear optoPhotostimTrialIntegrationSnapshotDone'); end",
             "if evalin('base', 'exist(''optoPhotostimTrialIntegrationSnapshot'',''var'')'); evalin('base', 'clear optoPhotostimTrialIntegrationSnapshot'); end",
             "disp('TRIAL_WAVEFORM_STOPPED');",
         ]
