@@ -61,6 +61,7 @@ from .matlab_bridge import (
     ExperimentContext,
     MachineConfig,
     MatlabSession,
+    MatlabSessionError,
     MatlabSessionCancelled,
     PathConfig,
     autodetect_machine_name,
@@ -99,6 +100,7 @@ from .matlab_bridge import (
     build_test_photostim_command,
     build_trial_waveform_status_command,
     build_trigger_photostim_command,
+    build_warmup_photostim_command,
     build_arm_trial_waveform_command,
     configs_root,
     context_to_matlab_variables,
@@ -260,6 +262,8 @@ class PathRuntime:
     udp_listener: "UdpListener | None" = None
     status: str = "stopped"
     launched: bool = False
+    session_lost: bool = False
+    session_loss_message: str = ""
     last_context: ExperimentContext | None = None
     prepared_photostim: PreparedPhotostimState = field(default_factory=PreparedPhotostimState)
     experiment_tracking: ExperimentTrackingState = field(default_factory=ExperimentTrackingState)
@@ -464,6 +468,7 @@ class UdpListener(threading.Thread):
 class _ControlSignals(ScanImageSignals):
     udp_message = pyqtSignal(str, bytes, tuple)
     remote_prompt_response = pyqtSignal(str, str, object)
+    matlab_session_lost = pyqtSignal(str, str)
 
 
 class TestSlmDialog(QDialog):
@@ -1085,6 +1090,7 @@ class ScanImageControlWidget(QWidget):
         self.signals.waveform_test_result.connect(lambda *_: None)
         self.signals.udp_message.connect(self._handle_udp_message)
         self.signals.remote_prompt_response.connect(self._handle_remote_prompt_response)
+        self.signals.matlab_session_lost.connect(self._show_matlab_session_lost_prompt)
         self.signals.show_connecting_dialog.connect(self._show_connecting_dialog)
         self.signals.update_connecting_dialog.connect(self._update_connecting_dialog)
         self.signals.hide_connecting_dialog.connect(self._hide_connecting_dialog)
@@ -1108,6 +1114,7 @@ class ScanImageControlWidget(QWidget):
         self._startup_reconnect_prompt_paths: list[str] = []
         self._remote_prompt_token = 0
         self._remote_prompt_waiters: dict[int, tuple[threading.Event, dict[str, object]]] = {}
+        self._session_loss_prompt_boxes: dict[str, QMessageBox] = {}
         self._debug_category_enabled: dict[str, bool] = {
             "general": True,
             "udp": True,
@@ -2099,9 +2106,24 @@ class ScanImageControlWidget(QWidget):
             try:
                 self._poll_online_analysis_once(imaging_path)
             except Exception as exc:
+                if stop_event.is_set():
+                    return
+                message = str(exc)
+                if self._is_matlab_session_loss(exc):
+                    # The MATLAB Engine object can remain non-None after ScanImage
+                    # has exited. Invalidate it and stop polling rather than retrying.
+                    self._handle_possible_matlab_session_loss(
+                        imaging_path,
+                        "polling online-analysis data",
+                        exc,
+                    )
+                    stop_event.set()
+                    return
                 with self._online_analysis.lock:
-                    self._online_analysis.last_error = str(exc)
-                self.signals.log_message.emit(f"[online analysis] poll warning: {exc}")
+                    previous_error = self._online_analysis.last_error
+                    self._online_analysis.last_error = message
+                if message != previous_error:
+                    self.signals.log_message.emit(f"[online analysis] poll warning: {message}")
             with self._online_analysis.lock:
                 poll_interval_s = max(0.01, float(self._online_analysis.poll_interval_s))
             stop_event.wait(poll_interval_s)
@@ -3830,14 +3852,18 @@ class ScanImageControlWidget(QWidget):
         matlab_command = command
         if prepend_preamble:
             matlab_command = "\n".join([build_global_preamble(runtime.path_config), command])
-        with runtime.lock:
-            assert runtime.session is not None
-            lines = runtime.session.eval(
-                matlab_command,
-                timeout_s=timeout_s if timeout_s is not None else runtime.path_config.command_timeout_s,
-            )
-            self._emit_lines(path_name, lines)
-            return lines
+        try:
+            with runtime.lock:
+                assert runtime.session is not None
+                lines = runtime.session.eval(
+                    matlab_command,
+                    timeout_s=timeout_s if timeout_s is not None else runtime.path_config.command_timeout_s,
+                )
+        except Exception as exc:
+            self._handle_possible_matlab_session_loss(path_name, "executing a MATLAB command", exc)
+            raise MatlabSessionError(self._matlab_connection_error(path_name, exc)) from exc
+        self._emit_lines(path_name, lines)
+        return lines
 
     def _add_path_tab(self, path_name: str) -> None:
         runtime = self._runtimes[path_name]
@@ -3928,10 +3954,117 @@ class ScanImageControlWidget(QWidget):
             self._record_diagnostic_incident(path_name, label, exc)
             return False
         except Exception as exc:
+            self._handle_possible_matlab_session_loss(path_name, label, exc)
             self.signals.log_message.emit(f"[{path_name}] ERROR: {exc}")
             self._record_diagnostic_incident(path_name, label, exc)
             return False
         return True
+
+    @staticmethod
+    def _is_matlab_session_loss(exc: BaseException) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "unknown exception",
+                "matlab session is not running",
+                "matlab engine",
+                "engine is not running",
+                "engine has been disconnected",
+                "connection to matlab",
+            )
+        )
+
+    def _matlab_connection_error(self, path_name: str, exc: BaseException) -> str:
+        runtime = self._runtimes.get(path_name)
+        if runtime is not None and runtime.session_lost:
+            return (
+                "Connection to MATLAB session has been lost. "
+                "Re-initiate the MATLAB connection in OptoGUI before continuing."
+            )
+        return str(exc)
+
+    def _handle_possible_matlab_session_loss(
+        self,
+        path_name: str,
+        operation: str,
+        exc: BaseException,
+    ) -> bool:
+        if not self._is_matlab_session_loss(exc):
+            return False
+        runtime = self._runtimes.get(path_name)
+        if runtime is None:
+            return False
+        message = (
+            "Connection to MATLAB session has been lost while "
+            f"{operation}: {exc}"
+        )
+        with runtime.lock:
+            if runtime.session_lost:
+                return True
+            session = runtime.session
+            runtime.session = None
+            runtime.session_lost = True
+            runtime.session_loss_message = message
+            runtime.status = "MATLAB disconnected"
+            runtime.launched = False
+            runtime.prepared_photostim.reset()
+        if session is not None:
+            session.stop()
+        self._cancel_software_trigger(path_name)
+        self._cancel_waveform_monitor(path_name)
+        self._stop_online_analysis_poller()
+        with self._online_analysis.lock:
+            self._online_analysis.last_error = message
+            self._online_analysis.configured = False
+        self.signals.path_status.emit(path_name, "MATLAB disconnected")
+        self.signals.simple_status_message.emit(
+            f"WARNING: MATLAB connection lost for {path_name}; BVGUI requests will fail until reconnected"
+        )
+        self.signals.log_message.emit(f"[{path_name}] {message}")
+        self.signals.matlab_session_lost.emit(path_name, message)
+        return True
+
+    def _show_matlab_session_lost_prompt(self, path_name: str, message: str) -> None:
+        if path_name in self._session_loss_prompt_boxes:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("MATLAB connection lost")
+        box.setText(
+            f"The MATLAB/ScanImage session for '{path_name}' is no longer available.\n\n"
+            "BVGUI requests will receive an error until the connection is re-established.\n\n"
+            "Attempt to re-initiate the MATLAB connection now?"
+        )
+        box.setInformativeText(message)
+        yes_button = box.addButton("Re-initiate MATLAB", QMessageBox.ButtonRole.AcceptRole)
+        no_button = box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        self._session_loss_prompt_boxes[path_name] = box
+
+        def resolve(button: object) -> None:
+            if button is yes_button:
+                self._resolve_matlab_session_loss_prompt(path_name, True)
+            elif button is no_button:
+                self._resolve_matlab_session_loss_prompt(path_name, False)
+
+        box.clicked.connect(resolve)
+        box.open()
+
+    def _resolve_matlab_session_loss_prompt(self, path_name: str, reconnect: bool) -> None:
+        box = self._session_loss_prompt_boxes.pop(path_name, None)
+        if box is not None:
+            box.close()
+            box.deleteLater()
+        if not reconnect:
+            self.signals.log_message.emit(
+                f"[{path_name}] MATLAB reconnection deferred; BVGUI requests remain blocked"
+            )
+            return
+        runtime = self._runtimes.get(path_name)
+        if runtime is not None:
+            runtime.status = "reconnecting"
+            self.signals.path_status.emit(path_name, runtime.status)
+        self._spawn_action(path_name, "Re-initiating MATLAB connection", self._launch_path)
 
     def start_config(self) -> None:
         if self.machine_config is None:
@@ -4021,9 +4154,14 @@ class ScanImageControlWidget(QWidget):
             ),
         )
 
-    def _ensure_session(self, path_name: str) -> PathRuntime:
+    def _ensure_session(self, path_name: str, *, allow_session_loss_reconnect: bool = False) -> PathRuntime:
         runtime = self._runtimes[path_name]
         with runtime.lock:
+            if runtime.session is None and runtime.session_lost and not allow_session_loss_reconnect:
+                raise MatlabSessionError(
+                    "Connection to MATLAB session has been lost. "
+                    "Re-initiate the MATLAB connection in OptoGUI before continuing."
+                )
             if runtime.session is None:
                 show_connect_dialog = not self.force_simulated_checkbox.isChecked()
                 cancel_event = threading.Event()
@@ -4056,6 +4194,8 @@ class ScanImageControlWidget(QWidget):
                     if show_connect_dialog:
                         self.signals.hide_connecting_dialog.emit(path_name)
                 runtime.session = session
+                runtime.session_lost = False
+                runtime.session_loss_message = ""
                 if session.simulated:
                     runtime.status = "simulated"
                 elif session.attached:
@@ -4101,7 +4241,7 @@ class ScanImageControlWidget(QWidget):
         )
 
     def _launch_path(self, path_name: str) -> None:
-        self._ensure_session(path_name)
+        self._ensure_session(path_name, allow_session_loss_reconnect=True)
         try:
             self._configure_online_analysis_if_possible()
         except Exception as exc:
@@ -4122,6 +4262,8 @@ class ScanImageControlWidget(QWidget):
             if runtime.session is not None:
                 runtime.session.stop()
                 runtime.session = None
+            runtime.session_lost = False
+            runtime.session_loss_message = ""
             runtime.status = "stopped"
             runtime.launched = False
             runtime.last_context = None
@@ -4740,6 +4882,8 @@ class ScanImageControlWidget(QWidget):
                 pattern = project.patterns[step.pattern]
                 sequence_end_s = max(sequence_end_s, float(step.start_s) + float(pattern.duration_s))
             block_group_count = max(1, int(math.ceil(sequence_end_s / photostim_block_duration_s)))
+            if runtime.path_config.warmup_first_mask:
+                next_group_num += 1
             step_groups = list(range(next_group_num, next_group_num + block_group_count))
             sequence_to_stimulus_groups[sequence_name] = step_groups
             sequence_to_stimulus_group[sequence_name] = step_groups[0]
@@ -5104,6 +5248,8 @@ class ScanImageControlWidget(QWidget):
             paths[path_name] = {
                 "status": runtime.status,
                 "launched": runtime.launched,
+                "session_lost": runtime.session_lost,
+                "session_loss_message": runtime.session_loss_message,
                 "listener_on": runtime.udp_listener is not None,
                 "experiment": {
                     "exp_id": tracking.exp_id,
@@ -5478,6 +5624,7 @@ class ScanImageControlWidget(QWidget):
                     reply_address=address,
                 )
         except Exception as exc:
+            self._handle_possible_matlab_session_loss(path_name, "updating experiment parameters", exc)
             self.signals.log_message.emit(
                 f"[{path_name}] update_experiment_params failed: {exc}"
             )
@@ -5487,7 +5634,7 @@ class ScanImageControlWidget(QWidget):
                 {
                     "action": "update_experiment_params",
                     "status": "error",
-                    "error": str(exc),
+                    "error": self._matlab_connection_error(path_name, exc),
                 },
             )
 
@@ -5504,11 +5651,12 @@ class ScanImageControlWidget(QWidget):
             with runtime.experiment_update_lock:
                 self._handle_start_trial_request(path_name, message, address)
         except Exception as exc:
+            self._handle_possible_matlab_session_loss(path_name, "preparing a trial", exc)
             self.signals.log_message.emit(f"[{path_name}] start_trial preparation failed: {exc}")
             self._send_json_reply(
                 path_name,
                 address,
-                {"action": "start_trial", "status": "error", "error": str(exc)},
+                {"action": "start_trial", "status": "error", "error": self._matlab_connection_error(path_name, exc)},
             )
 
     def _extract_json_command(self, payload: bytes) -> dict[str, object] | None:
@@ -5534,16 +5682,49 @@ class ScanImageControlWidget(QWidget):
         udp_line = f"[{path_name} udp {address[0]}:{address[1]}] received action={action}"
         self.signals.path_udp_log.emit(path_name, udp_line)
 
+        runtime = self._runtimes.get(path_name)
+        log_actions = {
+            "list_log_files",
+            "get_diagnostic_log",
+            "get_resource_log",
+            "get_matlab_diary",
+        }
+        if runtime is not None and runtime.session_lost and action not in log_actions:
+            self._send_json_reply(
+                path_name,
+                address,
+                {
+                    "action": action,
+                    "status": "error",
+                    "error": (
+                        "Connection to MATLAB session has been lost. "
+                        "Re-initiate the MATLAB connection in OptoGUI before continuing."
+                    ),
+                    "connection_lost": True,
+                    "reconnect_required": True,
+                },
+            )
+            self.signals.log_message.emit(
+                f"[{path_name}] rejected UDP action '{action}': MATLAB session is disconnected"
+            )
+            return
+
+        if action == "list_log_files":
+            self._send_log_file_list(path_name, address, str(message.get("log", "all")))
+            return
+
         if action in {"get_diagnostic_log", "get_resource_log", "get_matlab_diary"}:
             requested_lines = message.get("lines", 100)
             request_id = str(message.get("request_id", "")).strip()
+            archive = str(message.get("archive", "")).strip()
             self.signals.log_message.emit(
                 f"[{path_name}] requested {action} tail lines={requested_lines}"
+                + (f" archive={archive}" if archive else "")
                 + (f" request_id={request_id}" if request_id else "")
             )
             threading.Thread(
                 target=self._send_log_file_udp,
-                args=(path_name, address, requested_lines, request_id, action),
+                args=(path_name, address, requested_lines, request_id, action, archive),
                 daemon=True,
             ).start()
             return
@@ -5625,6 +5806,7 @@ class ScanImageControlWidget(QWidget):
                     reply_address=address,
                 )
             except Exception as exc:
+                self._handle_possible_matlab_session_loss(path_name, "preparing photostimulation patterns", exc)
                 self._send_json_reply(
                     path_name,
                     address,
@@ -5634,7 +5816,7 @@ class ScanImageControlWidget(QWidget):
                         "schema_name": schema_name,
                         "expID": exp_id,
                         "seq_nums": seq_nums_raw,
-                        "error": str(exc),
+                        "error": self._matlab_connection_error(path_name, exc),
                     },
                 )
             return
@@ -5673,6 +5855,7 @@ class ScanImageControlWidget(QWidget):
                     reply_address=address,
                 )
             except Exception as exc:
+                self._handle_possible_matlab_session_loss(path_name, "triggering photostimulation", exc)
                 self._send_json_reply(
                     path_name,
                     address,
@@ -5682,7 +5865,7 @@ class ScanImageControlWidget(QWidget):
                         "schema_name": schema_name,
                         "expID": exp_id,
                         "seq_num": seq_num_raw,
-                        "error": str(exc),
+                        "error": self._matlab_connection_error(path_name, exc),
                     },
                 )
             return
@@ -5694,13 +5877,14 @@ class ScanImageControlWidget(QWidget):
                     reply_address=address,
                 )
             except Exception as exc:
+                self._handle_possible_matlab_session_loss(path_name, "checking ScanImage idle state", exc)
                 self._send_json_reply(
                     path_name,
                     address,
                     {
                         "action": "check_idle",
                         "status": "error",
-                        "error": str(exc),
+                        "error": self._matlab_connection_error(path_name, exc),
                     },
                 )
             return
@@ -5713,6 +5897,7 @@ class ScanImageControlWidget(QWidget):
         requested_lines: object,
         request_id: str,
         action: str,
+        archive: str = "",
     ) -> None:
         """Send an approved log-file tail as bounded, reassemblable UDP chunks."""
         log_paths = {
@@ -5749,7 +5934,16 @@ class ScanImageControlWidget(QWidget):
         if line_count > DIAGNOSTIC_LOG_UDP_MAX_LINES:
             line_count = DIAGNOSTIC_LOG_UDP_MAX_LINES
 
-        log_path = log_paths[action]
+        active_path = log_paths[action]
+        log_path = self._select_log_path(active_path, archive)
+        if archive and log_path is None:
+            self._send_json_reply(
+                path_name,
+                address,
+                {"action": action, "status": "error", "request_id": request_id,
+                 "error": f"unknown or unsafe log archive '{archive}'"},
+            )
+            return
         if log_path is None or not log_path.is_file():
             self._send_json_reply(
                 path_name,
@@ -5795,6 +5989,7 @@ class ScanImageControlWidget(QWidget):
                 "requested_lines": int(requested_lines),
                 "total_lines": len(clean_lines),
                 "log_path": str(log_path),
+                "archive": archive,
                 "lines": candidate,
             }
             encoded_size = len(json.dumps(probe, separators=(",", ":")).encode("utf-8"))
@@ -5819,13 +6014,83 @@ class ScanImageControlWidget(QWidget):
                     "requested_lines": int(requested_lines),
                     "total_lines": len(clean_lines),
                     "log_path": str(log_path),
+                    "archive": archive,
                     "lines": chunk,
                 },
             )
         self.signals.log_message.emit(
             f"[{path_name}] sent {action} tail lines={len(clean_lines)} "
-            f"chunks={len(chunks)} request_id={request_id or '<none>'}"
+            f"chunks={len(chunks)} archive={archive or '<active>'} "
+            f"request_id={request_id or '<none>'}"
         )
+
+    def _send_log_file_list(
+        self,
+        path_name: str,
+        address: tuple[str, int],
+        requested_log: str,
+    ) -> None:
+        """Return active and rotated logs without accepting arbitrary paths."""
+        paths = {
+            "diagnostic": self._diagnostic_log_path,
+            "resource": self._resource_log_path,
+            "matlab_diary": self._matlab_diary_path(path_name),
+        }
+        if requested_log not in {"all", *paths}:
+            self._send_json_reply(
+                path_name, address,
+                {"action": "list_log_files", "status": "error",
+                 "error": "log must be diagnostic, resource, matlab_diary, or all"},
+            )
+            return
+
+        files: list[dict[str, object]] = []
+        for log_name, active_path in paths.items():
+            if requested_log not in {"all", log_name} or active_path is None:
+                continue
+            candidates = [active_path]
+            candidates.extend(sorted(
+                active_path.parent.glob(f"{active_path.stem}_*{active_path.suffix}"),
+                key=lambda item: item.name, reverse=True,
+            ))
+            for candidate in candidates:
+                try:
+                    stat = candidate.stat()
+                except OSError:
+                    continue
+                files.append({
+                    "log": log_name,
+                    "archive": "" if candidate == active_path else candidate.name,
+                    "name": candidate.name,
+                    "path": str(candidate),
+                    "bytes": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                })
+        self._send_json_reply(
+            path_name, address,
+            {"action": "list_log_files", "status": "ok", "files": files},
+        )
+
+    @staticmethod
+    def _select_log_path(active_path: Path | None, archive: str) -> Path | None:
+        if active_path is None:
+            return None
+        if not archive:
+            return active_path
+        candidate = Path(archive)
+        if candidate.name != archive or candidate.parent != Path('.'):
+            return None
+        if not candidate.name.startswith(f"{active_path.stem}_"):
+            return None
+        if candidate.suffix != active_path.suffix:
+            return None
+        resolved = active_path.parent / candidate.name
+        try:
+            if resolved.resolve().parent != active_path.parent.resolve():
+                return None
+        except OSError:
+            return None
+        return resolved
 
     @staticmethod
     def _matlab_diary_path(path_name: str) -> Path:
@@ -6429,7 +6694,10 @@ class ScanImageControlWidget(QWidget):
                     f"(insert_position={insert_position}, idle_position={idle_position})"
                 )
             else:
-                payload["error"] = "trigger_photo_stim failed"
+                payload["error"] = self._matlab_connection_error(
+                    request_path_name,
+                    RuntimeError("trigger_photo_stim failed"),
+                )
 
             if reply_address is not None:
                 self._send_json_reply(request_path_name, reply_address, payload)
@@ -6464,6 +6732,19 @@ class ScanImageControlWidget(QWidget):
             )
             if not ok and reply_address is None:
                 self.signals.log_message.emit("[config] gui check_idle failed")
+            elif not ok and reply_address is not None:
+                self._send_json_reply(
+                    request_path_name,
+                    reply_address,
+                    {
+                        "action": "check_idle",
+                        "status": "error",
+                        "error": self._matlab_connection_error(
+                            photostim_path,
+                            RuntimeError("check_idle failed"),
+                        ),
+                    },
+                )
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -7295,6 +7576,21 @@ class ScanImageControlWidget(QWidget):
         self._cancel_waveform_monitor(path_name)
         if len(trigger_times_s) != len(stimulus_group_nums):
             raise ValueError("Trigger timing does not match the planned triggered stimulus sequence.")
+        if runtime.path_config.warmup_first_mask:
+            warmup_group_num = stimulus_group_nums[0] - 1
+            self.signals.log_message.emit(
+                f"[{path_name}] triggering zero-power first-mask warm-up group {warmup_group_num}"
+            )
+            with runtime.lock:
+                assert runtime.session is not None
+                warmup_lines = runtime.session.eval(
+                    build_warmup_photostim_command(runtime.path_config, warmup_group_num),
+                    timeout_s=runtime.path_config.command_timeout_s,
+                )
+            self._emit_lines(path_name, warmup_lines)
+            self.signals.log_message.emit(
+                f"[{path_name}] zero-power first-mask warm-up completed"
+            )
         trigger_lines = self._apply_trigger_sequence(path_name, stimulus_group_nums)
         self.signals.log_message.emit(
             f"[{path_name}] TIMING trigger sequence programmed: "

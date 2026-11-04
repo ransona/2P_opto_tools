@@ -66,6 +66,8 @@ class PathConfig:
     min_center_distance_um: float
     trial_waveform_output_port: str
     trial_waveform_photostim_trigger_term: str
+    warmup_first_mask: bool
+    warmup_first_mask_duration_s: float
     trial_waveform_start_trigger_port: str
     trial_waveform_start_trigger_edge: str
     trial_waveform_sample_rate_hz: float
@@ -910,6 +912,8 @@ def load_machine_config(repo_root: str | Path, machine_name: str, config_name: s
             trial_waveform_photostim_trigger_term=_get_string(
                 section, None, "trial_waveform_photostim_trigger_term", "D1.7"
             ),
+            warmup_first_mask=_get_bool(section, None, "warmup_first_mask", True),
+            warmup_first_mask_duration_s=_get_float(section, None, "warmup_first_mask_duration_s", 0.05),
             trial_waveform_start_trigger_port=_get_string(
                 section, None, "trial_waveform_start_trigger_port", "/vDAQ0/D0.6"
             ),
@@ -970,6 +974,8 @@ def build_import_command(
             "    ParkDuration=0.001, ...",
             f"    TriggerTerm={matlab_string(path_config.trial_waveform_photostim_trigger_term)}, ...",
             f"    MinCenterDistanceUm={path_config.min_center_distance_um:.12g}, ...",
+            f"    WarmupFirstMask={'true' if path_config.warmup_first_mask else 'false'}, ...",
+            f"    WarmupDuration={path_config.warmup_first_mask_duration_s:.12g}, ...",
             "    Revolutions=5);",
             "disp('Prepared schema photostim patterns used by sequence groups:');",
             "disp(importedPatternNames);",
@@ -1055,6 +1061,8 @@ def build_prepare_schema_photostim_command(
         f"    PrefixBlankToSequence={'true' if prefix_blank_to_sequence else 'false'}, ...",
         f"    EmbedBlankAndParkInStimGroup={'true' if embed_blank_and_park_in_stim_group else 'false'}, ...",
         f"    SingleEpochPattern={'true' if single_epoch_pattern else 'false'}, ...",
+        f"    WarmupFirstMask={'true' if path_config.warmup_first_mask else 'false'}, ...",
+        f"    WarmupDuration={path_config.warmup_first_mask_duration_s:.12g}, ...",
         f"    NumSequences={resolved_num_sequences}, ...",
         f"    MinCenterDistanceUm={path_config.min_center_distance_um:.12g}, ...",
         "    Revolutions=5);",
@@ -1862,6 +1870,34 @@ def build_trigger_photostim_command(path_config: PathConfig, stimulus_group_indi
         "end",
     ]
     return "\n".join(lines)
+
+
+def build_warmup_photostim_command(path_config: PathConfig, warmup_group_index: int) -> str:
+    """Advance the zero-power first-mask group before the trial trigger."""
+    hsi = path_config.hsi_variable
+    return "\n".join(
+        [
+            build_global_preamble(path_config),
+            f"assert(~isempty({hsi}) && isprop({hsi}, 'hPhotostim') && ~isempty({hsi}.hPhotostim), 'ScanImage photostim handle is not available.');",
+            f"hPs = {hsi}.hPhotostim;",
+            "assert(hPs.active, 'Photostim must be active before the first-mask warm-up.');",
+            f"warmupGroup = {int(warmup_group_index)};",
+            "selected = double(hPs.sequenceSelectedStimuli(:).');",
+            "positionBefore = double(hPs.sequencePosition);",
+            "assert(positionBefore >= 1 && positionBefore <= numel(selected), 'Photostim sequence position is invalid before warm-up.');",
+            "assert(selected(positionBefore) == warmupGroup, 'Photostim sequence is not positioned on the first-mask warm-up group.');",
+            "disp('PHOTOSTIM_WARMUP_BEGIN');",
+            "disp(positionBefore);",
+            "hPs.triggerStim();",
+            "drawnow();",
+            f"pause({path_config.warmup_first_mask_duration_s:.12g});",
+            "positionAfter = double(hPs.sequencePosition);",
+            "disp('PHOTOSTIM_WARMUP_END');",
+            "disp(positionAfter);",
+            "assert(positionAfter == positionBefore + 1, 'First-mask warm-up did not advance exactly one photostim sequence group.');",
+            "disp('PHOTOSTIM_WARMUP_READY');",
+        ]
+    )
 
 
 def build_photostim_sequence_status_command(path_config: PathConfig) -> str:

@@ -22,11 +22,17 @@ arguments
     % Build all groups first, then assign once to avoid ScanImage's per-group
     % SLM-listener redraw and coordinate-transform work.
     opts.BatchAssignGroups (1,1) logical = true
+    % Add a zero-power copy of each sequence's first mask. Python triggers
+    % this group before the trial so the real first mask is already selected.
+    opts.WarmupFirstMask (1,1) logical = true
+    opts.WarmupDuration (1,1) double = 0.05
 end
 
 prepTimer = tic();
 stageTimer = tic();
 fprintf('PREP_TIMING total begin\n');
+assert(isfinite(opts.WarmupDuration) && opts.WarmupDuration > 0, ...
+    'WarmupDuration must be positive.');
 
 if ~isprop(hSI, 'hPhotostim') || isempty(hSI.hPhotostim)
     error('The provided hSI handle does not expose hPhotostim.');
@@ -112,6 +118,9 @@ for idx = 1:numel(preparedSequenceIndices)
     sequenceName = sequenceNames(preparedSequenceIndices(idx));
     sequence = getStructByOriginalName(schema.sequences, sequenceName, "Sequence");
     sequenceSteps = getStructArrayField(sequence, 'steps');
+    if isempty(sequenceSteps)
+        error('Sequence "%s" contains no steps.', sequenceName);
+    end
     for stepIdx = 1:numel(sequenceSteps)
         stepPatternName = string(sequenceSteps(stepIdx).pattern);
         stepPatternNumber = find(schemaPatternNames == stepPatternName, 1, 'first');
@@ -130,6 +139,29 @@ for idx = 1:numel(preparedSequenceIndices)
 
     sequenceDuration_s = computeSequenceDuration(sequenceSteps, schema.patterns);
     blockCount = max(1, ceil(double(sequenceDuration_s) ./ double(opts.BlockDuration)));
+    if opts.WarmupFirstMask
+        firstStepIdx = 1;
+        firstStepStart_s = inf;
+        for stepIdx = 1:numel(sequenceSteps)
+            candidateStart_s = double(sequenceSteps(stepIdx).start_s);
+            if candidateStart_s < firstStepStart_s
+                firstStepStart_s = candidateStart_s;
+                firstStepIdx = stepIdx;
+            end
+        end
+        firstPatternName = string(sequenceSteps(firstStepIdx).pattern);
+        firstPatternNumber = find(schemaPatternNames == firstPatternName, 1, 'first');
+        firstGeometry = patternGeometryCache{firstPatternNumber};
+        warmupGroup = scanimage.mroi.RoiGroup(char(sprintf('%s__warmup', sequenceName)));
+        warmupGroup.add(makePowerStimRoi( ...
+            firstGeometry.stimField, firstGeometry.beamPowersOff, opts.WarmupDuration));
+        preparedGroups(end + 1) = warmupGroup;
+        if ~opts.BatchAssignGroups
+            hPs.stimRoiGroups(end + 1) = warmupGroup;
+        end
+        fprintf('PREP_TIMING sequence %s warm-up group: mask P%d, duration %.6fs\n', ...
+            char(sequenceName), firstPatternNumber, double(opts.WarmupDuration));
+    end
     firstPreparedGroupIdx = numel(preparedGroups) + 1;
     sequenceTimer = tic();
     sequenceBuildTime = 0;
@@ -194,12 +226,23 @@ if opts.ConfigureSequence
             error('No prepared group mapping exists for trial sequence index %d.', seqIdx - 1);
         end
         if opts.EmbedBlankAndParkInStimGroup
-            hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices]; %#ok<AGROW>
+            sequencePrefix = trialGroupIndices;
         elseif opts.PrefixBlankToSequence
-            hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, 1, trialGroupIndices, 2]; %#ok<AGROW>
+            sequencePrefix = [1, trialGroupIndices, 2];
         else
-            hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, trialGroupIndices, 2]; %#ok<AGROW>
+            sequencePrefix = [trialGroupIndices, 2];
         end
+        if opts.WarmupFirstMask
+            warmupGroupIdx = trialGroupIndices(1) - 1;
+            if opts.EmbedBlankAndParkInStimGroup
+                sequencePrefix = [warmupGroupIdx, sequencePrefix];
+            elseif opts.PrefixBlankToSequence
+                sequencePrefix = [1, warmupGroupIdx, trialGroupIndices, 2];
+            else
+                sequencePrefix = [warmupGroupIdx, trialGroupIndices, 2];
+            end
+        end
+        hPs.sequenceSelectedStimuli = [hPs.sequenceSelectedStimuli, sequencePrefix]; %#ok<AGROW>
     end
     hPs.numSequences = opts.NumSequences;
     if isprop(hPs, 'autoTriggerPeriod')
