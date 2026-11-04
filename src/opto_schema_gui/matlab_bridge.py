@@ -1891,10 +1891,16 @@ def build_warmup_photostim_command(path_config: PathConfig, warmup_group_index: 
             "hPs.triggerStim();",
             "drawnow();",
             f"pause({path_config.warmup_first_mask_duration_s:.12g});",
+            "warmupDeadline = tic();",
             "positionAfter = double(hPs.sequencePosition);",
+            "while positionAfter ~= positionBefore + 1 && toc(warmupDeadline) < 2.0",
+            "    pause(0.01);",
+            "    drawnow('nocallbacks');",
+            "    positionAfter = double(hPs.sequencePosition);",
+            "end",
             "disp('PHOTOSTIM_WARMUP_END');",
             "disp(positionAfter);",
-            "assert(positionAfter == positionBefore + 1, 'First-mask warm-up did not advance exactly one photostim sequence group.');",
+            "assert(positionAfter == positionBefore + 1, 'First-mask warm-up did not advance exactly one photostim sequence group within 2 seconds.');",
             "disp('PHOTOSTIM_WARMUP_READY');",
         ]
     )
