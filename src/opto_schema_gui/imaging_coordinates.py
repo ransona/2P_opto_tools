@@ -5,6 +5,7 @@ import json
 import math
 import pickle
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,158 @@ from pathlib import Path
 import numpy as np
 
 from .matlab_bridge import autodetect_machine_name, list_config_names, load_machine_config
+
+
+SUITE2P_REFERENCE_FILES = (
+    "ops.npy",
+    "stat.npy",
+    "iscell.npy",
+    "redcell.npy",
+    "reg_outputs.npy",
+    "meanImg.npy",
+    "meanImgE.npy",
+    "meanImg_chan2.npy",
+    "meanImg_chan2_corrected.npy",
+    "Vcorr.npy",
+)
+
+
+def snapshot_suite2p_reference_data(project, destination: Path) -> Path | None:
+    """Copy native Suite2p registration/ROI outputs used by a schema.
+
+    The copied plane folders remain loadable by Suite2p. Trace and raw imaging
+    files are deliberately excluded because they belong to the source
+    experiment, not to the coordinate provenance needed by the schema.
+    """
+    requested: dict[tuple[str, str], dict[str, object]] = {}
+    for pattern in project.patterns.values():
+        for cell in pattern.cells:
+            exp_id = str(getattr(cell, "origin_exp_id", "") or "").strip()
+            if not exp_id:
+                continue
+            user_id = str(getattr(cell, "origin_user_id", "") or "").strip()
+            key = (exp_id, user_id)
+            source = requested.setdefault(
+                key,
+                {"exp_id": exp_id, "user_id": user_id, "planes": {}, "cells": []},
+            )
+            plane = getattr(cell, "origin_plane_index", None)
+            if plane is not None:
+                source["planes"].setdefault(int(plane), set())
+            source["cells"].append(
+                {
+                    "label": str(getattr(cell, "label", "") or ""),
+                    "pattern": pattern.name,
+                    "pipeline_cell_id": getattr(cell, "origin_processed_cell_id", None),
+                    "suite2p_roi_id": getattr(cell, "origin_suite2p_roi_id", None),
+                    "channel": getattr(cell, "origin_channel", None),
+                    "imaging_path": str(getattr(cell, "origin_imaging_path", "") or ""),
+                    "plane": plane,
+                }
+            )
+
+    if not requested:
+        return None
+
+    destination = Path(destination)
+    manifest_path = destination / "manifest.json"
+    if destination.exists():
+        if not manifest_path.is_file():
+            raise RuntimeError(
+                f"Suite2p reference directory already exists without a manifest: {destination}"
+            )
+        return manifest_path
+
+    staging = destination.with_name(f".{destination.name}.tmp")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=False)
+    manifest: dict[str, object] = {
+        "format": "suite2p-reference-subset-v1",
+        "description": (
+            "Native Suite2p registration and ROI-detection outputs copied for "
+            "photostimulation coordinate provenance; trace and raw imaging files excluded."
+        ),
+        "included_files": list(SUITE2P_REFERENCE_FILES),
+        "excluded_file_patterns": [
+            "F*.npy",
+            "Fneu*.npy",
+            "spks*.npy",
+            "data*.bin",
+            "*.tif",
+            "*.tiff",
+        ],
+        "sources": [],
+    }
+
+    try:
+        for (exp_id, user_id), source in requested.items():
+            source_root = _find_suite2p_root(exp_id, user_id)
+            source_record: dict[str, object] = {
+                "exp_id": exp_id,
+                "user_id": user_id,
+                "source_root": str(source_root) if source_root is not None else "",
+                "planes": [],
+                "cells": source["cells"],
+            }
+            if source_root is None:
+                source_record["warning"] = "No native Suite2p output directory was found."
+                manifest["sources"].append(source_record)
+                continue
+
+            source_dir = staging / "sources" / exp_id / "suite2p"
+            for plane_index, _channels in sorted(source["planes"].items()):
+                plane_name = f"plane{int(plane_index)}"
+                source_plane = source_root / plane_name
+                if not source_plane.is_dir():
+                    source_record.setdefault("warnings", []).append(
+                        f"Missing Suite2p plane directory: {plane_name}"
+                    )
+                    continue
+                destination_plane = source_dir / plane_name
+                destination_plane.mkdir(parents=True, exist_ok=True)
+                copied: list[str] = []
+                for filename in SUITE2P_REFERENCE_FILES:
+                    source_file = source_plane / filename
+                    if not source_file.is_file():
+                        continue
+                    shutil.copy2(source_file, destination_plane / filename)
+                    copied.append(filename)
+                source_record["planes"].append(
+                    {"plane": int(plane_index), "files": copied}
+                )
+
+            manifest["sources"].append(source_record)
+
+        manifest_path_staging = staging / "manifest.json"
+        manifest_path_staging.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        staging.rename(destination)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+    return manifest_path
+
+
+def _find_suite2p_root(exp_id: str, user_id: str) -> Path | None:
+    """Find a processed native Suite2p root without scanning raw data."""
+    animal_id = _animal_id_from_exp_id(exp_id)
+    roots = _processed_recording_roots(animal_id, exp_id, user_id or getpass.getuser())
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend((root / "suite2p", root.parent / "suite2p", root / "suite2p_combined"))
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_dir() and any(candidate.glob("plane*/ops.npy")):
+            return candidate
+    return None
 
 
 @dataclass(frozen=True)

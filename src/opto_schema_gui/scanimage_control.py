@@ -57,6 +57,7 @@ from PyQt6.QtWidgets import (
 
 from .legacy_matlab_codec import build_ready_message, extract_legacy_command
 from .io import load_schema
+from .imaging_coordinates import snapshot_suite2p_reference_data
 from .matlab_bridge import (
     ExperimentContext,
     MachineConfig,
@@ -6214,6 +6215,7 @@ class ScanImageControlWidget(QWidget):
             return
 
         schema_path: Path | None = None
+        suite2p_reference_path: Path | None = None
         if schema_name:
             schema_path = self._resolve_schema_path(schema_name, exp_id)
             project = load_schema(schema_path)
@@ -6235,6 +6237,14 @@ class ScanImageControlWidget(QWidget):
                 schema_path,
                 message.get("params_path"),
             )
+            suite2p_reference_path = snapshot_suite2p_reference_data(
+                project,
+                schema_snapshot_path.parent / "suite2p_reference",
+            )
+            if suite2p_reference_path is not None:
+                self.signals.log_message.emit(
+                    f"[experiment] saved Suite2p reference subset: {suite2p_reference_path}"
+                )
         else:
             schema_snapshot_path = None
 
@@ -6263,6 +6273,7 @@ class ScanImageControlWidget(QWidget):
                 "expID": exp_id,
                 "schema_name": schema_name,
                 "schema_snapshot_path": str(schema_snapshot_path) if schema_snapshot_path is not None else "",
+                "suite2p_reference_path": str(suite2p_reference_path) if suite2p_reference_path is not None else "",
                 "stimulus_condition_count": len(stimulus_conditions),
                 "trial_count": len(trial_condition_indices),
             },
