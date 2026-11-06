@@ -29,7 +29,12 @@ SUITE2P_REFERENCE_FILES = (
 )
 
 
-def snapshot_suite2p_reference_data(project, destination: Path) -> Path | None:
+def snapshot_suite2p_reference_data(
+    project,
+    destination: Path,
+    *,
+    replace_existing: bool = False,
+) -> Path | None:
     """Copy native Suite2p registration/ROI outputs used by a schema.
 
     The copied plane folders remain loadable by Suite2p. Trace and raw imaging
@@ -68,7 +73,7 @@ def snapshot_suite2p_reference_data(project, destination: Path) -> Path | None:
 
     destination = Path(destination)
     manifest_path = destination / "manifest.json"
-    if destination.exists():
+    if destination.exists() and not replace_existing:
         if not manifest_path.is_file():
             raise RuntimeError(
                 f"Suite2p reference directory already exists without a manifest: {destination}"
@@ -141,7 +146,19 @@ def snapshot_suite2p_reference_data(project, destination: Path) -> Path | None:
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        staging.rename(destination)
+        if destination.exists():
+            backup = destination.with_name(f".{destination.name}.bak")
+            if backup.exists():
+                shutil.rmtree(backup)
+            destination.rename(backup)
+            try:
+                staging.rename(destination)
+            except Exception:
+                backup.rename(destination)
+                raise
+            shutil.rmtree(backup)
+        else:
+            staging.rename(destination)
     except Exception:
         if staging.exists():
             shutil.rmtree(staging)

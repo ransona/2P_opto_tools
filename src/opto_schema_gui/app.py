@@ -60,6 +60,7 @@ from .imaging_coordinates import (
     list_processed_fov_groups,
     list_imaging_scanfields,
     resolve_processed_cell_to_imaging_pixel,
+    snapshot_suite2p_reference_data,
 )
 from .io import load_schema, save_schema
 from .models import SCHEMA_TIME_QUANTUM_S, CellSpec, ExperimentProject, Pattern, Sequence, SequenceStep
@@ -4429,6 +4430,11 @@ class MainWindow(QMainWindow):
                 return False
             target.parent.mkdir(parents=True, exist_ok=True)
             save_schema(target, self.project)
+            snapshot_suite2p_reference_data(
+                self.project,
+                target.parent / "suite2p_reference",
+                replace_existing=True,
+            )
             self.schema_file_path = str(target)
             self.pattern_dirty = False
             self.sequence_dirty = False
@@ -4453,6 +4459,11 @@ class MainWindow(QMainWindow):
             path = self.schema_save_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             save_schema(path, self.project)
+            snapshot_suite2p_reference_data(
+                self.project,
+                path.parent / "suite2p_reference",
+                replace_existing=True,
+            )
             self.schema_file_path = str(path)
             self.pattern_dirty = False
             self.sequence_dirty = False
